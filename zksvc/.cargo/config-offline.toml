@@ -1,0 +1,8 @@
+
+[source."git+https://github.com/privacy-scaling-explorations/halo2curves?tag=v0.4.0"]
+git = "https://github.com/privacy-scaling-explorations/halo2curves"
+tag = "v0.4.0"
+replace-with = "vendored-sources"
+
+[source.vendored-sources]
+directory = "vendor-reg"

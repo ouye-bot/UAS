@@ -1,0 +1,18 @@
+[package]
+name = "plonkish_sm2_probe"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+# benchmark feature 解开 `hyperplonk::util`（`#[cfg(any(test, feature = "benchmark"))]` 门控，
+# 含 rand_vanilla_plonk_circuit 测试电路）；benchmark=["parallel"]（rayon），无额外语义。
+plonkish_backend = { path = "../plonkish_backend", features = ["benchmark"] }
+ff = { version = "0.13.0", features = ["derive"] }
+serde = { version = "1.0.152", features = ["derive"] }
+rand = "0.8.5"
+rand_core = { version = "0.6.4", features = ["getrandom"] }
+num-bigint = "0.4"
+num-traits = "0.2"
+
+[dev-dependencies]
+serde_json = "1.0"

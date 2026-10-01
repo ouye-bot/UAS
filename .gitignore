@@ -1,0 +1,66 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+*.egg-info/
+
+# Node
+node_modules/
+dist/
+
+# Rust
+target/
+
+# 密钥与环境（私钥零落盘红线）
+.env
+.env.*
+*.key
+*.pem
+
+# 本地数据库
+*.db
+*.sqlite3
+
+# OS
+Thumbs.db
+.DS_Store
+
+# 追加（B0）
+.coverage
+htmlcov/
+*.log
+artifacts*/
+.pytest_cache/
+.ruff_cache/
+
+# 出证运行产物（proof/vp 大文件——判决件运行时在盘，不入库）
+backend/fz-zk-cases/
+
+# mTLS 证书（私钥零入库——生成脚本 scripts/gen_certs.py 可复现）
+backend/certs/
+
+# 备份产物（库 dump+判决件快照）
+backups/
+
+# —— 上传治理（2026-10-02）——
+*.db
+*.db.*
+*.bak
+logs/
+*.log
+backend/fz-zk-cases/
+gcs/web/dist/
+target/
+**/artifacts-*/
+.artifacts/
+.local_env
+docs/MEMORY.md
+docs/评审/
+docs/评审
+docs/红队攻击记录.md
+docs/系统收官总结.md
+01_设计文档/
+docs/红队攻击记录.md
+docs/系统线收官总结.md
+docs/系统收官总结.md

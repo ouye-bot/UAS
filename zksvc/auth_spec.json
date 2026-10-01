@@ -1,0 +1,24 @@
+{
+ "profile": "auth",
+ "reps": 16,
+ "log_rate": 1,
+ "binding": {
+  "challenge_hex": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+  "pred_id": "plan:demo-plan-hash-01|nonce:demo-nonce-01|policy:v2026.1",
+  "t_epoch": 1700000000,
+  "required_level": 2
+ },
+ "input": {
+  "kind": "auth",
+  "ra_pk_hex": "30aa8901988ca5c502ed1cb7162bd4d26153ff926d0d1bd9f7d5a7116cd8e24d96a5f2e24c92937e6ad1ad48dca96466d8f545c3d37d5d9e5d5d0cc5b5a93000",
+  "id_prime_hex": "9f2bd4e971f02bb36f1f57d97b6e145b9afa8d567e349f95996a484ac9e43440",
+  "salt_hex": "00000000000000000000000000000000",
+  "id_number_hex": "313130313031313939303033303739393958",
+  "cert_level": 3,
+  "serial_hex": "5541532d534e2d323032362d30303031",
+  "holder_sk_hex": "cab77b26953ee4b429f3e36c0b09addcaa8e75253ef013622611488a934aba86",
+  "holder_pk_hex": "d182d69a3121d4785ffeb5445ec51c8580b47515c01e683c5637502de008e2477acb4221dccde8aed0e2cbdfacbd78421d233e0921c32c85cc82d51c85d20d2f",
+  "exp_u": 1900000000,
+  "sig_hex": "970c6bc771f6b1dc80009c332d3afc4ae06602980dc79bd5b3b54961df20edd41dc0cb7909cf1efb428982e0e64e741ac02f782fbd0987e03052b1cafe774aa8"
+ }
+}

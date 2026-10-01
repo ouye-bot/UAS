@@ -1,0 +1,18 @@
+{
+  "IdentityRegistry": {
+    "address": "0x74885ceb4fd2a4a8c7e4763ea3ce2b65d787b047",
+    "block": 4323
+  },
+  "PolicyRegistry": {
+    "address": "0x34daa52d2e1d058f0f61bb3d7f0c7e20e3f6f059",
+    "block": 4324
+  },
+  "FlightAuthRegistry": {
+    "address": "0x233610b9b4733f2306c9392bacf61d488b90ac48",
+    "block": 4325
+  },
+  "TelemetryAnchor": {
+    "address": "0x55cfdb40b91dd7129d56bb22321528e64c1583bd",
+    "block": 4326
+  }
+}

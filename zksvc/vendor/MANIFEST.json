@@ -1,0 +1,747 @@
+{
+ "pin_commit": "4201a82",
+ "file_count": 148,
+ "aggregate_sm3": "961ee911d1226d6c6768a78d0dd05240bddf514ec04dd2582cac204d6a243aba",
+ "files": [
+  {
+   "path": "plonkish/.gitignore",
+   "bytes": 108,
+   "sm3": "0a4a4f76936f5df85b7b94c8e6c9a87c0bc0cdc5a66ff9346db0c18f0c2cf079"
+  },
+  {
+   "path": "plonkish/benchmark/bench_data/placeholder",
+   "bytes": 0,
+   "sm3": "1ab21d8355cfa17f8e61194831e81a8f22bec8c728fefb747ed035eb5082aa2b"
+  },
+  {
+   "path": "plonkish/benchmark/benches/basefold_proof_system.rs",
+   "bytes": 63519,
+   "sm3": "6baa0e350b5117583b264511a2a479701d42840141b280867124d174339cba42"
+  },
+  {
+   "path": "plonkish/benchmark/benches/blaze_bench.rs",
+   "bytes": 31150,
+   "sm3": "2cb5b43d6bb7f2ee2afa1a866fe4de804b300c0d52b6ed2ecdae6ec41476a6ae"
+  },
+  {
+   "path": "plonkish/benchmark/benches/brakedown_proof_system.rs",
+   "bytes": 13883,
+   "sm3": "db2d5551d1968766e00670668655f1f5c0d642d0f09506a6323a294c620cf6bc"
+  },
+  {
+   "path": "plonkish/benchmark/benches/pcs_bench.rs",
+   "bytes": 12601,
+   "sm3": "f489faa7d315d6ae9a284ccec7eccaf93256d7ff8051c97b2a515e89d04258de"
+  },
+  {
+   "path": "plonkish/benchmark/benches/proof_system.rs",
+   "bytes": 12917,
+   "sm3": "afb6655157385d7ad782a8264f10664198e4cd546815a0ca562e83aca22351b7"
+  },
+  {
+   "path": "plonkish/benchmark/benches/zeromorph_fri_proof_system.rs",
+   "bytes": 10498,
+   "sm3": "4f8476881430958287b1f67eed7844404964bd24e88c63e967ca8b86f344959c"
+  },
+  {
+   "path": "plonkish/benchmark/Cargo.toml",
+   "bytes": 1499,
+   "sm3": "de5febb9591a26fea2dfe7ec68f4e4dfcb979ef4c3c18e1996d01fed6b1220c0"
+  },
+  {
+   "path": "plonkish/benchmark/src/BasefoldParams.rs",
+   "bytes": 16920,
+   "sm3": "de93c5d841a9a0acf78364594364eed01cddf71ff16ccbfe98db2ecf996a9819"
+  },
+  {
+   "path": "plonkish/benchmark/src/bin/plotter.rs",
+   "bytes": 23521,
+   "sm3": "8822bf083beb68ef262939badf6d0e2b0cd15fbf80296e9e9b8d8fcb9f8168ae"
+  },
+  {
+   "path": "plonkish/benchmark/src/espresso.rs",
+   "bytes": 356,
+   "sm3": "00f1e0aa1202701cbc5577a7fd5ff70252f992145441f14b790831833f32ad19"
+  },
+  {
+   "path": "plonkish/benchmark/src/halo2/circuit.rs",
+   "bytes": 17323,
+   "sm3": "3042fe4f0f2d96b975190b598fec1c91735b895115bbea90c63636a16f7cf5ac"
+  },
+  {
+   "path": "plonkish/benchmark/src/halo2.rs",
+   "bytes": 34,
+   "sm3": "8538aaa0d0cdd13ced10ded0ce03b94601af111c75688d99e34c6fc46d17b04d"
+  },
+  {
+   "path": "plonkish/benchmark/src/lib.rs",
+   "bytes": 57,
+   "sm3": "4e79136bbf13a072451ff97c2409b10ef18c799b6027c5d43634e5cc18a014c2"
+  },
+  {
+   "path": "plonkish/Cargo.lock",
+   "bytes": 34006,
+   "sm3": "5e56eee31598e6b19727dbbf52f3971f5cb7afa9421b52feef1200724ece521e"
+  },
+  {
+   "path": "plonkish/Cargo.toml",
+   "bytes": 506,
+   "sm3": "678cfddf821abd33f2f21fd7292083d8befbe8affb19c2829effc477d9c55c44"
+  },
+  {
+   "path": "plonkish/plonkish_backend/benches/zero_check.rs",
+   "bytes": 1797,
+   "sm3": "3b9c2a0e5f231c2f9a3528685c34a71af3a424ff9399e5cf646260d4c97290a3"
+  },
+  {
+   "path": "plonkish/plonkish_backend/Cargo.toml",
+   "bytes": 1903,
+   "sm3": "ab9b34a5ce6d31c0fa8d239bd969c5403037ae1d2c324a6b8ad59b5d209954bf"
+  },
+  {
+   "path": "plonkish/plonkish_backend/src/accumulation/protostar/hyperplonk/preprocessor.rs",
+   "bytes": 15603,
+   "sm3": "3666b06b1a4d68b6be9d87f351110d7da8abed9cbd5de81c7d7165a0221daaa4"
+  },
+  {
+   "path": "plonkish/plonkish_backend/src/accumulation/protostar/hyperplonk/prover.rs",
+   "bytes": 11172,
+   "sm3": "faec717a753f7cb6f2f769edda7b4e75c487c8519d06cd8ba7b528991642cfcb"
+  },
+  {
+   "path": "plonkish/plonkish_backend/src/accumulation/protostar/hyperplonk.rs",
+   "bytes": 23022,
+   "sm3": "751afb68deb0c07d2bb03a49acc41179023e2c2be3ed96639cecdc6bf5d461f6"
+  },
+  {
+   "path": "plonkish/plonkish_backend/src/accumulation/protostar.rs",
+   "bytes": 9690,
+   "sm3": "7d37e950b8023b092fae0e4e5bac7c987606acca9f47485a07904928adf03968"
+  },
+  {
+   "path": "plonkish/plonkish_backend/src/accumulation/sangria/hyperplonk.rs",
+   "bytes": 2497,
+   "sm3": "368ea70736ae3c04848247af31297ca808f087b21e0cfc0886ba34bf628f53e6"
+  },
+  {
+   "path": "plonkish/plonkish_backend/src/accumulation/sangria.rs",
+   "bytes": 677,
+   "sm3": "afbd21f713fd5a43e4d1920bf3975b8a100a04ead91b0560daf33a509efce96f"
+  },
+  {
+   "path": "plonkish/plonkish_backend/src/accumulation.rs",
+   "bytes": 8953,
+   "sm3": "830899feda338fb1fd027707f8df1e53b306a16d84ec5ef8b906a6f52436f588"
+  },
+  {
+   "path": "plonkish/plonkish_backend/src/backend/hyperplonk/#prover.rs#",
+   "bytes": 13601,
+   "sm3": "7b43dc8fd8e94bf7e8c0c07674ff9f20ad6d1614b7016cd0b57c100965e9f53b"
+  },
+  {
+   "path": "plonkish/plonkish_backend/src/backend/hyperplonk/preprocessor.rs",
+   "bytes": 15442,
+   "sm3": "9e85c007ad5b5958ae0e0b6185715bf85028497d9c20bba0a93f6e1bc62740b7"
+  },
+  {
+   "path": "plonkish/plonkish_backend/src/backend/hyperplonk/prover.rs",
+   "bytes": 19064,
+   "sm3": "f163278fbded9a84cf5826e2a6867c55977ee115225dad088e53b3b6479ddc87"
+  },
+  {
+   "path": "plonkish/plonkish_backend/src/backend/hyperplonk/util.rs",
+   "bytes": 13313,
+   "sm3": "2782d142539549ce16ffea73efde4a6d4069d0a844f067c195c8764bdf256287"
+  },
+  {
+   "path": "plonkish/plonkish_backend/src/backend/hyperplonk/verifier.rs",
+   "bytes": 9801,
+   "sm3": "818ca0d18b63e41dad5c543da12563684aa3a28b7bad523cfdb863661e69248c"
+  },
+  {
+   "path": "plonkish/plonkish_backend/src/backend/hyperplonk.rs",
+   "bytes": 31022,
+   "sm3": "7572c2e45026c601c3e852654ec2145c1e6e9143e8caaeb0aee6181a7be154fb"
+  },
+  {
+   "path": "plonkish/plonkish_backend/src/backend/hyperplonk.rs~",
+   "bytes": 15137,
+   "sm3": "ee40c306efd09eda7836ae0acdc84ab12939c1165521e18fb76b8f4d6a531def"
+  },
+  {
+   "path": "plonkish/plonkish_backend/src/backend.rs",
+   "bytes": 8603,
+   "sm3": "c0e86f465a3a7b82e177eda0fd642e4e6eb0ace326ca884fb91adfcfb6064363"
+  },
+  {
+   "path": "plonkish/plonkish_backend/src/frontend/halo2/circuit.rs",
+   "bytes": 4724,
+   "sm3": "6e7197f55aca67ec411b508898ef3ed14a8700d35ea04f178367609fb69b1463"
+  },
+  {
+   "path": "plonkish/plonkish_backend/src/frontend/halo2/test.rs",
+   "bytes": 1171,
+   "sm3": "8d347ec2bcf88f137ccd4c76474b132672eb2e6f5b8b68d4053e03be8bcd0f43"
+  },
+  {
+   "path": "plonkish/plonkish_backend/src/frontend/halo2.rs",
+   "bytes": 20425,
+   "sm3": "56922261d481045e8d5a9b8015f2d588a7cca3246f88b01152889b63c47bc144"
+  },
+  {
+   "path": "plonkish/plonkish_backend/src/frontend.rs",
+   "bytes": 50,
+   "sm3": "117a8af95281960db3e047b70fa5dd562864bb12c1f2c6cb0122828b6f5e3174"
+  },
+  {
+   "path": "plonkish/plonkish_backend/src/lib.rs",
+   "bytes": 550,
+   "sm3": "3d7f3a30649cbb812af55923a258e9f23bcd499edaae337722b5e3dec73d8792"
+  },
+  {
+   "path": "plonkish/plonkish_backend/src/pcs/multilinear/basefold.rs",
+   "bytes": 187281,
+   "sm3": "ddac4573a4c3f27d68bfbc80198c405a1c98ea01e9e9babd54d0310640d5629b"
+  },
+  {
+   "path": "plonkish/plonkish_backend/src/pcs/multilinear/blaze.rs",
+   "bytes": 69771,
+   "sm3": "285eb215250eb935c6a8ddd4a7d8b04588055cbfad7c715f6c7a5ec5ba2b9334"
+  },
+  {
+   "path": "plonkish/plonkish_backend/src/pcs/multilinear/brakedown.rs",
+   "bytes": 20719,
+   "sm3": "74378c3389fae0961a3b80eb6a8dd550ec5d472caa87b14206ecdb6987d6f01e"
+  },
+  {
+   "path": "plonkish/plonkish_backend/src/pcs/multilinear/gemini.rs",
+   "bytes": 8828,
+   "sm3": "3e42576bdc16abeeed975284f1cdf60e0b4a7e67fa643a0e71c2db3dd0fd2edf"
+  },
+  {
+   "path": "plonkish/plonkish_backend/src/pcs/multilinear/hyrax.rs",
+   "bytes": 11336,
+   "sm3": "049c23dbd1f6aa0d25df82db4f64729c5b52f6c629b69ce5994b2457076d43d6"
+  },
+  {
+   "path": "plonkish/plonkish_backend/src/pcs/multilinear/ipa.rs",
+   "bytes": 12136,
+   "sm3": "025763fe341348f6e726482142d61eca831dad589afb83b18b453e0e70d2e8fd"
+  },
+  {
+   "path": "plonkish/plonkish_backend/src/pcs/multilinear/kzg.rs",
+   "bytes": 12655,
+   "sm3": "e9fae9e6d9459b8c32a54942b4c34e1ba2bb047ac1bd45468d5aee19fb187b20"
+  },
+  {
+   "path": "plonkish/plonkish_backend/src/pcs/multilinear/zeromorph.rs",
+   "bytes": 11285,
+   "sm3": "56d149fed4bee64c9b05dd71e6ee726d5bd40087c54b67b69c7dbcf42646aa87"
+  },
+  {
+   "path": "plonkish/plonkish_backend/src/pcs/multilinear/zeromorph_fri.rs",
+   "bytes": 23546,
+   "sm3": "2df0c7c9d3439c353f71af98520706cf53db45f5954752b07719608eedfe83d5"
+  },
+  {
+   "path": "plonkish/plonkish_backend/src/pcs/multilinear.rs",
+   "bytes": 21568,
+   "sm3": "477669814abc41ee1d5caaad2ce59c1a9361fc79375aea34585c603646013d7d"
+  },
+  {
+   "path": "plonkish/plonkish_backend/src/pcs/univariate/fri.rs",
+   "bytes": 48056,
+   "sm3": "5d372d70d2d2650f2ec14e01772f8402e6db1c4d9fe7f5d2b0c30da58b1b0bc2"
+  },
+  {
+   "path": "plonkish/plonkish_backend/src/pcs/univariate/kzg.rs",
+   "bytes": 23955,
+   "sm3": "a0b338ce9a8dd3f9da661faad2955d547fd717b9c84cc01598e4b687b2bdbf61"
+  },
+  {
+   "path": "plonkish/plonkish_backend/src/pcs/univariate.rs",
+   "bytes": 296,
+   "sm3": "ffd984ca203e642712b066b3b888bf6ae9c255c47785b827d1fe063301206542"
+  },
+  {
+   "path": "plonkish/plonkish_backend/src/pcs.rs",
+   "bytes": 6695,
+   "sm3": "2f27ceb9ccde36525bce9b055ff49863758fa76efc400e15676aac9f313dcba8"
+  },
+  {
+   "path": "plonkish/plonkish_backend/src/piop/#sum_check.rs#",
+   "bytes": 12940,
+   "sm3": "52911c23641594b66528e9f8b350c8851be92e4a1bf4b09d1306459313dc536b"
+  },
+  {
+   "path": "plonkish/plonkish_backend/src/piop/sum_check/classic/coeff.rs",
+   "bytes": 7745,
+   "sm3": "c1adb470b3a80dde27511a983fbfc97e0e2bfcc23d4b5588c3da5720b964847e"
+  },
+  {
+   "path": "plonkish/plonkish_backend/src/piop/sum_check/classic/eval.rs",
+   "bytes": 19881,
+   "sm3": "7c9ba1801072090dcc1a15fd0139c17951a0bbcf8319cfe39c7497bd7df4dcfa"
+  },
+  {
+   "path": "plonkish/plonkish_backend/src/piop/sum_check/classic.rs",
+   "bytes": 9640,
+   "sm3": "ef8361c1d64d379bdd4b9e670ae64da665571cfd22cef5dc5a26f4e77b72c538"
+  },
+  {
+   "path": "plonkish/plonkish_backend/src/piop/sum_check.rs",
+   "bytes": 12940,
+   "sm3": "52911c23641594b66528e9f8b350c8851be92e4a1bf4b09d1306459313dc536b"
+  },
+  {
+   "path": "plonkish/plonkish_backend/src/piop.rs",
+   "bytes": 19,
+   "sm3": "e1e5a4c6c5e9037e14013e37aa83f77ff2f9d323e3641aa91158e9052fbab186"
+  },
+  {
+   "path": "plonkish/plonkish_backend/src/poly/multilinear.rs",
+   "bytes": 25620,
+   "sm3": "43e0c74fb9f208781aba80dba0eab81f4f922f5e16df4292e35652b1ff4bf12c"
+  },
+  {
+   "path": "plonkish/plonkish_backend/src/poly/univariate.rs",
+   "bytes": 12173,
+   "sm3": "9c03003ea2cc5816034677288403e9cc430f1adc8ed33324467d46b18fade449"
+  },
+  {
+   "path": "plonkish/plonkish_backend/src/poly.rs",
+   "bytes": 398,
+   "sm3": "db729f0da6543e41071f70d3b4d47c4f9f90aab3ea4d54c36db074a2e675180d"
+  },
+  {
+   "path": "plonkish/plonkish_backend/src/util/arithmetic/bh.rs",
+   "bytes": 5016,
+   "sm3": "24e73e13ea1be71343fa715e4bbbf2eeff480248f94b4dda0b3258da02239e4e"
+  },
+  {
+   "path": "plonkish/plonkish_backend/src/util/arithmetic/msm.rs",
+   "bytes": 5696,
+   "sm3": "03924d8a016ec0febc49181d9aef89f3fd05c75bb399033471b0359aec31c7b2"
+  },
+  {
+   "path": "plonkish/plonkish_backend/src/util/arithmetic.rs",
+   "bytes": 7197,
+   "sm3": "c79a5f4ab6fa7e3181c835bb9b2b66ba40ac8e88c14dfaea3031a1c6e0f52d82"
+  },
+  {
+   "path": "plonkish/plonkish_backend/src/util/avx_int_types/u256.rs",
+   "bytes": 3491,
+   "sm3": "84dc66f8091f6b66ea989318c587767b67473732f8be5262b3a877587b3598ed"
+  },
+  {
+   "path": "plonkish/plonkish_backend/src/util/avx_int_types/u512.rs",
+   "bytes": 3466,
+   "sm3": "4a9b92cd0cbad1648f5d3d5e063b88c3d0c38672c16471d3727f95f1ccab5bfb"
+  },
+  {
+   "path": "plonkish/plonkish_backend/src/util/avx_int_types/u64.rs",
+   "bytes": 2827,
+   "sm3": "37d16757a9b02cc55e527e772e6b40fd8d34376b3848ae253a4b40fb216c1e88"
+  },
+  {
+   "path": "plonkish/plonkish_backend/src/util/avx_int_types/u64x8.rs",
+   "bytes": 3431,
+   "sm3": "80907bebe660936528141bc2c3ed8b4887db0d18ece48fc9e1aebb41583d588c"
+  },
+  {
+   "path": "plonkish/plonkish_backend/src/util/avx_int_types.rs",
+   "bytes": 1145,
+   "sm3": "eec121d19899791a1b0fb8b6e46aa1df1b5bd24671837aa17a31ee8fc909e914"
+  },
+  {
+   "path": "plonkish/plonkish_backend/src/util/binary_extension_fields.rs",
+   "bytes": 16811,
+   "sm3": "3d94a9e131c4797c9d10d725cbdb2e8e8f6417c7affe5753ee58e286af61d3d5"
+  },
+  {
+   "path": "plonkish/plonkish_backend/src/util/binius_iter.rs",
+   "bytes": 2528,
+   "sm3": "0a287ac6f817eb9e72be97b989aee36e39d83b7869d4cf31f66c3f60cb8e810b"
+  },
+  {
+   "path": "plonkish/plonkish_backend/src/util/blaze_transcript.rs",
+   "bytes": 3402,
+   "sm3": "85c551c9d461280225361cc09eb61a5a678640a3aaf6d2178690c162e27a55a7"
+  },
+  {
+   "path": "plonkish/plonkish_backend/src/util/code/binary_rs.rs",
+   "bytes": 26505,
+   "sm3": "898822fa28a9f80d8427019edb989c9800a24e97b7901e7985428fc0d9870ce8"
+  },
+  {
+   "path": "plonkish/plonkish_backend/src/util/code/brakedown.rs",
+   "bytes": 12209,
+   "sm3": "559ad4d58ef9779a74d2b2367220e28d7caca571983ae5a7c3a56f31e794bf8f"
+  },
+  {
+   "path": "plonkish/plonkish_backend/src/util/code/raa.rs",
+   "bytes": 22028,
+   "sm3": "b6b0d6f16b4d319b0d8504e5dc28d8ed9db557431a07ff1c9e4a376c2e38b67d"
+  },
+  {
+   "path": "plonkish/plonkish_backend/src/util/code.rs",
+   "bytes": 569,
+   "sm3": "03db0b4ad20b8526792effab22806c2fdc23fded6b3055db43ead753b7c65417"
+  },
+  {
+   "path": "plonkish/plonkish_backend/src/util/expression/evaluator.rs",
+   "bytes": 15137,
+   "sm3": "149f513c9e824756ab7cd1bd872e7334d1b5f25272e57f2c55d2771009c9e6fe"
+  },
+  {
+   "path": "plonkish/plonkish_backend/src/util/expression/relaxed.rs",
+   "bytes": 10143,
+   "sm3": "ee6f0c65c96512eb62174e3409b8649aadbd7087c01772221eb1c2d08b01137c"
+  },
+  {
+   "path": "plonkish/plonkish_backend/src/util/expression.rs",
+   "bytes": 19243,
+   "sm3": "c91597650aa322b69afb6906095730f6fb3dee1cce68b597ff9d9e5766ad7f3e"
+  },
+  {
+   "path": "plonkish/plonkish_backend/src/util/ff_255.rs",
+   "bytes": 952,
+   "sm3": "55180ee23606f442e8ae8c8f66fde089ca0ba6e60935bb2271524a905b0ad126"
+  },
+  {
+   "path": "plonkish/plonkish_backend/src/util/goldilocksMont.rs",
+   "bytes": 661,
+   "sm3": "eebcac92a090b83339b090d01f6def9fca6db3a3fedf8e12ad39ac6c5216d396"
+  },
+  {
+   "path": "plonkish/plonkish_backend/src/util/hash.rs",
+   "bytes": 7032,
+   "sm3": "a15873e3fe5e5f2de1199b160bb17d91d99d40468ba42f6c203da520827093d6"
+  },
+  {
+   "path": "plonkish/plonkish_backend/src/util/mersenne_61_mont.rs",
+   "bytes": 658,
+   "sm3": "2c4d9c04abc8af16914276f4f0b7976e1df7d41bea644a25ee2df1c8e589681a"
+  },
+  {
+   "path": "plonkish/plonkish_backend/src/util/new_fields.rs",
+   "bytes": 13141,
+   "sm3": "a62349e35b49fb582aef6e543bdb9c34792af4c6c0024c7801f2b76be5125751"
+  },
+  {
+   "path": "plonkish/plonkish_backend/src/util/parallel.rs",
+   "bytes": 1889,
+   "sm3": "feb94e51397ab3b5900eb04d34b6d1dedbb03b7b8021333bdb29efe2e2cb3e1b"
+  },
+  {
+   "path": "plonkish/plonkish_backend/src/util/play_field.rs",
+   "bytes": 675,
+   "sm3": "49cfc71436a98f0e42d96c067ef58c5c3b490d4c5b71b7d9fc26e6d7f284e97f"
+  },
+  {
+   "path": "plonkish/plonkish_backend/src/util/timer.rs",
+   "bytes": 1982,
+   "sm3": "fb28653ddc34d2f55b95b545a0c63d829804a198d442b8c0e3c2de31d8610fd9"
+  },
+  {
+   "path": "plonkish/plonkish_backend/src/util/transcript.rs",
+   "bytes": 14599,
+   "sm3": "92d25125b67b8793bd309380d1d7b77118e391b023d8a865ad5d89e012f3db11"
+  },
+  {
+   "path": "plonkish/plonkish_backend/src/util.rs",
+   "bytes": 3459,
+   "sm3": "d48ac9f17a4b26c623d570502fba0a98ef8b6130cb40a8b6258388e877d175ba"
+  },
+  {
+   "path": "plonkish/plonkish_sm2_probe/Cargo.toml",
+   "bytes": 632,
+   "sm3": "5bf6c648e7aff3c79bbc21ebc52fe4df1b45fa7ffcf8aa2a90e3b7f47a507442"
+  },
+  {
+   "path": "plonkish/plonkish_sm2_probe/src/bin/_bench_audit_path.rs",
+   "bytes": 3050,
+   "sm3": "2a7a95ac01aaefd295cad50f9ddc6150eac3d0e14bb6bce7f820d8673d9a6d6f"
+  },
+  {
+   "path": "plonkish/plonkish_sm2_probe/src/bin/_bench_audit_path_tn.rs",
+   "bytes": 3249,
+   "sm3": "930877e8e9b28a1412ec0352abf977ed3baf3cf896c03a57e81db1a1fdd48883"
+  },
+  {
+   "path": "plonkish/plonkish_sm2_probe/src/bin/audit_leak_columns.rs",
+   "bytes": 6583,
+   "sm3": "458122ca08b1992edc121ec89459378acaa0a1cb4b48260069b6b61a0fde6b76"
+  },
+  {
+   "path": "plonkish/plonkish_sm2_probe/src/bin/auth_census.rs",
+   "bytes": 14138,
+   "sm3": "aa00f032c193e42df6cd2c248d7fbaf3495bfee77515b4135dc5563541bddf2d"
+  },
+  {
+   "path": "plonkish/plonkish_sm2_probe/src/bin/b7_filter_multiscale.rs",
+   "bytes": 6058,
+   "sm3": "85affffc200eb2b7d0d961869ffaa426a49c3fbc748442dd542c3a079c843e66"
+  },
+  {
+   "path": "plonkish/plonkish_sm2_probe/src/bin/probe.rs",
+   "bytes": 4135,
+   "sm3": "cde2196809afce53a7905e69cf615a7c7e5aa862187986a3f47dbfe056f0667d"
+  },
+  {
+   "path": "plonkish/plonkish_sm2_probe/src/bin/probe_basefold.rs",
+   "bytes": 5297,
+   "sm3": "d101f044179b5828a3bafa3518ef9e28f6ba499a938d9f16a1c54193b8128fe1"
+  },
+  {
+   "path": "plonkish/plonkish_sm2_probe/src/bin/probe_sm2_verify.rs",
+   "bytes": 20628,
+   "sm3": "fb244f7c8a83559f3b39a576aa9647963cd0bf13492ad9e37ca5cf4266b38eb5"
+  },
+  {
+   "path": "plonkish/plonkish_sm2_probe/src/bin/probe_sm3_compress.rs",
+   "bytes": 4696,
+   "sm3": "ddc77d0431e2b5d635c3f26e719cead33eeb68b236e00fdcaf49e49225daefeb"
+  },
+  {
+   "path": "plonkish/plonkish_sm2_probe/src/bin/probe_sm3_compress_v2.rs",
+   "bytes": 6116,
+   "sm3": "7745d5a5c99361975f797c87c4c9b37d47563112d34cf97c6b04e2975a3bead1"
+  },
+  {
+   "path": "plonkish/plonkish_sm2_probe/src/bin/probe_sm3_spike.rs",
+   "bytes": 4249,
+   "sm3": "9461cb8451e8239e4d97b41c8a8615cc0ff86b35d2e5e5fc8dac8d5244e12776"
+  },
+  {
+   "path": "plonkish/plonkish_sm2_probe/src/bin/t1_layout_screen.rs",
+   "bytes": 11334,
+   "sm3": "0fd1adda34c93dac4bf5f48a5e49d467631e30e5071fa33deba5794837a5793c"
+  },
+  {
+   "path": "plonkish/plonkish_sm2_probe/src/lib.rs",
+   "bytes": 11731,
+   "sm3": "690ce68ecfd82e0c4eeb844a3ec4b62394a27b9bdbd6d1bd8eb2c15f711fe875"
+  },
+  {
+   "path": "plonkish/plonkish_sm2_probe/src/sm2_a3_stream.rs",
+   "bytes": 44225,
+   "sm3": "dcab15d07b178a5c55811c338519e6b01e0d3ae17f6c01b229b05df32a326cea"
+  },
+  {
+   "path": "plonkish/plonkish_sm2_probe/src/sm2_a5_route_b.rs",
+   "bytes": 7636,
+   "sm3": "3274e35088febd480507d69c53505815daffd07d696e7e4c6c0a2c597f431edd"
+  },
+  {
+   "path": "plonkish/plonkish_sm2_probe/src/sm2_a7_boundary.rs",
+   "bytes": 9506,
+   "sm3": "34da2fe44a460eeb4c1b9865f64848c4fe0fa0fdbb96b1076ff5cf6c6598488a"
+  },
+  {
+   "path": "plonkish/plonkish_sm2_probe/src/sm2_a7_jsonlog.rs",
+   "bytes": 2893,
+   "sm3": "95eac8a787ac7e4e1215df81c738ba328dda5273f193396cff792c8fce6f097b"
+  },
+  {
+   "path": "plonkish/plonkish_sm2_probe/src/sm2_a7_probe.rs",
+   "bytes": 3220,
+   "sm3": "0fad64d81a74393a9faea16069eee3d8b615c33046cf49299885e3d81e025213"
+  },
+  {
+   "path": "plonkish/plonkish_sm2_probe/src/sm2_a7_props.rs",
+   "bytes": 11819,
+   "sm3": "f15704f95d2a67be1dc4ef1b45e39a7502bc8ae3984991b2371f7081bd8a99dc"
+  },
+  {
+   "path": "plonkish/plonkish_sm2_probe/src/sm2_a7_t3.rs",
+   "bytes": 17948,
+   "sm3": "4e447d4c187bb8c638c79bd55bafaaac200e9c3222e97003af8e5ac2e449bd38"
+  },
+  {
+   "path": "plonkish/plonkish_sm2_probe/src/sm2_a7_t5_t7.rs",
+   "bytes": 8594,
+   "sm3": "e1836e6f21b5cedb8884cfcebcbe2662f31707cc633bc034f6e9b8626184bdf7"
+  },
+  {
+   "path": "plonkish/plonkish_sm2_probe/src/sm2_auth_assemble.rs",
+   "bytes": 42730,
+   "sm3": "5e25f545a76e78e9623864d1250e79446d61a35359b93a96368c5920834fe951"
+  },
+  {
+   "path": "plonkish/plonkish_sm2_probe/src/sm2_dkg.rs",
+   "bytes": 17553,
+   "sm3": "4a784981cf7125772aa0a71613e265720b6d8082e5f6ad0f8f1b6d810415fe87"
+  },
+  {
+   "path": "plonkish/plonkish_sm2_probe/src/sm2_ec_plonkish.rs",
+   "bytes": 58685,
+   "sm3": "c531556dad3a1469c2d62d3163d6f62b7bd85f73a7b75fbfa3d7174c5196e118"
+  },
+  {
+   "path": "plonkish/plonkish_sm2_probe/src/sm2_ec_window_gadget.rs",
+   "bytes": 20134,
+   "sm3": "191681c86320b2ade07ea46dd0baf729f3f89d40241bbe16dbd2d83c4255a00a"
+  },
+  {
+   "path": "plonkish/plonkish_sm2_probe/src/sm2_ec_window_proto.rs",
+   "bytes": 13819,
+   "sm3": "e503c12686080ecc9756c09b7b5d421e6ed43e68a5891a7f242f2dca504692a2"
+  },
+  {
+   "path": "plonkish/plonkish_sm2_probe/src/sm2_full_statement_assemble.rs",
+   "bytes": 249152,
+   "sm3": "11298aaa8c560ceaefa7b8da06e41b6f9d7f9309557995c0cc58ead840fa8ecb"
+  },
+  {
+   "path": "plonkish/plonkish_sm2_probe/src/sm2_join.rs",
+   "bytes": 35051,
+   "sm3": "4d492b88af6e63f70b05f49dee357bfc880f2c625026280bbac6545fd7939921"
+  },
+  {
+   "path": "plonkish/plonkish_sm2_probe/src/sm2_params.rs",
+   "bytes": 7317,
+   "sm3": "422766b7820b91f8d81c2273410acd990f7559556b6729d6dfa00b7e78edf67c"
+  },
+  {
+   "path": "plonkish/plonkish_sm2_probe/src/sm2_pcs_interleave.rs",
+   "bytes": 42205,
+   "sm3": "5f0c727a760211767ca255736dc6d0561f3f034739463e1e7a86235830a489f3"
+  },
+  {
+   "path": "plonkish/plonkish_sm2_probe/src/sm2_predicate_range.rs",
+   "bytes": 25181,
+   "sm3": "07d15e75f19f9ae78da81dbb07e9e6f4fe67a559b061e73f71a40cfd28dd05d2"
+  },
+  {
+   "path": "plonkish/plonkish_sm2_probe/src/sm2_ref_b.rs",
+   "bytes": 14655,
+   "sm3": "f270b3dd43ca44fb6a89f0bf2d6b968939dda59e4c77f3975eee04f2171c5894"
+  },
+  {
+   "path": "plonkish/plonkish_sm2_probe/src/sm2_scalar_plonkish.rs",
+   "bytes": 35154,
+   "sm3": "8444f6fad24a067a686b300e6512b9f031630ac0ca7c8a0f4e3a6d18519de8ce"
+  },
+  {
+   "path": "plonkish/plonkish_sm2_probe/src/sm2_verify_assemble.rs",
+   "bytes": 74571,
+   "sm3": "2e06e330afd3974fe7e088f83ecf01afca57495c017f12f053add499b1ead8a5"
+  },
+  {
+   "path": "plonkish/plonkish_sm2_probe/src/sm2_z_anchor.rs",
+   "bytes": 14419,
+   "sm3": "b725a7473d6d285ba38bf34e8a61a93c917bf1110559b555aed9a1408bc4c09d"
+  },
+  {
+   "path": "plonkish/plonkish_sm2_probe/src/sm3_compress.rs",
+   "bytes": 92933,
+   "sm3": "c27177bab20e79dc59670488351f959bc4c1acfdec1bf35268f88480f25031d9"
+  },
+  {
+   "path": "plonkish/plonkish_sm2_probe/src/sm3_compress_v2.rs",
+   "bytes": 137291,
+   "sm3": "cae31aafea05d73070dbeb9e5b4003cba2ac90f54494965ca82a952036441d08"
+  },
+  {
+   "path": "plonkish/plonkish_sm2_probe/src/sm3_gates.rs",
+   "bytes": 13455,
+   "sm3": "743cc8c198160225f262a94b51e11acff0f454f5751ba5001d2846db3b23ce37"
+  },
+  {
+   "path": "plonkish/plonkish_sm2_probe/src/sm3_lookup_block.rs",
+   "bytes": 38767,
+   "sm3": "0a8e21d0bf0e72491323c3e7391a62545a7fe8c11806d53491326d3dd4d679d5"
+  },
+  {
+   "path": "plonkish/plonkish_sm2_probe/src/sm3_lookup_mutation.rs",
+   "bytes": 10967,
+   "sm3": "a5990864a21fc55c178b6ba38c57cd05238f9a6d0302350366f01ac3bb4be00a"
+  },
+  {
+   "path": "plonkish/plonkish_sm2_probe/src/sm3_lookup_proto.rs",
+   "bytes": 15767,
+   "sm3": "3fa601a72380249bb67fbb666d26fdab25515c758754312468a964202d3b5b93"
+  },
+  {
+   "path": "plonkish/plonkish_sm2_probe/src/sm3_lookup_weave.rs",
+   "bytes": 31991,
+   "sm3": "9eb966037c6f30669a6bdc7b7d8cb79b195bc53f1cab6aae5c59d810bc2b188b"
+  },
+  {
+   "path": "plonkish/plonkish_sm2_probe/src/sm3_native_ref.rs",
+   "bytes": 6399,
+   "sm3": "9607d69c7ba6d43a7fa110db8cb50372085b6c3db360eed730928ad1a8c05e93"
+  },
+  {
+   "path": "plonkish/plonkish_sm2_probe/src/sm3_perm_smoke.rs",
+   "bytes": 6906,
+   "sm3": "986fed3c29f5d335a9d044811088d4d87c65ee65c5c0e90e85fd03d9cf37ba2d"
+  },
+  {
+   "path": "plonkish/plonkish_sm2_probe/src/smt_weave.rs",
+   "bytes": 24636,
+   "sm3": "d6cbb2a99de543c995d73e240e3232bbf99dddc07819f241eb3c8535b0d6feee"
+  },
+  {
+   "path": "plonkish/plonkish_sm2_probe/src/trail_host.rs",
+   "bytes": 13906,
+   "sm3": "e6a34d131b4381e3cf594e9258fab65077c009530d10074e17a2f24015d839c0"
+  },
+  {
+   "path": "plonkish/plonkish_sm2_probe/src/trail_weave.rs",
+   "bytes": 32447,
+   "sm3": "620c66853e1ebb59539ea21b96cb8b8431a079ad194763192f104771673c75dd"
+  },
+  {
+   "path": "plonkish/plonkish_sm2_probe/tests/auth_golden_vector.json",
+   "bytes": 4088,
+   "sm3": "ef5cb22f2a5fba29deefdf54cd42ce7a0b7232850a2a4457d52e1b62ca89da35"
+  },
+  {
+   "path": "plonkish/plonkish_sm2_probe/tests/trail_checkpoint_vector.json",
+   "bytes": 725,
+   "sm3": "71a2ebffa49b55d50dd749489517cbbf094c271d9fc874775434eb6bcbfbafee"
+  },
+  {
+   "path": "plonkish/plonkish_sm2_probe/tools/z_u_external_check.py",
+   "bytes": 2577,
+   "sm3": "a04a2654eba17996b313809497e267cb301c2359ec7b0b0ebcdf19b6cf407e4f"
+  },
+  {
+   "path": "plonkish/plonky2_util/Cargo.toml",
+   "bytes": 240,
+   "sm3": "6afdfb2b69ef1d091f201f018e2ae3bb2a3bc4049c2373ee0cba95d4b2a74f60"
+  },
+  {
+   "path": "plonkish/plonky2_util/LICENSE-APACHE",
+   "bytes": 10848,
+   "sm3": "13702366a3d6d569838aae6b5f4e08f807d95c05395a6bae9084f990cb2e4a05"
+  },
+  {
+   "path": "plonkish/plonky2_util/LICENSE-MIT",
+   "bytes": 1086,
+   "sm3": "547080764bef103808a0bd2ec68bba444957932c4f317a2e9af346c66f19dd50"
+  },
+  {
+   "path": "plonkish/plonky2_util/src/lib.rs",
+   "bytes": 14391,
+   "sm3": "3e89ce8f03f07f51a49f19ccc3f82d747c2671635b661175109af5badcf52d45"
+  },
+  {
+   "path": "plonkish/plonky2_util/src/transpose_util.rs",
+   "bytes": 4058,
+   "sm3": "ee9a01d87b97463cf4d24089bd9729ea90256795c5af59c0a2af9bfb5d47d751"
+  },
+  {
+   "path": "plonkish/README.md",
+   "bytes": 1,
+   "sm3": "f4051d239b766c4111e92979aa31af0b35def053646e347bc41e8b73cfd080bc"
+  },
+  {
+   "path": "plonkish/rust-toolchain.toml",
+   "bytes": 55,
+   "sm3": "49d44e4a28d6af26aab05a085b691be21bde1d1b686f1ad9a0a9d9c9e94b3e90"
+  }
+ ]
+}

@@ -1,0 +1,1 @@
+cd /root && (git clone --depth 1 https://github.com/ardupilot/ardupilot.git ardupilot > ap_clone.log 2>&1 && cd ardupilot && git submodule update --init --depth 1 modules/mavlink modules/waf >> ap_clone.log 2>&1 && echo AP_CLONE_DONE >> ap_clone.log) &

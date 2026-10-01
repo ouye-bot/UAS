@@ -1,0 +1,5 @@
+# 本机部署路径配置模板：复制为 .local_env（gitignore，不会上传）并按实际部署修改。
+# bash 脚本（demo_up/桥启动/链节点/SITL）会自动 source 本文件。
+# export FZ_UAS_WSL="/mnt/<盘>/你的部署路径/uas"
+# export FZ_TMP_WSL="/mnt/<盘>/临时目录（引擎钥/令牌文件所在）"
+# export FZ_ARCHIVE="/mnt/<盘>/归档目录（可选）"

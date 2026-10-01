@@ -1,0 +1,244 @@
+/* 通用控件样式（设计令牌驱动）——按钮/输入/面板/表格/拒绝盒 */
+.panel {
+  position: relative;
+  background: var(--panel);
+  border: var(--hairline);
+  border-radius: var(--r-lg);
+  padding: 20px 22px;
+  box-shadow: var(--shadow-1);
+  transition: box-shadow var(--t-med), transform var(--t-med), border-color var(--t-med);
+}
+/* 顶部内高光（视觉深化批 A：玻璃层叠质感——1px 白线贴合上缘） */
+.panel::before {
+  content: "";
+  position: absolute;
+  inset: 0 0 auto 0;
+  height: 1px;
+  border-radius: var(--r-lg) var(--r-lg) 0 0;
+  background: linear-gradient(90deg, transparent 4%, var(--hi-top) 50%, transparent 96%);
+  pointer-events: none;
+}
+.panel + .panel { margin-top: 16px; }
+/* hover 三联动（视觉深化批 A：上浮+边框微亮+阴影加深——回应感） */
+.panel:hover {
+  box-shadow: var(--shadow-2);
+  border-color: var(--line-strong);
+  transform: translateY(-1px);
+}
+.panel h2 {
+  font-size: var(--fs-3); margin: 0 0 4px; color: var(--ink); font-weight: 650;
+  display: flex; align-items: center; gap: 8px;
+}
+.panel .desc { font-size: var(--fs-1); color: var(--ink-3); margin: 0 0 14px; }
+
+label { display: block; font-size: var(--fs-0); color: var(--ink-2); margin: 10px 0 4px; letter-spacing: 0.2px; }
+input, select, textarea {
+  width: 100%; background: var(--panel-2); color: var(--ink);
+  border: var(--hairline); border-radius: var(--r-sm);
+  padding: 8px 10px; font: var(--fs-1)/1.5 var(--font-mono);
+  transition: border-color var(--t-fast), box-shadow var(--t-fast);
+}
+input:focus, select:focus, textarea:focus {
+  outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft);
+}
+.mono { font-family: var(--font-mono); }
+
+.btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+  position: relative; overflow: hidden;
+  border: 1px solid transparent; border-radius: var(--r-sm);
+  background: linear-gradient(180deg, #3d7bf0, var(--accent));
+  color: #fff; font-size: var(--fs-2); font-weight: 600;
+  padding: 8px 16px; cursor: pointer;
+  box-shadow: 0 1px 2px rgba(47, 111, 237, 0.35);
+  transition: transform var(--t-fast), box-shadow var(--t-fast), filter var(--t-fast);
+}
+/* 光泽掠过（视觉深化批 C：hover 时 200ms 一道斜向高光扫过——光从上掠过的暗示） */
+.btn::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(115deg, transparent 30%, rgba(255, 255, 255, 0.35) 50%, transparent 70%);
+  transform: translateX(-120%);
+  transition: transform 320ms var(--ease);
+  pointer-events: none;
+}
+.btn:hover::after { transform: translateX(120%); }
+.btn:disabled::after { display: none; }
+.btn:hover { filter: brightness(1.06); box-shadow: 0 3px 10px -2px rgba(47, 111, 237, 0.5); }
+.btn:active { transform: scale(0.98); }
+.btn:disabled { opacity: 0.55; cursor: not-allowed; transform: none; }
+.btn.ghost { background: var(--panel); color: var(--ink-2); border-color: var(--line-strong); box-shadow: none; }
+.btn.ghost:hover { color: var(--ink); border-color: var(--ink-3); }
+.btn.neg { background: var(--panel); color: var(--bad); border-color: #f2caca; box-shadow: none; }
+.btn.neg:hover { background: var(--bad-soft); border-color: var(--bad); }
+
+.tag {
+  display: inline-flex; align-items: center; gap: 5px;
+  font-size: 11px; padding: 1px 9px; border-radius: 999px;
+  border: 1px solid var(--line); color: var(--ink-2); background: var(--panel-2);
+}
+.tag.ok { color: var(--ok); background: var(--ok-soft); border-color: #bfe4d2; }
+.tag.bad { color: var(--bad); background: var(--bad-soft); border-color: #f2caca; }
+.tag.gold { color: var(--gold); background: var(--gold-soft); border-color: #e8dcb2; }
+.tag.accent { color: var(--accent-ink); background: var(--accent-soft); border-color: #c9dbfb; }
+
+.deny {
+  border: 1px solid #f2caca; background: var(--bad-soft); color: var(--bad);
+  border-radius: var(--r-sm); padding: 9px 12px; font-size: var(--fs-1);
+  margin-top: 10px; animation: fz-enter var(--t-med) both;
+}
+.deny .code { font-family: var(--font-mono); font-weight: 700; margin-right: 8px; }
+.deny .deny-msg { white-space: pre-line; }
+.note { font-size: var(--fs-0); color: var(--ink-3); }
+.kv { display: grid; grid-template-columns: 150px 1fr; gap: 4px 12px; font-size: var(--fs-1); }
+.kv dt { color: var(--ink-3); }
+.kv dd { margin: 0; font-family: var(--font-mono); overflow-wrap: break-word; }
+
+.grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; align-items: start; }
+@media (max-width: 980px) { .grid2 { grid-template-columns: 1fr; } }
+
+/* 表格行 hover 兜底（视觉深化批 C——未自写 hover 的 .tbl 视图统一吃到；
+   TrailView 等已有 scoped hover 的不受影响=同值） */
+.tbl tbody tr { transition: background var(--t-fast); }
+.tbl tbody tr:hover { background: rgba(28, 42, 58, 0.02); }
+
+/* 输入 shake（视觉深化批 C：无效提交一次性 180ms 抖动——DenyBox 出现时
+   由组件挂到当前焦点输入；仅 class+animation，零校验逻辑改动） */
+@keyframes fz-shake {
+  0%, 100% { transform: translateX(0); }
+  25% { transform: translateX(-3px); }
+  50% { transform: translateX(3px); }
+  75% { transform: translateX(-2px); }
+}
+.fz-shake { animation: fz-shake 180ms var(--ease) 1; border-color: var(--bad) !important; }
+.spin {
+  width: 14px; height: 14px; border-radius: 50%;
+  border: 2px solid var(--accent-soft); border-top-color: var(--accent);
+  animation: spin 0.8s linear infinite; display: inline-block;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* R3-C2（评审 P3-5）：键盘焦点可见性——按钮/卡片/链接全局覆盖 */
+button:focus-visible, a:focus-visible, input:focus-visible,
+select:focus-visible, textarea:focus-visible, summary:focus-visible {
+  outline: 2px solid var(--accent); outline-offset: 2px;
+}
+
+/* .gate（C-P1-6）：正常操作的"门槛"卡——与 DenyBox（真实拒绝）语义分离。
+   用于密码解锁/安全升级这类需要用户介入的正常流程。 */
+.gate {
+  background: var(--accent-soft);
+  border: var(--hairline);
+  border-left: 3px solid var(--accent);
+  border-radius: 10px;
+  padding: 12px 16px;
+  margin-bottom: 10px;
+}
+.gate .gate-title {
+  font-weight: 700;
+  margin: 0 0 6px;
+  color: var(--ink);
+}
+.gate input[type="password"],
+.gate input[type="text"] {
+  display: block;
+  width: 100%;
+}
+
+/* ---- 工作台共享视觉体系（2026-09-30 三台统一批：审计台/机构台/飞手端同语言
+   ——横幅+粒子+KPI+徽章。单一定义处，禁各视图手抄分叉。）---- */
+.fz-hero-band {
+  position: relative;
+  overflow: hidden;
+  border-radius: var(--r-lg);
+  border: var(--hairline);
+  background: linear-gradient(135deg, #f7f4ec 0%, #eef4f5 55%, #e9f0f7 100%);
+  padding: 26px 30px;
+  margin-bottom: 16px;
+}
+.fz-hero-inner { position: relative; z-index: 1; }
+.fz-hero-title { font-size: 22px; font-weight: 750; letter-spacing: 3px; color: var(--ink); }
+.fz-hero-sub { margin-top: 6px; font-size: 13px; color: var(--ink-2); letter-spacing: 1px; }
+.fz-kpi-row { display: flex; gap: 28px; margin-top: 18px; flex-wrap: wrap; }
+.fz-kpi { display: flex; flex-direction: column; gap: 2px; }
+.fz-kpi-n { font-size: 26px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.fz-kpi-n.amber { color: #b7791f; }
+.fz-kpi-n.blue { color: #3b6ea5; }
+.fz-kpi-n.teal { color: #2e8577; }
+.fz-kpi-n.gold { color: #8a6d2f; }
+.fz-kpi-n.red { color: #a33; }
+.fz-kpi-l { font-size: 12px; color: var(--ink-3); }
+
+.fz-badge {
+  display: inline-block;
+  font-size: 11.5px;
+  padding: 2.5px 10px;
+  border-radius: 999px;
+  white-space: nowrap;
+}
+/* 状态徽章呼吸（视觉深化批 C："活着的才呼吸"——进行中三态挂状态点，
+   终态（gold 已结案/red 驳回失败/gray）静态。fz-badge=状态专用、
+   fz-pill=标签用途，语义分离故不误伤。） */
+.fz-badge { position: relative; padding-left: 18px; }
+.fz-badge::before {
+  content: "";
+  position: absolute;
+  left: 8px; top: 50%;
+  width: 5px; height: 5px;
+  margin-top: -2.5px;
+  border-radius: 50%;
+  background: currentColor;
+  opacity: 0.85;
+}
+.fz-badge.amber::before, .fz-badge.blue::before, .fz-badge.teal::before {
+  animation: fz-pulse 2.4s infinite;
+}
+.fz-badge.amber { color: #b7791f; background: #faf3e3; }
+.fz-badge.blue { color: #3b6ea5; background: #ecf3fb; }
+.fz-badge.teal { color: #2e8577; background: #e8f4f1; }
+.fz-badge.gold { color: #8a6d2f; background: #f7f1e2; }
+.fz-badge.red { color: #a33; background: #faeaea; }
+.fz-badge.gray { color: var(--ink-3); background: var(--panel); border: 1px solid var(--line); }
+
+.fz-pill {
+  font-size: 11.5px;
+  padding: 3px 10px;
+  border-radius: 999px;
+  border: 1px solid transparent;
+}
+.fz-pill.amber { color: #b7791f; background: #faf3e3; border-color: #ecd9ae; }
+.fz-pill.blue { color: #3b6ea5; background: #ecf3fb; border-color: #c9dbf3; }
+.fz-pill.teal { color: #2e8577; background: #e8f4f1; border-color: #bfe0d9; }
+.fz-pill.gold { color: #8a6d2f; background: #f7f1e2; border-color: #e3d4ae; }
+.fz-pill.gray { color: var(--ink-3); background: var(--panel); border-color: var(--line); }
+
+/* ---- 仪表角标刻度（视觉深化批 A：取景框 L 形四角——挂 fz-hero-band/
+   证书卡等关键面板；纯 ::before/::after 双元素画四角，零 DOM 增量）---- */
+.fz-ticks {
+  position: relative;
+}
+.fz-ticks::before,
+.fz-ticks::after {
+  content: "";
+  position: absolute;
+  width: 9px;
+  height: 9px;
+  pointer-events: none;
+  opacity: 0.5;
+}
+.fz-ticks::before {
+  top: 7px; left: 7px;
+  border-top: 1.5px solid var(--ink-3);
+  border-left: 1.5px solid var(--ink-3);
+  border-top-left-radius: 3px;
+}
+.fz-ticks::after {
+  bottom: 7px; right: 7px;
+  border-bottom: 1.5px solid var(--ink-3);
+  border-right: 1.5px solid var(--ink-3);
+  border-bottom-right-radius: 3px;
+}
+/* hero-band 挂 fz-ticks 时用暖金描角（司法感） */
+.fz-hero-band.fz-ticks::before { border-color: #b89a55; }
+.fz-hero-band.fz-ticks::after { border-color: #b89a55; }

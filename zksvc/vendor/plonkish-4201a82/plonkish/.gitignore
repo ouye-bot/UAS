@@ -1,0 +1,5 @@
+# Rust build artifacts (never commit — multi-GB)
+target/
+# Local test outputs
+*.output
+auth_dead_cols.txt

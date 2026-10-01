@@ -1,0 +1,17 @@
+{
+  "_source": "GB/T 32918 验证方程五元组（溯源：旧系统 test_crypto_sm2.py 定谳——A.2 印刷 e 值不可由声明 (ID,M) 复现，此组实为论文栈 M2a 溯源五元组，内部数学一致+三实现对拍；来源 M0_sm3_circuit/sm2_verify_native.rs:117-121 + literature_review/M2a_SM2验签电路_实测.md 双源交叉 [核查 2026-09-01]）",
+  "verify_digest_vectors": [
+    {
+      "name": "M2a 五元组（pub,e,sig）",
+      "pub_hex": "09F9DF311E5421A150DD7D161E4BC5C672179FAD1833FC076BB08FF356F35020CCEA490CE26775A52DC6EA718CC1AA600AED05FBF35E084A6632F6072DA9AD13",
+      "e_hex": "ABF7EB631D94615FD1A941D40E99932DDB1899E1DFAE7179B4A79417EA3743E5",
+      "sig_hex": "88348A09A3E324C4FE946843123E40C175468F3E36481885844A144D2167EA4C0AD2CE552FD33EAB792E5A2805E0504D014C96135F8E03891087132ABB24D48D"
+    }
+  ],
+  "ts_parity_fixture": {
+    "_source": "2026-09-14 前端 sm-crypto doSignature(hash:true, 默认 userId) 对示例钥生成 [实测]；TS→Py 互操作方向锚（sm-crypto 升级漂移检测器）",
+    "pub_hex": "09f9df311e5421a150dd7d161e4bc5c672179fad1833fc076bb08ff356f35020ccea490ce26775a52dc6ea718cc1aa600aed05fbf35e084a6632f6072da9ad13",
+    "msg_hex": "595a542d534d322d5041524954592d564543544f52",
+    "sig_hex": "132205c0678b2225203337f4a4e0d175a5900816eabcb570016fc18af8701b93c6cbb9cbfb3b5c2db60479cb11a949445c9d35bb15d616212391a57775c266e2"
+  }
+}

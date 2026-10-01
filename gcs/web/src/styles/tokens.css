@@ -1,0 +1,142 @@
+/* 飞证设计令牌（B8）——淡雅端庄 + 科技气息。
+   原则：冷白基底/发丝边框/墨蓝字/单点缀青蓝+淡金辅色；动效克制而连续。 */
+
+:root {
+  /* 表面 */
+  --bg: #f6f8fb;
+  --bg-grad: radial-gradient(1200px 500px at 80% -10%, #eef3fb 0%, transparent 60%),
+    radial-gradient(900px 420px at -10% 110%, #f2f6f3 0%, transparent 55%);
+  /* 经纬网格底纹（空域图意象——3.5% 不透明度，纯装饰） */
+  --bg-grid: repeating-linear-gradient(0deg, rgba(28, 42, 58, 0.035) 0 1px, transparent 1px 32px),
+    repeating-linear-gradient(90deg, rgba(28, 42, 58, 0.035) 0 1px, transparent 1px 32px);
+  --panel: #ffffff;
+  --panel-2: #fbfcfe;
+  --line: #e4eaf1;
+  --line-strong: #d3dce7;
+  --ink: #1c2a3a;
+  --ink-2: #51637a;
+  --ink-3: #64748b;
+  --accent: #2f6fed;
+  --accent-ink: #1d4fc4;
+  --accent-soft: #eaf1fe;
+  --teal: #0e7490;
+  --gold: #a8862d;
+  --gold-soft: #f7f1df;
+  --ok: #2e9e6b;
+  --ok-soft: #e8f6ef;
+  --bad: #d64545;
+  --bad-soft: #fdeeee;
+  --warn: #c07f1f;
+  --warn-soft: #fdf3e2;
+
+  /* 表面阶梯（视觉深化批 A：分层玻璃质感——每级=底色+顶部内高光）。
+     --glass-hi 用于面板 ::before 顶部 1px 高光线（ rgba 白 0.6 级）。 */
+  --hi-top: rgba(255, 255, 255, 0.62);
+  --hi-top-soft: rgba(255, 255, 255, 0.4);
+  --shadow-float: 0 14px 34px -12px rgba(28, 42, 58, 0.2);
+
+  /* 字体 */
+  --font-ui: "Segoe UI", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+  --font-mono: ui-monospace, "Cascadia Code", Consolas, "JetBrains Mono", monospace;
+  --fs-0: 12px;
+  --fs-1: 13px;
+  --fs-2: 14px;
+  --fs-3: 16px;
+  --fs-4: 20px;
+
+  /* 几何 */
+  --r-sm: 6px;
+  --r-md: 10px;
+  --r-lg: 14px;
+  --shadow-1: 0 1px 2px rgba(28, 42, 58, 0.05);
+  --shadow-2: 0 6px 18px -6px rgba(28, 42, 58, 0.12);
+  --hairline: 1px solid var(--line);
+
+  /* 动效 */
+  --ease: cubic-bezier(0.22, 0.8, 0.3, 1);
+  --t-fast: 140ms var(--ease);
+  --t-med: 240ms var(--ease);
+  --t-slow: 360ms var(--ease); /* 仅路由过渡与 hero 入场——上限 400ms */
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  min-height: 100%;
+}
+
+body {
+  background: var(--bg);
+  background-image: var(--bg-grid), var(--bg-grad);
+  background-attachment: fixed;
+  color: var(--ink);
+  font-family: var(--font-ui);
+  font-size: var(--fs-2);
+  line-height: 1.65;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* 数值面精密化（视觉深化批 A）：等宽表格数字全局适用 */
+.tabular, .fz-kpi-n, td.mono, .kv dd {
+  font-variant-numeric: tabular-nums;
+}
+
+/* 细滚动条 + 选区色（视觉深化批 A——细节收口） */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(100, 116, 139, 0.3) transparent;
+}
+*::-webkit-scrollbar { width: 8px; height: 8px; }
+*::-webkit-scrollbar-thumb { background: rgba(100, 116, 139, 0.3); border-radius: 4px; }
+*::-webkit-scrollbar-thumb:hover { background: rgba(100, 116, 139, 0.45); }
+*::-webkit-scrollbar-track { background: transparent; }
+::selection { background: var(--accent-soft); color: var(--accent-ink); }
+
+/* —— 入场动效（页面/卡片级） —— */
+@keyframes fz-enter {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.fz-enter {
+  animation: fz-enter var(--t-med) both;
+}
+
+@keyframes fz-pulse {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 rgba(47, 111, 237, 0.35);
+  }
+  50% {
+    box-shadow: 0 0 0 5px rgba(47, 111, 237, 0);
+  }
+}
+
+@keyframes fz-stripes {
+  from {
+    background-position: 0 0;
+  }
+  to {
+    background-position: 28px 0;
+  }
+}

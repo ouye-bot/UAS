@@ -1,0 +1,4 @@
+# zksvc 工具链锚：论文栈 lib.rs 依赖 nightly 特性（portable_simd / stdarch_x86_avx512），
+# 与 probe_sm2_verify 运行口径（cargo +nightly-x86_64-pc-windows-msvc）一致。
+[toolchain]
+channel = "nightly-x86_64-pc-windows-msvc"

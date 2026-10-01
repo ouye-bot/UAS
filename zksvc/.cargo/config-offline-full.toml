@@ -1,0 +1,21 @@
+[source.crates-io]
+replace-with = "vendored-sources"
+
+[source."git+https://github.com/RustCrypto/block-modes"]
+git = "https://github.com/RustCrypto/block-modes"
+replace-with = "vendored-sources"
+
+[source."git+https://github.com/han0110/halo2.git"]
+git = "https://github.com/han0110/halo2.git"
+replace-with = "vendored-sources"
+
+[source."git+https://github.com/han0110/poseidon"]
+git = "https://github.com/han0110/poseidon"
+replace-with = "vendored-sources"
+
+[source."git+https://github.com/privacy-scaling-explorations/halo2curves"]
+git = "https://github.com/privacy-scaling-explorations/halo2curves"
+replace-with = "vendored-sources"
+
+[source.vendored-sources]
+directory = "vendor-reg"

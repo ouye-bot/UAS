@@ -1,0 +1,41 @@
+[project]
+name = "feizheng-backend"
+version = "0.1.0"
+description = "飞证 · 无人机隐私保护与审计系统 — 业务后端（RA/授权/审计三服务单体）"
+requires-python = ">=3.11"
+dependencies = [
+  "fastapi>=0.115,<1",
+  "uvicorn[standard]>=0.30",
+  "httpx>=0.27",
+  "gmssl==3.2.2",
+  "pymavlink>=2.4,<3",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.3",
+  "ruff==0.16.5",  # format 门禁对版本敏感（旧系统 SP-3 勘误 #E5），升级须显式全量重排
+]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["app*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+  "slow: 慢项（gmssl 回落引擎全量向量等）——默认门禁跳过；check_full 全量跑",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B"]
+ignore = [
+  "B008",  # FastAPI Depends 参数默认值=官方惯用法
+]

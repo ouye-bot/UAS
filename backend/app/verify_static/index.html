@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>飞证 · 验证工具分发</title>
+<style>
+:root {
+  --bg:#f6f8fb; --panel:#fff; --line:#e4eaf1; --line2:#d3dce7;
+  --ink:#1c2a3a; --ink2:#51637a; --ink3:#8496ab;
+  --acc:#2f6fed; --acc-ink:#1d4fc4; --acc-soft:#eaf1fe;
+  --teal:#0e7490; --ok:#2e9e6b; --ok-soft:#e8f6ef;
+  --mono:ui-monospace,"Cascadia Code",Consolas,monospace;
+  --ease:cubic-bezier(.22,.8,.3,1);
+}
+* { box-sizing:border-box; }
+html,body { margin:0; min-height:100%; }
+body {
+  background:var(--bg);
+  background-image:radial-gradient(1100px 460px at 85% -8%, #edf2fb 0%, transparent 58%);
+  background-attachment:fixed;
+  color:var(--ink); font:14px/1.65 "Segoe UI","PingFang SC","Microsoft YaHei",system-ui,sans-serif;
+  -webkit-font-smoothing:antialiased;
+}
+@keyframes enter { from { opacity:0; transform:translateY(6px); } to { opacity:1; transform:none; } }
+.enter { animation:enter .24s var(--ease) both; }
+header {
+  display:flex; align-items:center; gap:14px; flex-wrap:wrap;
+  padding:16px 26px; border-bottom:1px solid var(--line);
+  background:rgba(255,255,255,.75); backdrop-filter:blur(8px);
+  position:sticky; top:0; z-index:5;
+}
+.brand { font-size:19px; font-weight:700; letter-spacing:4px; }
+.brand::after { content:""; display:block; width:28px; height:3px; border-radius:2px; margin-top:4px;
+  background:linear-gradient(90deg,var(--acc),var(--teal)); }
+.sub { color:var(--ink2); font-size:13px; }
+main { max-width:980px; margin:0 auto; padding:26px 20px 60px; }
+section.panel {
+  background:var(--panel); border:1px solid var(--line); border-radius:14px;
+  padding:20px 22px; margin-bottom:18px;
+}
+h2 { font-size:15px; margin:0 0 12px; letter-spacing:1px; }
+h2 .n { color:var(--acc); font-family:var(--mono); margin-right:8px; }
+table { width:100%; border-collapse:collapse; font-size:13px; }
+th { text-align:left; color:var(--ink2); font-weight:600; border-bottom:1px solid var(--line2); padding:8px 10px; }
+td { padding:8px 10px; border-bottom:1px solid var(--line); vertical-align:top; }
+.mono { font-family:var(--mono); font-size:12px; word-break:break-all; }
+.hash { color:var(--ink2); }
+a.dl { color:var(--acc-ink); text-decoration:none; font-family:var(--mono); font-size:13px; }
+a.dl:hover { text-decoration:underline; }
+.note { color:var(--ink2); font-size:12.5px; margin:10px 0 0; }
+.tag { display:inline-block; padding:1px 9px; border-radius:99px; font-size:11.5px; margin-left:8px; vertical-align:1px; }
+.tag.ok { background:var(--ok-soft); color:var(--ok); }
+.tag.miss { background:#fdeeee; color:#d64545; }
+pre.cmd {
+  background:#0f1c2e; color:#d7e4f5; border-radius:10px; padding:14px 16px;
+  font-family:var(--mono); font-size:12.5px; line-height:1.75; overflow-x:auto; margin:10px 0 0;
+}
+pre.cmd .c { color:#7d93b5; }
+code { font-family:var(--mono); background:var(--acc-soft); border-radius:4px; padding:0 5px; font-size:12.5px; }
+#status { font-size:12.5px; color:var(--ink3); }
+</style>
+</head>
+<body>
+<header>
+  <div class="brand">飞证</div>
+  <div class="sub">验证工具分发——TRAIL 合规证书 / AUTH 证明的第三方独立复验</div>
+</header>
+<main>
+
+<section class="panel enter">
+  <h2><span class="n">01</span>分发产物（校验值按磁盘实物实时计算）</h2>
+  <table>
+    <thead><tr><th style="width:220px">文件</th><th style="width:90px">大小</th><th>SHA-256</th></tr></thead>
+    <tbody id="files"><tr><td colspan="3" id="status">读取校验值…</td></tr></tbody>
+  </table>
+  <p class="note">下载：<span class="mono">/verify/dist/&lt;文件名&gt;</span>（右键另存，或 curl -O）。
+  校验命令：<span class="mono">sha256sum -c SHA256SUMS.txt</span>（<a class="dl" href="/verify/dist/SHA256SUMS.txt">SHA256SUMS.txt</a>）。</p>
+</section>
+
+<section class="panel enter">
+  <h2><span class="n">02</span>供应链与链上公示</h2>
+  <table>
+    <tbody>
+      <tr><th style="width:220px">源码钉定</th><td>vendor 快照 <span class="mono">plonkish-4201a82</span>（148 文件，逐文件 SM3 清单+聚合摘要）</td></tr>
+      <tr><th>电路指纹（公示值）</th><td class="mono hash">SM3(4201a829…|a5714181…) = 17a90dc1b1518c1878d3cecb4236b37ed03ffeb0886418fb8390eeac02ac46e9</td></tr>
+      <tr><th>链上公示</th><td>FISCO BCOS FlightAuthRegistry.pinCircuit（tx <span class="mono">0x522a248d…</span>）——受理门控逐笔比对，漂移即拒</td></tr>
+      <tr><th>构建形态</th><td>zkc-linux-amd64：Ubuntu（WSL2）native 构建，构建源 vendor 树与官方钉定快照 <span class="mono">diff -rq</span> 逐位一致；<br>zkc.wasm：同源 wasm32-wasip1 编译（跨架构移植，GF(2^128) 双路实现+双路一致性测试）</td></tr>
+      <tr><th>随发声明面</th><td><a class="dl" href="/verify/dist/zksvc-build-manifest.json">zksvc-build-manifest.json</a>（钉定 commit/聚合摘要——与上表公示指纹同源）</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<section class="panel enter">
+  <h2><span class="n">03</span>第三方复验（两步）</h2>
+  <p class="note" style="margin-top:0">材料：任一授权的「留痕与 TRAIL」页下载的复验五件
+  （proof.bin / verifier_param.bin / instances.json / verdict.json / expected.json）。</p>
+  <pre class="cmd"><span class="c"># ① 校验工具完整性</span>
+sha256sum -c SHA256SUMS.txt
+<span class="c"># ② 独立验证（Linux x86-64；无需本系统任何服务在线）</span>
+export FZ_TRAIL_CANONICAL_SPEC=trail_canonical_spec.json   <span class="c"># 留痕页同处下载</span>
+export FZ_ZK_ALLOW_TRAIL=1
+chmod +x zkc-linux-amd64
+./zkc-linux-amd64 verify-instances \
+  --instances instances.json --proof proof.bin \
+  --vp verifier_param.bin --expected expected.json
+<span class="c"># 期望输出：zkc verify-instances: OK（篡改链头 → exit 2 拒绝）</span></pre>
+  <p class="note">wasm 档：<span class="mono">wasmtime run --dir .::/ --env …（同参）zkc.wasm verify-instances …</span>
+  ——完整配方见作品文档《性能档案》WASM 节。</p>
+</section>
+
+<section class="panel enter">
+  <h2><span class="n">04</span>边界声明</h2>
+  <p class="note" style="margin-top:0">
+  ① 本分发只含<strong>验证器</strong>（verify-instances）：验证不消费秘密见证与 vendor 源树，单二进制即可复验；
+  <strong>证明器（prove）不在分发面</strong>——证明在飞手本机桥接内完成，见证不出设备（隐私架构事实）。<br>
+  ② AUTH 证明的复验同口径（FZ_ZKSVC_DIR 指向完整工作区时 prove 面可用；纯验证不依赖）。<br>
+  ③ 分发产物与链上公示指纹由构建方一致性背书；第三方可用 <span class="mono">zksvc-build-manifest.json</span>
+  交叉核对钉定源（git archive 可复现同一快照）。
+  </p>
+</section>
+
+</main>
+<script>
+fetch('/verify/api/checks').then(r => r.json()).then(j => {
+  const rows = (j.data && j.data.artifacts || []).map(a => {
+    if (!a.sha256) return `<tr><td><a class="dl" href="/verify/dist/${a.name}">${a.name}</a><span class="tag miss">未生成</span></td><td>—</td><td class="mono hash">—</td></tr>`;
+    const kb = a.bytes >= 1048576 ? (a.bytes/1048576).toFixed(2)+' MB' : (a.bytes/1024).toFixed(1)+' KB';
+    return `<tr><td><a class="dl" href="/verify/dist/${a.name}">${a.name}</a></td><td class="mono">${kb}</td><td class="mono hash">${a.sha256}</td></tr>`;
+  }).join('');
+  document.getElementById('files').innerHTML = rows;
+}).catch(() => { document.getElementById('status').textContent = '校验值读取失败'; });
+</script>
+</body>
+</html>
