@@ -51,8 +51,12 @@ def setup_json_logging() -> None:
     root.addHandler(h)
 
 
-def new_request_id() -> str:
-    rid = secrets.token_hex(8)
+def new_request_id(inbound: str | None = None) -> str:
+    """rid 生成（2026-10-02 乙5 跨程追踪：入站 X-Request-ID 优先透传——桥/worker
+    调 backend 时携带自身 rid，追踪链在服务边界不断裂）。"""
+    rid = (inbound or secrets.token_hex(8)).strip()
+    if not rid:
+        rid = secrets.token_hex(8)
     request_id_var.set(rid)
     return rid
 
@@ -63,10 +67,16 @@ def inc(name: str, labels: dict[str, str] | None = None, value: float = 1) -> No
         _counters[key] = _counters.get(key, 0) + value
 
 
+_HISTOGRAM_CAP = 10_000  # 环窗上限（长时运行内存慢性泄漏防线——2026-10-02 乙5）
+
+
 def observe(name: str, value: float, labels: dict[str, str] | None = None) -> None:
     key = _series(name, labels)
     with _lock:
-        _histograms.setdefault(key, []).append(value)
+        series = _histograms.setdefault(key, [])
+        series.append(value)
+        if len(series) > _HISTOGRAM_CAP:
+            del series[: len(series) - _HISTOGRAM_CAP]  # 保最新样本（丢弃最旧）
 
 
 def gauge_snapshot() -> dict[str, float]:
@@ -78,9 +88,10 @@ def gauge_snapshot() -> dict[str, float]:
 
 
 def set_gauge(name: str, labels: dict[str, str] | None, value: float) -> None:
-    gauges = getattr(gauge_snapshot, "_gauges", {})
-    gauges[_series(name, labels)] = value
-    gauge_snapshot._gauges = gauges  # type: ignore[attr-defined]
+    with _lock:  # 与 gauge_snapshot 读侧同锁（2026-10-02 乙5：读写竞修复）
+        gauges = getattr(gauge_snapshot, "_gauges", {})
+        gauges[_series(name, labels)] = value
+        gauge_snapshot._gauges = gauges  # type: ignore[attr-defined]
 
 
 def _series(name: str, labels: dict[str, str] | None) -> str:
@@ -90,11 +101,33 @@ def _series(name: str, labels: dict[str, str] | None) -> str:
     return f"{name}{{{inner}}}"
 
 
+def _load_worker_gauges() -> dict[str, float]:
+    """worker 进程 gauges 共享文件读取（2026-10-02 乙5 归位——worker set_gauge
+    写本进程 dict 对 /metrics 不可见；改为文件介质跨进程合并）。"""
+    import json as _json
+    from pathlib import Path as _Path
+
+    try:
+        d = _Path(os.environ.get("FZ_ZK_CASES_DIR", "/tmp/fz-zk-cases")) / "worker_gauges.json"
+        if not d.is_file():
+            return {}
+        obj = _json.loads(d.read_text(encoding="utf-8"))
+        # 60s 新鲜度窗——过期视为 worker 离线（不渲染陈旧 gauge）
+        if time.time() - float(obj.get("ts", 0)) > 60:
+            return {}
+        return {k: float(v) for k, v in (obj.get("gauges") or {}).items()}
+    except Exception:  # noqa: BLE001
+        return {}
+
+
 def render_metrics() -> str:
     lines: list[str] = []
     with _lock:
         counters = dict(_counters)
         hists = {k: list(v) for k, v in _histograms.items()}
+    # worker 进程 gauges 跨进程合并（乙5 归位——60s 新鲜度窗）
+    for k, v in _load_worker_gauges().items():
+        counters.setdefault(k, v)
     for key, val in sorted(counters.items()):
         lines.append(f"{key} {val}")
     for key, samples in sorted(hists.items()):

@@ -355,6 +355,10 @@ pub(super) fn prove_zero_check<F: PrimeField>(
     y: Vec<F>,
     m_y: F,
     mask_poly: usize,
+    // A2（组合 A，2026-10-06）：开口列的掩蔽描述——(共享 m, (槽位, λ))。
+    // 声称值即时算：ṽ(r)=v(r)+λ·m(r)（evaluate_for_rotation 逐元素线性，
+    // 与物化 ṽ 的求值逐位同）。None=全明文（历史路径）。
+    mask: Option<(&MultilinearPolynomial<F>, &[(usize, F)])>,
     transcript: &mut impl FieldTranscriptWrite<F>,
 ) -> Result<(Vec<Vec<F>>, Vec<Evaluation<F>>), Error> {
     // D18 Phase 3（协议层 HVZK）：sumcheck 在【明文列 + m 列】世界求值（L1 由
@@ -421,13 +425,28 @@ pub(super) fn prove_zero_check<F: PrimeField>(
 
     let timer = start_timer(|| format!("evals-{}", pcs_query.len()));
     // 声称值全部取自开口世界（open_polys）：掩蔽列=ṽ 旋转点求值、公开列=本体。
+    // A2：掩蔽列即时算——v 与 m 分别求值后逐元素 v+λ·m（求值线性 ⟹ 与
+    // 物化 ṽ 的求值逐位同）。
     let evals = pcs_query
         .iter()
         .flat_map(|query| {
-            (point_offset[&query.rotation()]..).zip(
-                open_polys[query.poly()].evaluate_for_rotation(&x, query.rotation()),
-            )
-            .map(|(point, eval)| Evaluation::new(query.poly(), point, eval))
+            let plain = open_polys[query.poly()].evaluate_for_rotation(&x, query.rotation());
+            let vals = match mask.and_then(|(m, slots)| {
+                slots
+                    .iter()
+                    .find(|(s, _)| *s == query.poly())
+                    .map(|(_, l)| (m, *l))
+            }) {
+                Some((m, l)) => plain
+                    .into_iter()
+                    .zip(m.evaluate_for_rotation(&x, query.rotation()))
+                    .map(|(v, mi)| v + l * mi)
+                    .collect_vec(),
+                None => plain,
+            };
+            (point_offset[&query.rotation()]..)
+                .zip(vals)
+                .map(|(point, eval)| Evaluation::new(query.poly(), point, eval))
         })
         .collect_vec();
     end_timer(timer);

@@ -1,0 +1,1128 @@
+{
+ "schema_version": 1,
+ "run_id": "0227940fced8",
+ "suite": "perf",
+ "env": {
+  "timestamp": "2026-10-03T03:52:57",
+  "git_commit": "aa475d0",
+  "platform": "Windows-11-10.0.26200-SP0",
+  "python": "3.13.12",
+  "hostname": "蜡笔小新",
+  "cores": 16,
+  "ram_gb": 19.8,
+  "circuit": {
+   "name": "AUTH@2026-10 换代",
+   "constraints": 19578,
+   "proof_bytes": 22675632
+  },
+  "prove_max_concurrent": "1",
+  "chain_mode": "",
+  "percentile": "nearest-rank",
+  "warmup": "每档预热 1 次丢弃",
+  "prove_budget": {
+   "used": 0,
+   "cap": 6,
+   "note": "本轮前有两跑各耗 1 张完整预热张（中止于报告面）——预热语义已由其在同栈上的完整出证周期承担"
+  }
+ },
+ "summary": {
+  "total": 46,
+  "passed": 46,
+  "failed": 0,
+  "xfail": 0,
+  "environment_error": 0,
+  "pass_rate": 1.0,
+  "duration_s": 37.6,
+  "verdict": "success",
+  "aborted": false,
+  "abort_reason": "",
+  "attack_success": []
+ },
+ "modules": {
+  "P0_precheck": {
+   "display": "前置探活",
+   "passed": 1,
+   "failed": 0,
+   "xfail": 0,
+   "total": 1,
+   "items": [
+    {
+     "name": "P0 backend:8000 + bridge:8100(SITL) 在线",
+     "verdict": "pass",
+     "expected": "",
+     "actual": "",
+     "defense_ref": "",
+     "attack_success": false,
+     "latency_ms": null,
+     "detail": {
+      "healthz": "ok",
+      "bridge_mode": "sitl"
+     }
+    }
+   ]
+  },
+  "P3_crypto_micro": {
+   "display": "P3 密码操作微基准（进程内梯度）",
+   "passed": 20,
+   "failed": 0,
+   "xfail": 0,
+   "total": 20,
+   "items": [
+    {
+     "name": "P3 sm3_hash@1KB",
+     "verdict": "pass",
+     "expected": "",
+     "actual": "",
+     "defense_ref": "app/crypto/sm3.py",
+     "attack_success": false,
+     "latency_ms": 0.0,
+     "detail": {
+      "op": "sm3_hash@1KB",
+      "size": 1024,
+      "n": 200,
+      "p50_ms": 0.0,
+      "p95_ms": 0.0,
+      "p99_ms": 0.01,
+      "mean_ms": 0.0,
+      "mbps_p50": 221.9,
+      "engine": "openssl"
+     }
+    },
+    {
+     "name": "P3 sm3_hash@10KB",
+     "verdict": "pass",
+     "expected": "",
+     "actual": "",
+     "defense_ref": "app/crypto/sm3.py",
+     "attack_success": false,
+     "latency_ms": 0.03,
+     "detail": {
+      "op": "sm3_hash@10KB",
+      "size": 10240,
+      "n": 200,
+      "p50_ms": 0.03,
+      "p95_ms": 0.05,
+      "p99_ms": 0.06,
+      "mean_ms": 0.03,
+      "mbps_p50": 305.2,
+      "engine": "openssl"
+     }
+    },
+    {
+     "name": "P3 sm3_hash@100KB",
+     "verdict": "pass",
+     "expected": "",
+     "actual": "",
+     "defense_ref": "app/crypto/sm3.py",
+     "attack_success": false,
+     "latency_ms": 0.3,
+     "detail": {
+      "op": "sm3_hash@100KB",
+      "size": 102400,
+      "n": 200,
+      "p50_ms": 0.3,
+      "p95_ms": 0.36,
+      "p99_ms": 0.43,
+      "mean_ms": 0.31,
+      "mbps_p50": 322.7,
+      "engine": "openssl"
+     }
+    },
+    {
+     "name": "P3 sm4gcm_encrypt@1KB",
+     "verdict": "pass",
+     "expected": "",
+     "actual": "",
+     "defense_ref": "app/crypto/sm4.py",
+     "attack_success": false,
+     "latency_ms": 0.01,
+     "detail": {
+      "op": "sm4gcm_encrypt@1KB",
+      "size": 1024,
+      "n": 200,
+      "p50_ms": 0.01,
+      "p95_ms": 0.02,
+      "p99_ms": 0.02,
+      "mean_ms": 0.01,
+      "mbps_p50": 68.8,
+      "engine": "openssl"
+     }
+    },
+    {
+     "name": "P3 sm4gcm_encrypt@10KB",
+     "verdict": "pass",
+     "expected": "",
+     "actual": "",
+     "defense_ref": "app/crypto/sm4.py",
+     "attack_success": false,
+     "latency_ms": 0.08,
+     "detail": {
+      "op": "sm4gcm_encrypt@10KB",
+      "size": 10240,
+      "n": 200,
+      "p50_ms": 0.08,
+      "p95_ms": 0.09,
+      "p99_ms": 0.11,
+      "mean_ms": 0.08,
+      "mbps_p50": 128.8,
+      "engine": "openssl"
+     }
+    },
+    {
+     "name": "P3 sm4gcm_encrypt@100KB",
+     "verdict": "pass",
+     "expected": "",
+     "actual": "",
+     "defense_ref": "app/crypto/sm4.py",
+     "attack_success": false,
+     "latency_ms": 0.72,
+     "detail": {
+      "op": "sm4gcm_encrypt@100KB",
+      "size": 102400,
+      "n": 200,
+      "p50_ms": 0.72,
+      "p95_ms": 0.82,
+      "p99_ms": 1.02,
+      "mean_ms": 0.74,
+      "mbps_p50": 135.2,
+      "engine": "openssl"
+     }
+    },
+    {
+     "name": "P3 sm4gcm_decrypt@1KB",
+     "verdict": "pass",
+     "expected": "",
+     "actual": "",
+     "defense_ref": "app/crypto/sm4.py",
+     "attack_success": false,
+     "latency_ms": 0.01,
+     "detail": {
+      "op": "sm4gcm_decrypt@1KB",
+      "size": 1024,
+      "n": 200,
+      "p50_ms": 0.01,
+      "p95_ms": 0.02,
+      "p99_ms": 0.03,
+      "mean_ms": 0.01,
+      "mbps_p50": 68.8,
+      "engine": "openssl"
+     }
+    },
+    {
+     "name": "P3 sm4gcm_decrypt@10KB",
+     "verdict": "pass",
+     "expected": "",
+     "actual": "",
+     "defense_ref": "app/crypto/sm4.py",
+     "attack_success": false,
+     "latency_ms": 0.08,
+     "detail": {
+      "op": "sm4gcm_decrypt@10KB",
+      "size": 10240,
+      "n": 200,
+      "p50_ms": 0.08,
+      "p95_ms": 0.09,
+      "p99_ms": 0.1,
+      "mean_ms": 0.08,
+      "mbps_p50": 128.3,
+      "engine": "openssl"
+     }
+    },
+    {
+     "name": "P3 sm4gcm_decrypt@100KB",
+     "verdict": "pass",
+     "expected": "",
+     "actual": "",
+     "defense_ref": "app/crypto/sm4.py",
+     "attack_success": false,
+     "latency_ms": 0.76,
+     "detail": {
+      "op": "sm4gcm_decrypt@100KB",
+      "size": 102400,
+      "n": 200,
+      "p50_ms": 0.76,
+      "p95_ms": 0.91,
+      "p99_ms": 1.1,
+      "mean_ms": 0.78,
+      "mbps_p50": 128.4,
+      "engine": "openssl"
+     }
+    },
+    {
+     "name": "P3 sm2_sign@1KB",
+     "verdict": "pass",
+     "expected": "",
+     "actual": "",
+     "defense_ref": "app/crypto/sm2.py",
+     "attack_success": false,
+     "latency_ms": 3.83,
+     "detail": {
+      "op": "sm2_sign@1KB",
+      "size": 1024,
+      "n": 200,
+      "p50_ms": 3.83,
+      "p95_ms": 4.95,
+      "p99_ms": 5.79,
+      "mean_ms": 3.97,
+      "mbps_p50": 0.3,
+      "engine": "openssl"
+     }
+    },
+    {
+     "name": "P3 sm2_sign@10KB",
+     "verdict": "pass",
+     "expected": "",
+     "actual": "",
+     "defense_ref": "app/crypto/sm2.py",
+     "attack_success": false,
+     "latency_ms": 3.86,
+     "detail": {
+      "op": "sm2_sign@10KB",
+      "size": 10240,
+      "n": 200,
+      "p50_ms": 3.86,
+      "p95_ms": 5.27,
+      "p99_ms": 6.17,
+      "mean_ms": 4.05,
+      "mbps_p50": 2.5,
+      "engine": "openssl"
+     }
+    },
+    {
+     "name": "P3 sm2_sign@100KB",
+     "verdict": "pass",
+     "expected": "",
+     "actual": "",
+     "defense_ref": "app/crypto/sm2.py",
+     "attack_success": false,
+     "latency_ms": 4.4,
+     "detail": {
+      "op": "sm2_sign@100KB",
+      "size": 102400,
+      "n": 200,
+      "p50_ms": 4.4,
+      "p95_ms": 6.76,
+      "p99_ms": 8.12,
+      "mean_ms": 4.83,
+      "mbps_p50": 22.2,
+      "engine": "openssl"
+     }
+    },
+    {
+     "name": "P3 sm2_verify@1KB",
+     "verdict": "pass",
+     "expected": "",
+     "actual": "",
+     "defense_ref": "app/crypto/sm2.py",
+     "attack_success": false,
+     "latency_ms": 0.31,
+     "detail": {
+      "op": "sm2_verify@1KB",
+      "size": 1024,
+      "n": 200,
+      "p50_ms": 0.31,
+      "p95_ms": 0.43,
+      "p99_ms": 0.55,
+      "mean_ms": 0.32,
+      "mbps_p50": 3.2,
+      "engine": "openssl"
+     }
+    },
+    {
+     "name": "P3 sm2_verify@10KB",
+     "verdict": "pass",
+     "expected": "",
+     "actual": "",
+     "defense_ref": "app/crypto/sm2.py",
+     "attack_success": false,
+     "latency_ms": 0.34,
+     "detail": {
+      "op": "sm2_verify@10KB",
+      "size": 10240,
+      "n": 200,
+      "p50_ms": 0.34,
+      "p95_ms": 0.47,
+      "p99_ms": 0.56,
+      "mean_ms": 0.36,
+      "mbps_p50": 29.0,
+      "engine": "openssl"
+     }
+    },
+    {
+     "name": "P3 sm2_verify@100KB",
+     "verdict": "pass",
+     "expected": "",
+     "actual": "",
+     "defense_ref": "app/crypto/sm2.py",
+     "attack_success": false,
+     "latency_ms": 0.62,
+     "detail": {
+      "op": "sm2_verify@100KB",
+      "size": 102400,
+      "n": 200,
+      "p50_ms": 0.62,
+      "p95_ms": 0.88,
+      "p99_ms": 1.17,
+      "mean_ms": 0.67,
+      "mbps_p50": 157.3,
+      "engine": "openssl"
+     }
+    },
+    {
+     "name": "P3 derive_kek@21000轮",
+     "verdict": "pass",
+     "expected": "",
+     "actual": "",
+     "defense_ref": "app/accounts/kdf.py",
+     "attack_success": false,
+     "latency_ms": 26.28,
+     "detail": {
+      "op": "derive_kek@21000轮",
+      "size": 64,
+      "n": 200,
+      "p50_ms": 26.28,
+      "p95_ms": 35.4,
+      "p99_ms": 43.37,
+      "mean_ms": 27.61,
+      "mbps_p50": 0.0,
+      "engine": "openssl",
+      "samples_actual": 200,
+      "note": "样本数=200 达标"
+     }
+    },
+    {
+     "name": "P3 derive_auth_r@challenge32",
+     "verdict": "pass",
+     "expected": "",
+     "actual": "",
+     "defense_ref": "zksvc sm2_auth_assemble.rs:87（Python 镜像基准）",
+     "attack_success": false,
+     "latency_ms": 0.0,
+     "detail": {
+      "op": "derive_auth_r@challenge32",
+      "size": 45,
+      "n": 200,
+      "p50_ms": 0.0,
+      "p95_ms": 0.0,
+      "p99_ms": 0.0,
+      "mean_ms": 0.0,
+      "mbps_p50": 35.8,
+      "engine": "openssl",
+      "note": "mod n 省略（<1µs 整数运算）——构造同源口径"
+     }
+    },
+    {
+     "name": "P3 ANOMALY 扫描：无（各梯度族相邻档无 >3× 退化）",
+     "verdict": "pass",
+     "expected": "",
+     "actual": "",
+     "defense_ref": "",
+     "attack_success": false,
+     "latency_ms": null,
+     "detail": {
+      "rule": "大档吞吐 < 小档 1/3 即标异变；固定开销摊销型上升属预期，已给出归因"
+     }
+    },
+    {
+     "name": "P3 摊销形态归因：sm2_sign: 每次调用固定开销主导小档（P50@1KB=3.83ms），大输入摊销后 MB/s 单调上升（0.3→22 MB/s）——",
+     "verdict": "pass",
+     "expected": "",
+     "actual": "",
+     "defense_ref": "perf_suite P3 异变归因规则",
+     "attack_success": false,
+     "latency_ms": null,
+     "detail": {
+      "explained": "sm2_sign: 每次调用固定开销主导小档（P50@1KB=3.83ms），大输入摊销后 MB/s 单调上升（0.3→22 MB/s）——预期形态，已归因"
+     }
+    },
+    {
+     "name": "P3 摊销形态归因：sm2_verify: 每次调用固定开销主导小档（P50@1KB=0.31ms），大输入摊销后 MB/s 单调上升（3.2→157 MB/s",
+     "verdict": "pass",
+     "expected": "",
+     "actual": "",
+     "defense_ref": "perf_suite P3 异变归因规则",
+     "attack_success": false,
+     "latency_ms": null,
+     "detail": {
+      "explained": "sm2_verify: 每次调用固定开销主导小档（P50@1KB=0.31ms），大输入摊销后 MB/s 单调上升（3.2→157 MB/s）——预期形态，已归因"
+     }
+    }
+   ]
+  },
+  "P1_prove_pipeline": {
+   "display": "P1 串行闸出证管线（侧车回放）",
+   "passed": 11,
+   "failed": 0,
+   "xfail": 0,
+   "total": 11,
+   "items": [
+    {
+     "name": "P1 四元组（吞吐/端到端分位/平均装配段/峰值 RSS）",
+     "verdict": "pass",
+     "expected": "",
+     "actual": "",
+     "defense_ref": "docs/性能档案.md 判决行（baseline_refs）",
+     "attack_success": false,
+     "latency_ms": 83847.54,
+     "detail": {
+      "throughput_per_min": 0.62,
+      "e2e": {
+       "n": 4,
+       "p50_ms": 83847.54,
+       "p95_ms": 99812.21,
+       "p99_ms": 99812.21,
+       "mean_ms": 87157.58
+      },
+      "queue_mean_s": 2.2,
+      "peak_rss_mb": 217.7,
+      "source_note": "数据源=真跑侧车 perf-prove-sidecar-e8e95ee7c58e.json（source_run=e8e95ee7c58e，created=2026-10-03T03:46:22）；精度以侧车 precision 字段为准",
+      "note": "吞吐墙钟=实测流首提交→末 ARM（预热张不计）；排队口径：本构建桥闸=拒绝式（429 prove_busy），无 queued 态——排队=客户端闸等待(429 重试)+装配段（提交→进入 proving）",
+      "budget_used": 4,
+      "budget_cap": 6
+     }
+    },
+    {
+     "name": "P1 run0 出证完成（提交→done 100s）",
+     "verdict": "pass",
+     "expected": "",
+     "actual": "",
+     "defense_ref": "",
+     "attack_success": false,
+     "latency_ms": 99812.2078999877,
+     "detail": {
+      "submit_ms": 57.0,
+      "gate_wait_s": 0.1,
+      "submit_retries": 0,
+      "assemble_s": 2.1,
+      "prove_s": 97.7,
+      "apply_ms": 286.2,
+      "worker_ms": 5036.0,
+      "fetch_ms": 25.4,
+      "arm_ms": 4069.6,
+      "complete": true,
+      "gate_probe": "429@51ms"
+     }
+    },
+    {
+     "name": "P1 run1 出证完成（提交→done 84s）",
+     "verdict": "pass",
+     "expected": "",
+     "actual": "",
+     "defense_ref": "",
+     "attack_success": false,
+     "latency_ms": 83877.89479992352,
+     "detail": {
+      "submit_ms": 56.7,
+      "gate_wait_s": 0.1,
+      "submit_retries": 0,
+      "assemble_s": 2.1,
+      "prove_s": 81.7,
+      "apply_ms": 374.6,
+      "worker_ms": 3048.5,
+      "fetch_ms": 20.9,
+      "arm_ms": 4052.5,
+      "complete": true,
+      "gate_probe": "429@55ms"
+     }
+    },
+    {
+     "name": "P1 run2 出证完成（提交→done 84s）",
+     "verdict": "pass",
+     "expected": "",
+     "actual": "",
+     "defense_ref": "",
+     "attack_success": false,
+     "latency_ms": 83847.54380001687,
+     "detail": {
+      "submit_ms": 53.0,
+      "gate_wait_s": 0.1,
+      "submit_retries": 0,
+      "assemble_s": 2.2,
+      "prove_s": 81.6,
+      "apply_ms": 321.5,
+      "worker_ms": 3037.3,
+      "fetch_ms": 25.1,
+      "arm_ms": 4036.7,
+      "complete": true,
+      "gate_probe": "429@46ms"
+     }
+    },
+    {
+     "name": "P1 run3 出证完成（提交→done 81s）",
+     "verdict": "pass",
+     "expected": "",
+     "actual": "",
+     "defense_ref": "",
+     "attack_success": false,
+     "latency_ms": 81092.6869000541,
+     "detail": {
+      "submit_ms": 36.8,
+      "gate_wait_s": 0.0,
+      "submit_retries": 0,
+      "assemble_s": 2.1,
+      "prove_s": 79.0,
+      "apply_ms": 284.8,
+      "worker_ms": 4143.8,
+      "fetch_ms": 22.2,
+      "arm_ms": 3931.7,
+      "complete": true,
+      "gate_probe": "429@36ms"
+     }
+    },
+    {
+     "name": "P1 串行闸在位 run0（429 prove_busy 拒绝式）",
+     "verdict": "pass",
+     "expected": "",
+     "actual": "",
+     "defense_ref": "gcs/bridge/prover.py start_prove",
+     "attack_success": false,
+     "latency_ms": 51.1,
+     "detail": {
+      "probe_ms": 51.1,
+      "note": "闸 env 在桥进程读取（L79 _PROVE_MAX）——backend 无此闸"
+     }
+    },
+    {
+     "name": "P1 串行闸在位 run1（429 prove_busy 拒绝式）",
+     "verdict": "pass",
+     "expected": "",
+     "actual": "",
+     "defense_ref": "gcs/bridge/prover.py start_prove",
+     "attack_success": false,
+     "latency_ms": 55.1,
+     "detail": {
+      "probe_ms": 55.1,
+      "note": "闸 env 在桥进程读取（L79 _PROVE_MAX）——backend 无此闸"
+     }
+    },
+    {
+     "name": "P1 串行闸在位 run2（429 prove_busy 拒绝式）",
+     "verdict": "pass",
+     "expected": "",
+     "actual": "",
+     "defense_ref": "gcs/bridge/prover.py start_prove",
+     "attack_success": false,
+     "latency_ms": 45.9,
+     "detail": {
+      "probe_ms": 45.9,
+      "note": "闸 env 在桥进程读取（L79 _PROVE_MAX）——backend 无此闸"
+     }
+    },
+    {
+     "name": "P1 串行闸在位 run3（429 prove_busy 拒绝式）",
+     "verdict": "pass",
+     "expected": "",
+     "actual": "",
+     "defense_ref": "gcs/bridge/prover.py start_prove",
+     "attack_success": false,
+     "latency_ms": 36.5,
+     "detail": {
+      "probe_ms": 36.5,
+      "note": "闸 env 在桥进程读取（L79 _PROVE_MAX）——backend 无此闸"
+     }
+    },
+    {
+     "name": "P1 分步耗时占比（实测均值）",
+     "verdict": "pass",
+     "expected": "",
+     "actual": "",
+     "defense_ref": "",
+     "attack_success": false,
+     "latency_ms": null,
+     "detail": {
+      "share_table": [
+       {
+        "step": "注册(RA 承诺·真链)",
+        "avg_ms": 574.7,
+        "share_pct": 0.6,
+        "n": 4
+       },
+       {
+        "step": "子凭证(出示钥签发)",
+        "avg_ms": 47.2,
+        "share_pct": 0.0,
+        "n": 4
+       },
+       {
+        "step": "绑定面",
+        "avg_ms": 10.3,
+        "share_pct": 0.0,
+        "n": 4
+       },
+       {
+        "step": "出证提交(受理)",
+        "avg_ms": 50.9,
+        "share_pct": 0.1,
+        "n": 4
+       },
+       {
+        "step": "闸等待(争用排队)",
+        "avg_ms": 50.9,
+        "share_pct": 0.1,
+        "n": 4
+       },
+       {
+        "step": "出证(装配+证明)",
+        "avg_ms": 87157.6,
+        "share_pct": 90.7,
+        "n": 4
+       },
+       {
+        "step": "受理(apply)",
+        "avg_ms": 316.8,
+        "share_pct": 0.3,
+        "n": 4
+       },
+       {
+        "step": "worker 验证",
+        "avg_ms": 3816.4,
+        "share_pct": 4.0,
+        "n": 4
+       },
+       {
+        "step": "取件(ECIES+验签)",
+        "avg_ms": 23.4,
+        "share_pct": 0.0,
+        "n": 4
+       },
+       {
+        "step": "ARM",
+        "avg_ms": 4022.6,
+        "share_pct": 4.2,
+        "n": 4
+       },
+       {
+        "step": "口径",
+        "avg_ms": 96070.7,
+        "share_pct": 100.0,
+        "n": 4,
+        "note": "分母=全在案步骤均值和（10/10 步全在案）"
+       }
+      ]
+     }
+    },
+    {
+     "name": "P1 baseline 对拍（vs 档案 75~90s）",
+     "verdict": "pass",
+     "expected": "",
+     "actual": "",
+     "defense_ref": "docs/性能档案.md [实测 2026-09-27] 端到端实弹判决行：桥接本机出证 75s；[实测 2026-09-26] 全程 257s/出证 90s；UI 口径保守化注记 75~90s",
+     "attack_success": false,
+     "latency_ms": 83847.54,
+     "detail": {
+      "p50_s": 83.8,
+      "deviation_pct": 1.6
+     }
+    }
+   ]
+  },
+  "P5_e2e_flow": {
+   "display": "P5 端到端账单（侧车回放）",
+   "passed": 1,
+   "failed": 0,
+   "xfail": 0,
+   "total": 1,
+   "items": [
+    {
+     "name": "P5 分步占比表（注册→子凭证→绑定→提交→出证→受理→worker→取件→ARM）",
+     "verdict": "pass",
+     "expected": "",
+     "actual": "",
+     "defense_ref": "",
+     "attack_success": false,
+     "latency_ms": null,
+     "detail": {
+      "share_table": [
+       {
+        "step": "注册(RA 承诺·真链)",
+        "avg_ms": 574.7,
+        "share_pct": 0.6,
+        "n": 4
+       },
+       {
+        "step": "子凭证(出示钥签发)",
+        "avg_ms": 47.2,
+        "share_pct": 0.0,
+        "n": 4
+       },
+       {
+        "step": "绑定面",
+        "avg_ms": 10.3,
+        "share_pct": 0.0,
+        "n": 4
+       },
+       {
+        "step": "出证提交(受理)",
+        "avg_ms": 50.9,
+        "share_pct": 0.1,
+        "n": 4
+       },
+       {
+        "step": "闸等待(争用排队)",
+        "avg_ms": 50.9,
+        "share_pct": 0.1,
+        "n": 4
+       },
+       {
+        "step": "出证(装配+证明)",
+        "avg_ms": 87157.6,
+        "share_pct": 90.7,
+        "n": 4
+       },
+       {
+        "step": "受理(apply)",
+        "avg_ms": 316.8,
+        "share_pct": 0.3,
+        "n": 4
+       },
+       {
+        "step": "worker 验证",
+        "avg_ms": 3816.4,
+        "share_pct": 4.0,
+        "n": 4
+       },
+       {
+        "step": "取件(ECIES+验签)",
+        "avg_ms": 23.4,
+        "share_pct": 0.0,
+        "n": 4
+       },
+       {
+        "step": "ARM",
+        "avg_ms": 4022.6,
+        "share_pct": 4.2,
+        "n": 4
+       },
+       {
+        "step": "口径",
+        "avg_ms": 96070.7,
+        "share_pct": 100.0,
+        "n": 4,
+        "note": "分母=全在案步骤均值和（10/10 步全在案）"
+       }
+      ],
+      "n_flows": 4,
+      "prove_share_pct": 90.7,
+      "verdict_note": "出证占比 >60%——串行闸代价量化成立",
+      "coverage_note": "数据源=真跑侧车 perf-prove-sidecar-e8e95ee7c58e.json（source_run=e8e95ee7c58e，created=2026-10-03T03:46:22）；精度以侧车 precision 字段为准"
+     }
+    }
+   ]
+  },
+  "P4_chain_rpc": {
+   "display": "P4 链 RPC 面（真链读面）",
+   "passed": 4,
+   "failed": 0,
+   "xfail": 0,
+   "total": 4,
+   "items": [
+    {
+     "name": "P4 原始链 RPC getBlockNumber n=60（8545——backend 同款读路径）",
+     "verdict": "pass",
+     "expected": "",
+     "actual": "",
+     "defense_ref": "app/chain/client.py ChainClient.rpc",
+     "attack_success": false,
+     "latency_ms": 15.47,
+     "detail": {
+      "n": 60,
+      "p50_ms": 15.47,
+      "p95_ms": 16.47,
+      "p99_ms": 17.7,
+      "mean_ms": 14.34,
+      "rpc_url": "http://127.0.0.1:8545"
+     }
+    },
+    {
+     "name": "P4 GET /chain/panel n=60（客户端面·链面 TTL3s 缓存语义在列）",
+     "verdict": "pass",
+     "expected": "",
+     "actual": "",
+     "defense_ref": "app/chain/panel.py",
+     "attack_success": false,
+     "latency_ms": 17.57,
+     "detail": {
+      "n": 60,
+      "p50_ms": 17.57,
+      "p95_ms": 31.74,
+      "p99_ms": 36.25,
+      "mean_ms": 18.11,
+      "block_height_last": 6317,
+      "height_monotonic_nondecreasing": true,
+      "chain_error_n": 0
+     }
+    },
+    {
+     "name": "P4 GET /chain/record/233 n=30（判决件链上原文回读）",
+     "verdict": "pass",
+     "expected": "",
+     "actual": "",
+     "defense_ref": "app/chain/panel.py record_detail",
+     "attack_success": false,
+     "latency_ms": 23.13,
+     "detail": {
+      "n": 30,
+      "p50_ms": 23.13,
+      "p95_ms": 32.66,
+      "p99_ms": 33.35,
+      "mean_ms": 21.62
+     }
+    },
+    {
+     "name": "P4 写面（引用档案判决行——本轮不重造）",
+     "verdict": "pass",
+     "expected": "",
+     "actual": "",
+     "defense_ref": "docs/性能档案.md [实测 2026-09-27] 服务器窗·新电路四元组判决行：AUTH 服务器判决 25.14s",
+     "attack_success": false,
+     "latency_ms": null,
+     "detail": {
+      "baseline_ref": "docs/性能档案.md [实测 2026-09-27] 服务器窗·新电路四元组判决行：AUTH 服务器判决 25.14s",
+      "note": "写面成本已在性能档案定谳；本轮 P1 出证段即真实写面的端到端见证"
+     }
+    }
+   ]
+  },
+  "P6_resources": {
+   "display": "P6 资源观测+最大安全并发结论",
+   "passed": 3,
+   "failed": 0,
+   "xfail": 0,
+   "total": 3,
+   "items": [
+    {
+     "name": "P6 P1 段采样曲线汇总（backend+bridge+worker+zkc 聚合，1s 粒度）",
+     "verdict": "pass",
+     "expected": "",
+     "actual": "",
+     "defense_ref": "",
+     "attack_success": false,
+     "latency_ms": null,
+     "detail": {
+      "samples": 220,
+      "peak_rss_mb": 217.7,
+      "avg_rss_mb": 91.6,
+      "win_peak_rss_mb": 152.5,
+      "wsl_peak_rss_mb": 68.4,
+      "topology": {
+       "backend_pid_8000": 22540,
+       "worker": "Windows app.zk.worker 全实例",
+       "bridge_zkc": "WSL（server:app + zkc，/proc 4s 粒度）",
+       "note": "拓扑自适应扩展：底盘 ProcessSampler 模式面在 WSL 桥形态下不可见桥/zkc——Windows 面（backend+worker）与 WSL 面（桥+zkc）聚合曲线"
+      },
+      "scope": "uvicorn(backend)+uvicorn(bridge)+app.zk.worker+zkc 进程聚合（压测客户端已排除）"
+     }
+    },
+    {
+     "name": "P6 zkc 采样面勘误 [实测-代码]：zkc.exe 为 Windows 进程（WSL 桥经 interop 生成——gcs/bridge/prover.py _prove_local）",
+     "verdict": "pass",
+     "expected": "",
+     "actual": "",
+     "defense_ref": "docs/性能档案.md L795 interop 判决行 + R1 内存归因探针 L581",
+     "attack_success": false,
+     "latency_ms": null,
+     "detail": {
+      "note": "内存大头在 Windows 侧 zkc.exe（档案 R1 探针：RSS 峰值 ~11-12GB@优化前；RAYON=12 缺省）——StackSampler Windows 面已纳入 zkc名匹配；本轮侧车曲线先于此勘误，聚合峰值 217.7MB 不含 zkc 窗口（口径如实标注，zkc 侧引用档案判决行）",
+      "upgrade_gate_note": "最大安全并发判据的 RSS 项须含 zkc 窗口面（下轮补扫起生效）"
+     }
+    },
+    {
+     "name": "P6 最大安全并发结论模板（本轮仅并发 1 档实测；2/4 档 pending）",
+     "verdict": "pass",
+     "expected": "",
+     "actual": "",
+     "defense_ref": "docs/性能档案.md + gcs/bridge/prover.py _PROVE_MAX",
+     "attack_success": false,
+     "latency_ms": null,
+     "detail": {
+      "rows": [
+       {
+        "concurrency": 1,
+        "status": "本轮实测",
+        "quad": {
+         "throughput_per_min": 0.62,
+         "e2e": {
+          "n": 4,
+          "p50_ms": 83847.54,
+          "p95_ms": 99812.21,
+          "p99_ms": 99812.21,
+          "mean_ms": 87157.58
+         },
+         "queue_mean_s": 2.2,
+         "peak_rss_mb": 217.7
+        }
+       },
+       {
+        "concurrency": 2,
+        "status": "pending（主会话重启窗口补扫——手册 §3）",
+        "quad": null
+       },
+       {
+        "concurrency": 4,
+        "status": "pending（主会话重启窗口补扫——手册 §3）",
+        "quad": null
+       }
+      ],
+      "upgrade_gate": "2/4 档补扫后 peak_rss ≤ 物理内存×0.7 且端到端 P95 退化 ≤30% 方可上调缺省并发",
+      "peak_rss_mb_c1": 217.7,
+      "rss_breakdown_c1": {
+       "win_backend_worker": 152.5,
+       "wsl_bridge_zkc": 68.4
+      },
+      "scope_note": "内存 6GB 级出证峰值主体在 zkc（WSL 面）；档案既有口径=出证内存 ~6GB/张——聚合峰值以 WSL 面实测为准"
+     }
+    }
+   ]
+  },
+  "P2_admission": {
+   "display": "P2 受理面吞吐（闭环并发+429 专项置尾）",
+   "passed": 6,
+   "failed": 0,
+   "xfail": 0,
+   "total": 6,
+   "items": [
+    {
+     "name": "P2 GET /healthz（8 线程×6s 闭环）",
+     "verdict": "pass",
+     "expected": "",
+     "actual": "",
+     "defense_ref": "",
+     "attack_success": false,
+     "latency_ms": 15.15,
+     "detail": {
+      "n": 2641,
+      "p50_ms": 15.15,
+      "p95_ms": 35.25,
+      "p99_ms": 43.69,
+      "mean_ms": 18.23,
+      "rps": 440.2,
+      "threads": 8,
+      "error_n": 0,
+      "errors_head": [],
+      "codes": {
+       "200": 2641
+      }
+     }
+    },
+    {
+     "name": "P2 GET /authz/healthz（8 线程×6s 闭环）",
+     "verdict": "pass",
+     "expected": "",
+     "actual": "",
+     "defense_ref": "",
+     "attack_success": false,
+     "latency_ms": 15.38,
+     "detail": {
+      "n": 2686,
+      "p50_ms": 15.38,
+      "p95_ms": 34.07,
+      "p99_ms": 37.45,
+      "mean_ms": 17.9,
+      "rps": 447.7,
+      "threads": 8,
+      "error_n": 0,
+      "errors_head": [],
+      "codes": {
+       "200": 2686
+      }
+     }
+    },
+    {
+     "name": "P2 GET /chain/panel（8 线程×6s 闭环）",
+     "verdict": "pass",
+     "expected": "",
+     "actual": "",
+     "defense_ref": "",
+     "attack_success": false,
+     "latency_ms": 42.54,
+     "detail": {
+      "n": 1090,
+      "p50_ms": 42.54,
+      "p95_ms": 61.05,
+      "p99_ms": 82.62,
+      "mean_ms": 44.16,
+      "rps": 181.7,
+      "threads": 8,
+      "error_n": 0,
+      "errors_head": [],
+      "codes": {
+       "200": 1090
+      }
+     }
+    },
+    {
+     "name": "P2 GET /ra/revocation/snapshot（8 线程×6s 闭环）",
+     "verdict": "pass",
+     "expected": "",
+     "actual": "",
+     "defense_ref": "",
+     "attack_success": false,
+     "latency_ms": 47.03,
+     "detail": {
+      "n": 998,
+      "p50_ms": 47.03,
+      "p95_ms": 66.64,
+      "p99_ms": 78.42,
+      "mean_ms": 48.15,
+      "rps": 166.3,
+      "threads": 8,
+      "error_n": 0,
+      "errors_head": [],
+      "codes": {
+       "200": 998
+      }
+     }
+    },
+    {
+     "name": "P2 GET /auth/prelogin（登录面·单账户限速窗全预算 n=10 时延）",
+     "verdict": "pass",
+     "expected": "",
+     "actual": "",
+     "defense_ref": "app/accounts/router.py prelogin_route（AttemptLimiter 同享）",
+     "attack_success": false,
+     "latency_ms": 18.1,
+     "detail": {
+      "n": 8,
+      "p50_ms": 18.1,
+      "p95_ms": 27.81,
+      "p99_ms": 27.81,
+      "mean_ms": 18.99,
+      "codes": {
+       "200": 8,
+       "429": 2
+      },
+      "note": "prelogin 限速=10 次/300s/账户（策略面）——聚合吞吐受策略封顶（设计即如此），压测形态=限速内时延测量；挑战面限速触发点见 429 专项"
+     }
+    },
+    {
+     "name": "P2 429 专项：限速触发点+429 时延（专用 perf 用户·窗 300s 自然恢复）",
+     "verdict": "pass",
+     "expected": "",
+     "actual": "",
+     "defense_ref": "app/accounts/service.py AttemptLimiter(max=10, window=300s)",
+     "attack_success": false,
+     "latency_ms": 5.14,
+     "detail": {
+      "trigger_attempt": 11,
+      "expected_attempt": 11,
+      "allowed_dist": {
+       "n": 10,
+       "p50_ms": 17.39,
+       "p95_ms": 39.46,
+       "p99_ms": 39.46,
+       "mean_ms": 17.98
+      },
+      "lat_429_dist": {
+       "n": 1,
+       "p50_ms": 5.14,
+       "p95_ms": 5.14,
+       "p99_ms": 5.14,
+       "mean_ms": 5.14
+      },
+      "note": "连发止于首个 429——不持续占用限速窗"
+     }
+    }
+   ]
+  }
+ }
+}

@@ -176,17 +176,21 @@ def trail_binding(
     chain_head_hex: str,
     session: Session = Depends(get_session),
 ):
-    """TRAIL 出证绑定（R4 复验 P0-1）：引擎钥对 (auth_id‖alt_max_cm‖chain_head)
-    出具 SM2 裸摘要签名（fold_be_integer 口径，与检查点验签同族）——轨迹证书的
-    高度上限由授权链路（政策×机型）权威供给，证明者不可自报。
+    """TRAIL 出证绑定（R4 复验 P0-1 + 二批 BIND2 扩域）：引擎钥对
+    (auth_id‖alt_max_cm‖chain_head‖围栏 4 界) 出具 SM2 裸摘要签名
+    （fold_be_integer 口径，与检查点验签同族）——轨迹证书的高度上限与
+    矩形围栏（TRAIL 电路 4 半平面合规门）由授权链路（政策×机型）权威
+    供给，证明者不可自报。
 
     alt_max 口径：政策当前值（get_rule(申请机型)）×100 cm——与 worker recordAuth
-    同一推导链；政策收紧后新绑定即按新限（保守方向）。X-Engine-Token 门禁。"""
+    同一推导链；围栏口径：get_fence(申请机型) i32×1e7（负值=南/西半球）。
+    报文版本 FZ-TRAIL-BIND2=域分隔（旧格式签名在新验证面结构性失效）。
+    X-Engine-Token 门禁。"""
     _require_engine_token(request)
     if len(chain_head_hex) != 64 or any(c not in "0123456789abcdefABCDEF" for c in chain_head_hex):
         raise HTTPException(status_code=400, detail="chain_head_hex 须 64 hex")
     from app.authz.models import Application, AuthRecord
-    from app.authz.policy import PolicyError, get_rule
+    from app.authz.policy import PolicyError, get_fence, get_rule
     from app.crypto.sm2 import sign_digest
     from app.crypto.sm3 import sm3_bytes
     from app.kms import engine_signing_keypair
@@ -199,6 +203,7 @@ def trail_binding(
         raise HTTPException(status_code=404, detail="授权对应申请不在案")
     try:
         alt_max_m, _required = get_rule(app_row.class_id)
+        min_lat, max_lat, min_lon, max_lon = get_fence(app_row.class_id)
     except PolicyError as e:
         raise HTTPException(status_code=403, detail=str(e)) from e
     alt_max_cm = alt_max_m * 100  # 单位契约：政策/令牌=meters，TRAIL 电路=cm
@@ -222,7 +227,10 @@ def trail_binding(
             "拒绝出具轨迹绑定（先完成飞行留痕锚定）",
         )
     head = chain_head_hex.lower()
-    msg = f"FZ-TRAIL-BIND|{auth_id}|{alt_max_cm}|{head}"
+    msg = (
+        f"FZ-TRAIL-BIND2|{auth_id}|{alt_max_cm}|{head}|"
+        f"{min_lat}|{max_lat}|{min_lon}|{max_lon}"
+    )
     sk, engine_pub = engine_signing_keypair()
     sig = sign_digest(sk, sm3_bytes(msg.encode()))
     anchor_evidence = {
@@ -238,6 +246,11 @@ def trail_binding(
             "auth_id": auth_id,
             "alt_max_cm": alt_max_cm,
             "chain_head_hex": head,
+            # 二批 BIND2：围栏 4 界（政策权威值——随绑定签名一并供给）
+            "min_lat": min_lat,
+            "max_lat": max_lat,
+            "min_lon": min_lon,
+            "max_lon": max_lon,
             "engine_pub_hex": engine_pub,
             "sig_hex": sig,
             "anchor_evidence": anchor_evidence,

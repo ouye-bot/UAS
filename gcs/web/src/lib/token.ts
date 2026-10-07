@@ -99,3 +99,11 @@ export function tokenPayloadHex(p: TokenPayload): string {
   const bytes = new TextEncoder().encode(p.body + "|" + p.sig);
   return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
 }
+
+/** 授权包配额（2026-10-06 多架次拍板）：耗尽判定（FlightView 解锁按钮/剩余
+ * 架次显色共用口径）。remaining 权威值在场=remaining<=0 耗尽；缺省（旧桥/
+ * 查询失败）=used 即耗尽（退化回令牌一次性原语义——零弱化兼容）。 */
+export function quotaExhausted(used: boolean, remaining: number | null): boolean {
+  if (!used) return false;
+  return remaining === null ? true : remaining <= 0;
+}

@@ -47,8 +47,9 @@ class _FakeClient:
 
 
 class _FakeFlightAuth:
-    """FlightAuthRegistry 替身：getAuth 11 元组按 proof_digest 回读
-    （call_fn 真实形态=11 值平铺列表——与 worker 读后写对拍消费同式）。"""
+    """FlightAuthRegistry 替身：getAuth 12 元组按 proof_digest 回读
+    （call_fn 真实形态=12 值平铺列表——与 worker 读后写对拍消费同式；
+    授权包配额制 2026-10-06：末位 remaining）。"""
 
     def __init__(self, proof_digest_hex: str):
         self._digest = bytes.fromhex(proof_digest_hex)
@@ -69,6 +70,7 @@ class _FakeFlightAuth:
             0,  # [8] status
             0,  # [9] revokeReason
             1790000100,  # [10] ts
+            1,  # [11] remaining（授权包配额）
         ]
 
 

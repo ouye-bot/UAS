@@ -15,7 +15,7 @@
 use plonkish_backend::util::expression::{Expression, Rotation};
 
 use crate::sm3_compress::Builder;
-use crate::sm3_lookup_block::{BlockBuilder, NUM_P, NUM_W, W_INPUT};
+use crate::sm3_lookup_block::{BlockBuilder, NUM_P, NUM_W};
 use crate::sm3_lookup_weave::{weave_core, LutPlan};
 use crate::sm3_native_ref;
 use crate::FpSM2;
@@ -247,7 +247,8 @@ pub fn weave_smt_alloc_cols(
     let sib_lanes: Vec<usize> = (0..SMT_DEPTH).map(|_| bld.alloc_col()).collect();
     let bit_lanes: Vec<usize> = (0..SMT_DEPTH).map(|_| bld.alloc_col()).collect();
     // EMPTY 预处理列：行 r_c = EMPTY 词 j limb k（c=half*64+j*8+k——半无关，
-    // cur 侧左右半同一 EMPTY 32B）；未消费行填 0
+    // cur 侧左右半同一 EMPTY 32B）；未消费行填 0。⑦代：msg 格物理行经 pack
+    // INPUT 带偏移（数据块 g 的组=offset+2g，组内行序保持）。
     let empty = empty_leaf();
     let mut empty_vals = vec![FpSM2::from(0u64); crate::sm3_compress::ROWS];
     for g in 0..SMT_DEPTH {
@@ -255,10 +256,11 @@ pub fn weave_smt_alloc_cols(
             for j in 0..8usize {
                 for k in 0..8usize {
                     let r = msg_words[g][half][j][k].row;
+                    let phys = plan.pack.input_row(offset + 2 * g, r);
                     let wv = u32::from_be_bytes(
                         empty[j * 4..j * 4 + 4].try_into().expect("界内"),
                     );
-                    empty_vals[r] = FpSM2::from(u64::from((wv >> (4 * k)) & 15));
+                    empty_vals[phys] = FpSM2::from(u64::from((wv >> (4 * k)) & 15));
                 }
             }
         }
@@ -271,8 +273,10 @@ pub fn weave_smt_alloc_cols(
     let mux_l_sels: Vec<usize> = (0..SMT_DEPTH).map(|_| bld.alloc_selector(&[])).collect();
     let mux_r_sels: Vec<usize> = (0..SMT_DEPTH).map(|_| bld.alloc_selector(&[])).collect();
     let fold_sel = bld.alloc_selector(&[]);
+    // ⑦代：mux 读口=SMT 数据组在 INPUT lane 带复用后的物理列（组内 128 行
+    // 连续带——两约束/块形态不变，仅行随 pack 偏移）。
     let msg_in_cols: Vec<usize> = (0..SMT_DEPTH)
-        .map(|g| plan.advice[offset + 2 * g][W_INPUT])
+        .map(|g| plan.pack.input_col(offset + 2 * g))
         .collect();
     SmtPlan {
         bit_cols,
@@ -302,22 +306,17 @@ pub fn weave_smt_wires(
     msg_words: &[[[crate::sm3_lookup_block::Word; 8]; 2]],
     out_cells: &[[crate::sm3_lookup_block::Word; 8]],
 ) {
-    let groups = circ.wit_u64.len() / NUM_W;
-    // SMT 组零 msg-limb 需求（lane 化）——sub 的 msg 面为空切片
-    let sub = LutPlan {
-        prep_globals: plan.prep_globals.clone(),
-        pconst_global: plan.pconst_global,
-        advice: plan.advice[offset..offset + groups].to_vec(),
-        msg_limb_cols: Vec::new(),
-        msg_sels: Vec::new(),
-        dgw_shadow_cols: plan.dgw_shadow_cols,
-        dgw_sels: plan.dgw_sels,
-    };
-    weave_core(bld, circ, &sub);
+    // ⑦代：SMT 组续接全语句组序（base=offset）——weave_core 直接消费全局
+    // pack（无 sub-plan 切片；SMT 组零 msg-limb 需求不进 pack msg 面）。
+    weave_core(bld, circ, plan, offset);
 
-    let vcol = |proto_col: usize| -> usize {
+    // proto 全局列 → pack 物理格（组号自列号派生——out_limb/digest_cells 的
+    // col 即 proto 全局号）。
+    let vcell = |proto_col: usize, r: usize| -> (usize, usize) {
         let rel = proto_col - NUM_P;
-        sub.advice[rel / NUM_W][rel % NUM_W]
+        plan.pack
+            .cell(offset + rel / NUM_W, rel % NUM_W, r)
+            .expect("SMT 环/摘要格必锚（pack 扫描面）")
     };
     let empty = empty_leaf();
 
@@ -327,9 +326,10 @@ pub fn weave_smt_wires(
             let col = sp.shadow_cols[k][j];
             let val = circ.wit_u64[limb.col - NUM_P][limb.row];
             bld.set_cell_f(col, w.row_rev, FpSM2::from(val));
-            let id = match bld.ring_of(vcol(limb.col), limb.row) {
+            let (lc, lr) = vcell(limb.col, limb.row);
+            let id = match bld.ring_of(lc, lr) {
                 Some(id) => id,
-                None => bld.begin_relay_col(vcol(limb.col), limb.row),
+                None => bld.begin_relay_col(lc, lr),
             };
             bld.relay_to_col(id, col, w.row_rev);
         }
@@ -337,8 +337,9 @@ pub fn weave_smt_wires(
 
     // mux lane 播种+环登记（全部在 PLAN 相——冻结守卫 backtrace 定谳）。
     // lane 布局：每块 cur/sib/bit 各 1 列，行=limb 语义（c=half*64+j*8+k 的
-    // msg 行 r_c），值按行播种——约束（emit 段 2 条/块）在本行读三 lane。
-    // 组序（B3b-d7 双块）：数据块 g 的组=sub 相对 2g；mux 面只覆盖数据块。
+    // msg 行 r_c 经 pack INPUT 带偏移），值按行播种——约束（emit 段 2 条/块）
+    // 在本行读三 lane。组序（B3b-d7 双块）：数据块 g 的组=offset+2g；mux 面
+    // 只覆盖数据块。
     let n_data = circ.wit_u64.len() / NUM_W / 2;
     for g in 0..n_data {
         // bit lane：128 行同值播种 + 全行环桥 + bit_cols[g]@row_pk（跨行等值
@@ -351,7 +352,7 @@ pub fn weave_smt_wires(
         for half in 0..2usize {
             for j in 0..8usize {
                 for k in 0..8usize {
-                    let msg_row = msg_words[g][half][j][k].row;
+                    let msg_row = plan.pack.input_row(offset + 2 * g, msg_words[g][half][j][k].row);
                     // sib lane 本行播种（值=兄弟词 limb——自由见证，根钉锁死）
                     let sib_be = &w.sib_words[g];
                     let cv =
@@ -381,13 +382,14 @@ pub fn weave_smt_wires(
                             msg_row,
                             FpSM2::from(u64::from((dval >> (4 * k)) & 15)),
                         );
-                        let id = match bld.ring_of(vcol(out_limb.col), out_limb.row) {
+                        let (oc, orow) = vcell(out_limb.col, out_limb.row);
+                        let id = match bld.ring_of(oc, orow) {
                             Some(id) => id,
-                            None => bld.begin_relay_col(vcol(out_limb.col), out_limb.row),
+                            None => bld.begin_relay_col(oc, orow),
                         };
                         bld.relay_to_col(id, sp.cur_lanes[g], msg_row);
                     }
-                    // mux 选择器激活：左半/右半行（l/r 各 64 行/块）
+                    // mux 选择器激活：左半/右半行（l/r 各 64 行/块——⑦代物理行）
                     if half == 0 {
                         bld.extend_selector(sp.mux_l_sels[g], &[msg_row]);
                     } else {

@@ -9,6 +9,10 @@ export interface EnrollForm {
   username: string;
   id_number: string;
   cert_level: number;
+  /** SN 单源（SN 绑定根治 2026-10-07）：产品径序列号唯一读数源=lib/device.ts
+   * getDeviceSerial()（桥 /engine_pub——与桥第 6 查同源）。本字段仅作向导状态
+   * 承载，视图必须只读预填、不得开放自由文本输入（自由 SN 首次 ARM 必
+   * sn_mismatch）。 */
   sn: string;
   class_id: number;
 }
@@ -73,7 +77,8 @@ export function passphraseStrength(pw: string): 0 | 1 | 2 | 3 {
 
 // ---- 账户密码规范（2026-09-29 账户批，队长拍板：8 位起步）----
 // 密码=密封体系的唯一人肉防线（登录解封+资料密封同一 KEK 源）——前端门槛与
-// 后端 21000 轮 KDF 是同一道防线的两半。黑名单拒绝常见弱密码（离线猜测面
+// 后端 KDF（v4 信封缺省 600,000 轮 PBKDF2-HMAC-SM3，2026-10-04 批 2；v3 旧
+// 21000 轮降为兼容面）是同一道防线的两半。黑名单拒绝常见弱密码（离线猜测面
 // 的最大贡献者），与用户名相同/包含直接拒。
 
 const WEAK_LIST = [

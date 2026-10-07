@@ -281,6 +281,368 @@ impl<F: PrimeField, H: Hash> AdditiveCommitment<F> for BasefoldCommitment<F, H> 
         }
     }
 }
+
+// A2（组合 A）：batch_open 的共用内核（掩蔽参数化自由函数）。
+/// batch_open 共用体内核（A2 参数化：masked=None 即历史路径逐字节）。
+/// 自由函数（模块级）——trait 入口 batch_open/batch_open_masked 共用。
+fn batch_open_inner<'a, F, H>(
+    pp: &BasefoldProverParams<F>,
+    polys: Vec<&'a MultilinearPolynomial<F>>,
+    comms: Vec<&'a BasefoldCommitment<F, H>>,
+    points: &[Point<F, MultilinearPolynomial<F>>],
+    evals: &[Evaluation<F>],
+    masked: Option<(&'a MultilinearPolynomial<F>, &'a [(usize, F)])>,
+    transcript: &mut impl TranscriptWrite<Output<H>, F>,
+) -> Result<(), Error>
+where
+    F: PrimeField + serde::Serialize + serde::de::DeserializeOwned,
+    H: Hash,
+{
+    use std::env;
+
+    validate_input("batch open", pp.num_vars, polys.clone(), points)?;
+    if comms.len() != polys.len() {
+        return Err(Error::InvalidPcsOpen(format!(
+            "batch open: comms({}) 与 polys({}) 数量不一致",
+            comms.len(),
+            polys.len()
+        )));
+    }
+    validate_batch_claims("batch open", polys.len(), points, evals)?;
+    if interleave_on() {
+        // D27:S1′ 头部=按批次首现序每批次写 (盐,根) 一对(batch_verify 消耗读同序)。
+        let starts = group_starts(&comms);
+        for &(s0, _) in &starts {
+            let comm = &comms[s0];
+            transcript.write_commitment(&comm.salt);
+            transcript.write_commitment(&comm.as_ref());
+            absorb_salt_root::<F, H>(transcript, &comm.salt, comm.committed_root()); // D1
+        }
+    } else {
+        for comm in &comms {
+            // D18 Phase 1：个体承诺重复写=(salt, root) 对（batch_verify 消耗读同序）。
+            transcript.write_commitment(&comm.salt);
+            transcript.write_commitment(&comm.as_ref());
+            absorb_salt_root::<F, H>(transcript, &comm.salt, comm.committed_root()); // D1
+        }
+    }
+    // D2:语句(点+声称)先于组合挑战 t 吸收(batch_verify 同序)。
+    absorb_batch_statement(transcript, points, evals);
+    let ell = evals.len().next_power_of_two().ilog2() as usize;
+    let t = transcript.squeeze_challenges(ell);
+
+    let eq_xt = MultilinearPolynomial::eq_xy(&t);
+    // A2（组合 A）：掩蔽槽贡献按线性性拆分——c·ṽ = c·v + (c·λ)·m（域算术
+    // 精确 ⟹ 组合多项式函数恒等 ⟹ 内层 sumcheck/转录逐位同物化路径）。
+    // m 以共享借用累加（同址 ⟹ unique_by 地址去重自然并入，语义=值等值
+    // 的表达式重组，零值影响）。
+    let lam_of = |poly_idx: usize| -> Option<F> {
+        masked.and_then(|(_, slots)| {
+            slots
+                .iter()
+                .find(|(s, _)| *s == poly_idx)
+                .map(|(_, l)| *l)
+        })
+    };
+    let mask_poly = masked.map(|(m, _)| m);
+    let merged_polys = evals.iter().zip(eq_xt.evals().iter()).fold(
+        vec![(F::ONE, Cow::<MultilinearPolynomial<_>>::default()); points.len()],
+        |mut merged_polys, (eval, eq_xt_i)| {
+            if merged_polys[eval.point()].1.is_zero() {
+                merged_polys[eval.point()] = (*eq_xt_i, Cow::Borrowed(polys[eval.poly()]));
+            } else {
+                let coeff = merged_polys[eval.point()].0;
+                if coeff != F::ONE {
+                    merged_polys[eval.point()].0 = F::ONE;
+                    *merged_polys[eval.point()].1.to_mut() *= &coeff;
+                }
+                *merged_polys[eval.point()].1.to_mut() += (eq_xt_i, polys[eval.poly()]);
+            }
+            if let (Some(m), Some(l)) = (mask_poly, lam_of(eval.poly())) {
+                // 掩蔽第二项（⑥代 prove 窗根修 2026-10-06）：槽语义 = 标量 s × 整支
+                // 槽多项式，目标增量贡献 = c·λ·m（ṽ=v+λm 世界的精确组合）。
+                // - is_zero 空槽：以 (c·λ, m) 落位（s=c·λ ⟹ 贡献 c·λ·m ✓——掩蔽
+                //   列本身是槽首项的形态）；
+                // - 非空槽：poly += (c·λ/s)·m。已归一槽（s=1）⟹ += (c·λ)·m；未归一
+                //   首声称槽（s=c₁≠1，poly=v₁）⟹ += λ·m。原实现一律 += (c·λ)·m，
+                //   未归一槽的实际贡献变成 c₁·v₁ + c₁²·λ·m ≠ c₁·(v₁+λ·m) ——内层
+                //   sumcheck 的组合多项式与声称和 Σcᵢyᵢ 脱钩（某旋转点槽位的
+                //   首声称恰落在掩蔽列——如置换 z 列——时必触发；round-0 消息
+                //   evals[0]=sum−evals[1] 把缺口藏进 x=0 半侧 ⟹ 病灶只在 batch_verify 终值粘合处爆出：
+                //   "内层声称 eval != 外层 sumcheck 终值 g_prime_eval"）。
+                // - s=0 槽：贡献恒零，掩蔽项可省（值精确不变）。
+                let cl = *eq_xt_i * l;
+                if merged_polys[eval.point()].1.is_zero() {
+                    merged_polys[eval.point()] = (cl, Cow::Borrowed(m));
+                } else {
+                    let s = merged_polys[eval.point()].0;
+                    if s != F::ZERO {
+                        let cl_eff = if s == F::ONE { cl } else { l };
+                        *merged_polys[eval.point()].1.to_mut() += (&cl_eff, m);
+                    }
+                }
+            }
+            merged_polys
+        },
+    );
+
+    let unique_merged_polys = merged_polys
+        .iter()
+        .unique_by(|(_, poly)| addr_of!(*poly.deref()))
+        .collect_vec();
+    let unique_merged_poly_indices = unique_merged_polys
+        .iter()
+        .enumerate()
+        .map(|(idx, (_, poly))| (addr_of!(*poly.deref()), idx))
+        .collect::<HashMap<_, _>>();
+    let expression = merged_polys
+        .iter()
+        .enumerate()
+        .map(|(idx, (scalar, poly))| {
+            let poly = unique_merged_poly_indices[&addr_of!(*poly.deref())];
+            Expression::<F>::eq_xy(idx)
+                * Expression::Polynomial(Query::new(poly, Rotation::cur()))
+                * scalar
+        })
+        .sum();
+    let virtual_poly = VirtualPolynomial::new(
+        &expression,
+        unique_merged_polys.iter().map(|(_, poly)| poly.deref()),
+        &[],
+        points,
+    );
+    let tilde_gs_sum =
+        inner_product(evals.iter().map(Evaluation::value), &eq_xt[..evals.len()]);
+    let now = Instant::now();
+    let (challenges, _) =
+        SumCheck::prove(&(), pp.num_vars, virtual_poly, tilde_gs_sum, transcript)?;
+
+    let eq_xy_evals = points
+        .iter()
+        .map(|point| eq_xy_eval(&challenges, point))
+        .collect_vec();
+    let g_prime = merged_polys
+        .into_iter()
+        .zip(eq_xy_evals.iter())
+        .map(|((scalar, poly), eq_xy_eval)| (scalar * eq_xy_eval, poly.into_owned()))
+        .sum::<MultilinearPolynomial<_>>();
+
+    let (mut comm, eval) = if cfg!(feature = "sanity-check") {
+        let scalars = evals
+            .iter()
+            .zip(eq_xt.evals())
+            .map(|(eval, eq_xt_i)| eq_xy_evals[eval.point()] * eq_xt_i)
+            .collect_vec();
+        let bases = evals.iter().map(|eval| comms[eval.poly()]);
+        let now = Instant::now();
+        let comm = BasefoldCommitment::<F, H>::sum_with_scalar(&scalars, bases);
+
+        (comm, g_prime.evaluate(&challenges))
+    } else {
+        (BasefoldCommitment::<F, H>::default(), F::ZERO)
+    };
+    let mut bh_evals = g_prime.evals().to_vec();
+
+    //convert to type 1
+    reverse_index_bits_in_place(&mut bh_evals);
+
+    comm.bh_evals = Type1Polynomial { poly: bh_evals };
+    // 🔴 2026-09-16 声音性修复(W1_CHECKPOINT v9 §13 缺口 C,约定错位):内层 BaseFold Eval 在 type-1
+    // (位反序)数组上运行,build_eq_x_r_vec 为 LSB↔r₀ 约定 ⟹ 内层证明的是 ṽ(p)=g′(rev p)。外层 sumcheck
+    // 把声称归约到 g′(r)(plonkish 求值约定,r=challenges)。实测 commit_phase eval==g′(rev r)≠g′(r)。
+    // 接口处传 rev(r) ⟹ 内层证明 ṽ(rev r)=g′(r)=g_prime_eval,粘合等式(缺口 A)对诚实证明者成立。
+    // 内层消息值随 eq 改变,字节长度零变化。
+    let point: Vec<F> = challenges.iter().rev().cloned().collect();
+
+    // D18 Phase 3：无组合掩蔽再生（κ 退役；组合承诺的码字本身即 ṽ 世界的线性组合）。
+    let (trees, sum_check_oracles, mut oracles, bh_evals, eq, eval) = commit_phase(
+        &point,
+        &comm,
+        transcript,
+        pp.num_vars,
+        pp.num_rounds,
+        &pp.table_w_weights,
+        pp.code_type.clone(),
+        pp.log_rate,
+    );
+
+    if pp.num_rounds < pp.num_vars {
+        transcript.write_field_elements(&bh_evals.poly);
+        transcript.write_field_elements(&eq.poly);
+    }
+
+    let (queried_els, queries_usize) =
+        query_phase(transcript, &comm, &oracles, pp.num_verifier_queries);
+
+    let mut individual_queries: Vec<Vec<(F, F)>> = Vec::with_capacity(queries_usize.len());
+
+    let mut individual_paths: Vec<Vec<Vec<(Output<H>, Output<H>)>>> =
+        Vec::with_capacity(queries_usize.len());
+    // A5 路线 b（2026-09-15）：个体开口按（查询位置, poly）去重——同一列承诺
+    // 在同一查询位置的值与 Merkle 路径确定相同，现行按 evals 逐条重复书写。
+    // `PCS_BATCH_DEDUP=1` 时每查询只对 evals 中每个**不同 poly**（首现序）
+    // 书写一次；验证侧同构重建（同一映射、同一组校验），验证语义逐条不变，
+    // 仅转录字节更少。默认关 = 字节级现行行为（冻结口径零触碰）。
+    let dedup_on = std::env::var("PCS_BATCH_DEDUP")
+        .map(|v| v == "1")
+        .unwrap_or(false);
+    let (slot_of_eval, slot_poly): (Vec<usize>, Vec<usize>) = {
+        let mut seen: HashMap<usize, usize> = HashMap::new();
+        let slot_of_eval: Vec<usize> = evals
+            .iter()
+            .map(|ev| {
+                let n = seen.len();
+                *seen.entry(ev.poly()).or_insert(n)
+            })
+            .collect();
+        let mut slot_poly: Vec<usize> =
+            vec![usize::MAX; *slot_of_eval.last().unwrap_or(&0) + 1];
+        for (j, &s) in slot_of_eval.iter().enumerate() {
+            if slot_poly[s] == usize::MAX {
+                slot_poly[s] = evals[j].poly();
+            }
+        }
+        (slot_of_eval, slot_poly)
+    };
+    if interleave_on() {
+        // D27:S6′=每查询按 (批次,列) 序写全部列叶值对;S7′=每查询每批次一条路径。
+        let starts = group_starts(&comms);
+        // A3（2026-10-06 缺陷 A 根修）：批次树确定性重建 + 根对账。
+        // group_tree 是 #[serde(skip)]——pp 工件经 bincode 往返（zk_cache 命中路径）
+        // 后丢树而 group_size/col 保留；TRAIL 档 pp 在缓存尺寸门内（命中走反序列化，
+        // 旧实现在此 expect 崩），AUTH 档 4.26GB 超限永走重算（树在）。树本体是
+        // (批次码字全集, 盐) 的**纯函数**（merkelize_interleaved 无 RNG、层序确定）
+        // ⟹ 由盘上码字重建 = 原树逐字节同物，路径/转录字节不变。fail-closed：
+        // 重建根与已承诺根（codeword_tree 单根层）逐位对账——缓存码字被篡改 ⟹
+        // 根失配即以 InvalidPcsOpen 拒绝，不放行不静默。
+        let group_trees: Vec<std::sync::Arc<Vec<Vec<Output<H>>>>> = starts
+            .iter()
+            .map(|&(s0, k)| {
+                match comms[s0].group_tree.as_ref() {
+                    Some(tree) => Ok(tree.clone()),
+                    None => {
+                        let codewords: Vec<&Type1Polynomial<F>> =
+                            comms[s0..s0 + k].iter().map(|c| &c.codeword).collect();
+                        let tree = std::sync::Arc::new(merkelize_interleaved::<F, H>(
+                            &codewords,
+                            &comms[s0].salt,
+                        ));
+                        let rebuilt = &tree[tree.len() - 1][0];
+                        let committed = comms[s0].committed_root();
+                        if rebuilt != committed {
+                            return Err(Error::InvalidPcsOpen(format!(
+                                "交织批次树重建根失配（缓存承诺损坏）：批首列 {}",
+                                s0
+                            )));
+                        }
+                        Ok(tree)
+                    }
+                }
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        for query in &queries_usize {
+            let mut comm_queries = Vec::with_capacity(comms.len());
+            let mut comm_paths = Vec::with_capacity(starts.len());
+            for &(s0, k) in &starts {
+                for j in 0..k {
+                    let c = &comms[s0 + j];
+                    comm_queries.push(codeword_pair::<F>(query, &c.codeword.poly));
+                }
+            }
+            for tree in &group_trees {
+                comm_paths.push(get_merkle_path::<H, F>(tree, *query, true));
+            }
+            individual_queries.push(comm_queries);
+            individual_paths.push(comm_paths);
+        }
+    } else {
+    for query in &queries_usize {
+        let mut comm_queries = Vec::with_capacity(evals.len());
+        let mut comm_paths = Vec::with_capacity(evals.len());
+        if dedup_on {
+            for &p in &slot_poly {
+                let c = &comms[p];
+                let res = query_codeword::<F, H>(query, &c.codeword.poly, &c.codeword_tree);
+                comm_queries.push(res.0);
+                comm_paths.push(res.1);
+            }
+        } else {
+            for eval in evals {
+                let c = comms[eval.poly()];
+                let res = query_codeword::<F, H>(query, &c.codeword.poly, &c.codeword_tree);
+                comm_queries.push(res.0);
+                comm_paths.push(res.1);
+            }
+        }
+
+        individual_queries.push(comm_queries);
+        individual_paths.push(comm_paths);
+    }
+    }
+
+    let merkle_paths: Vec<Vec<Vec<(Output<H>, Output<H>)>>> = queried_els
+        .iter()
+        .map(|query| {
+            let indices = &query.1;
+            indices
+                .into_iter()
+                .enumerate()
+                .map(|(i, q)| {
+                    if (i == 0) {
+                        return get_merkle_path::<H, F>(&comm.codeword_tree, *q, false);
+                    } else {
+                        return get_merkle_path::<H, F>(&trees[i - 1], *q, false);
+                    }
+                })
+                .collect()
+        })
+        .collect();
+
+    // a proof consists of roots, merkle paths, query paths, sum check oracles, eval, and final oracle
+    //write individual commitment queries for batching
+    //queries for batch
+    individual_queries.iter().flatten().for_each(|(f1, f2)| {
+        transcript.write_field_element(f1).unwrap();
+        transcript.write_field_element(f2).unwrap();
+    });
+    //paths for batch
+    individual_paths
+        .iter()
+        .flatten()
+        .flatten()
+        .for_each(|(h1, h2)| {
+            transcript.write_commitment(h1);
+            transcript.write_commitment(h2);
+        });
+
+    //write sum check oracles
+
+    //write eval
+    transcript.write_field_element(&eval);
+    //write final oracle
+    transcript.write_field_elements(oracles.pop().unwrap().poly.iter().collect_vec());
+    //write query paths
+    queried_els
+        .iter()
+        .map(|q| &q.0)
+        .flatten()
+        .for_each(|query| {
+            transcript.write_field_element(&query.0);
+            transcript.write_field_element(&query.1);
+        });
+    //write merkle paths
+    merkle_paths
+        .iter()
+        .flatten()
+        .flatten()
+        .for_each(|(h1, h2)| {
+            transcript.write_commitment(h1);
+            transcript.write_commitment(h2);
+        });
+
+    Ok(())
+}
+
 impl<F, H, V> PolynomialCommitmentScheme<F> for Basefold<F, H, V>
 where
     F: PrimeField + Serialize + DeserializeOwned,
@@ -397,7 +759,7 @@ where
             let mut salt_rng = ChaCha8Rng::from_seed(seed);
             let mut salt = Output::<H>::default();
             salt_rng.fill_bytes(salt.as_mut_slice());
-            return Ok(basefold_commit_group::<F, H>(pp, &polys_vec, salt));
+            return Ok(basefold_commit_group::<F, H>(pp, &polys_vec, salt, None));
         }
         let mut salt_rng = ChaCha8Rng::from_seed(seed);
         let salts: Vec<Output<H>> = (0..polys_vec.len())
@@ -483,12 +845,82 @@ where
             if polys_vec.is_empty() {
                 return Ok(Vec::new());
             }
-            return Ok(basefold_commit_group::<F, H>(pp, &polys_vec, fresh_salt::<H>()));
+            return Ok(basefold_commit_group::<F, H>(pp, &polys_vec, fresh_salt::<H>(), None));
         }
         polys_vec
             .par_iter()
             .map(|poly| Self::commit(pp, poly))
             .collect()
+    }
+
+    /// A2（组合 A，2026-10-06）：掩蔽批次承诺——逐列编码点即时算 ṽ=v+λ·m
+    ///（单列瞬态，上游零整份物化），写入面与 [`Self::batch_commit_and_write`]
+    /// 完全同序（承诺值逐位同 ⟹ 转录字节零变化）。mask=None=纯明文（既有路径同构）。
+    fn batch_commit_and_write_masked<'a>(
+        pp: &Self::ProverParam,
+        polys: impl IntoIterator<Item = &'a Self::Polynomial>,
+        mask: Option<(&'a Self::Polynomial, &'a [F])>,
+        transcript: &mut impl TranscriptWrite<Self::CommitmentChunk, F>,
+    ) -> Result<Vec<Self::Commitment>, Error>
+    where
+        Self::Polynomial: 'a,
+    {
+        let polys_vec: Vec<&Self::Polynomial> = polys.into_iter().map(|poly| poly).collect();
+        if let Some((_, lambdas)) = mask {
+            assert_eq!(
+                lambdas.len(),
+                polys_vec.len(),
+                "A2: λ 表须与列全集逐位平行"
+            );
+        }
+        let comms = if interleave_on() {
+            if polys_vec.is_empty() {
+                Vec::new()
+            } else {
+                basefold_commit_group::<F, H>(pp, &polys_vec, fresh_salt::<H>(), mask)
+            }
+        } else {
+            // 非交织档：逐列物化瞬态（生命周期=单列承诺）后走 solo 路径。
+            let owned: Vec<MultilinearPolynomial<F>> = polys_vec
+                .iter()
+                .enumerate()
+                .map(|(j, poly)| match mask {
+                    Some((m, ls)) if ls[j] != F::ZERO => {
+                        let mut e = poly.evals().to_vec();
+                        e.iter_mut()
+                            .zip(m.evals().iter())
+                            .for_each(|(v, mi)| *v += ls[j] * mi);
+                        MultilinearPolynomial::new(e)
+                    }
+                    _ => (*poly).clone(),
+                })
+                .collect();
+            let refs: Vec<&Self::Polynomial> = owned.iter().collect();
+            refs.par_iter()
+                .map(|p| Self::commit(pp, *p))
+                .collect::<Result<Vec<_>, _>>()?
+        };
+        // 写入面与 batch_commit_and_write 逐字节同（D27 批次 (盐,根) 对/D1 吸收）。
+        if interleave_on() {
+            comms.iter().filter(|comm| comm.col == 0).for_each(|comm| {
+                transcript.write_commitment(&comm.salt);
+                let root = &comm.codeword_tree[comm.codeword_tree.len() - 1][0];
+                transcript.write_commitment(root);
+                absorb_salt_root::<F, H>(transcript, &comm.salt, root); // D1
+            });
+            return Ok(comms);
+        }
+        comms.iter().for_each(|comm| {
+            transcript.write_commitment(&comm.salt);
+        });
+        comms.iter().for_each(|comm| {
+            let root = &comm.codeword_tree[comm.codeword_tree.len() - 1][0];
+            transcript.write_commitment(root);
+        });
+        comms.iter().for_each(|comm| {
+            absorb_salt_root::<F, H>(transcript, &comm.salt, comm.committed_root()); // D1
+        });
+        Ok(comms)
     }
 
     fn open(
@@ -564,288 +996,27 @@ where
         evals: &[Evaluation<F>],
         transcript: &mut impl TranscriptWrite<Self::CommitmentChunk, F>,
     ) -> Result<(), Error> {
-        use std::env;
-
         let polys = polys.into_iter().collect_vec();
         let comms = comms.into_iter().collect_vec();
-
-        validate_input("batch open", pp.num_vars, polys.clone(), points)?;
-        if comms.len() != polys.len() {
-            return Err(Error::InvalidPcsOpen(format!(
-                "batch open: comms({}) 与 polys({}) 数量不一致",
-                comms.len(),
-                polys.len()
-            )));
-        }
-        validate_batch_claims("batch open", polys.len(), points, evals)?;
-        if interleave_on() {
-            // D27:S1′ 头部=按批次首现序每批次写 (盐,根) 一对(batch_verify 消耗读同序)。
-            let starts = group_starts(&comms);
-            for &(s0, _) in &starts {
-                let comm = &comms[s0];
-                transcript.write_commitment(&comm.salt);
-                transcript.write_commitment(&comm.as_ref());
-                absorb_salt_root::<F, H>(transcript, &comm.salt, comm.committed_root()); // D1
-            }
-        } else {
-            for comm in &comms {
-                // D18 Phase 1：个体承诺重复写=(salt, root) 对（batch_verify 消耗读同序）。
-                transcript.write_commitment(&comm.salt);
-                transcript.write_commitment(&comm.as_ref());
-                absorb_salt_root::<F, H>(transcript, &comm.salt, comm.committed_root()); // D1
-            }
-        }
-        // D2:语句(点+声称)先于组合挑战 t 吸收(batch_verify 同序)。
-        absorb_batch_statement(transcript, points, evals);
-        let ell = evals.len().next_power_of_two().ilog2() as usize;
-        let t = transcript.squeeze_challenges(ell);
-
-        let eq_xt = MultilinearPolynomial::eq_xy(&t);
-        let merged_polys = evals.iter().zip(eq_xt.evals().iter()).fold(
-            vec![(F::ONE, Cow::<MultilinearPolynomial<_>>::default()); points.len()],
-            |mut merged_polys, (eval, eq_xt_i)| {
-                if merged_polys[eval.point()].1.is_zero() {
-                    merged_polys[eval.point()] = (*eq_xt_i, Cow::Borrowed(polys[eval.poly()]));
-                } else {
-                    let coeff = merged_polys[eval.point()].0;
-                    if coeff != F::ONE {
-                        merged_polys[eval.point()].0 = F::ONE;
-                        *merged_polys[eval.point()].1.to_mut() *= &coeff;
-                    }
-                    *merged_polys[eval.point()].1.to_mut() += (eq_xt_i, polys[eval.poly()]);
-                }
-                merged_polys
-            },
-        );
-
-        let unique_merged_polys = merged_polys
-            .iter()
-            .unique_by(|(_, poly)| addr_of!(*poly.deref()))
-            .collect_vec();
-        let unique_merged_poly_indices = unique_merged_polys
-            .iter()
-            .enumerate()
-            .map(|(idx, (_, poly))| (addr_of!(*poly.deref()), idx))
-            .collect::<HashMap<_, _>>();
-        let expression = merged_polys
-            .iter()
-            .enumerate()
-            .map(|(idx, (scalar, poly))| {
-                let poly = unique_merged_poly_indices[&addr_of!(*poly.deref())];
-                Expression::<F>::eq_xy(idx)
-                    * Expression::Polynomial(Query::new(poly, Rotation::cur()))
-                    * scalar
-            })
-            .sum();
-        let virtual_poly = VirtualPolynomial::new(
-            &expression,
-            unique_merged_polys.iter().map(|(_, poly)| poly.deref()),
-            &[],
-            points,
-        );
-        let tilde_gs_sum =
-            inner_product(evals.iter().map(Evaluation::value), &eq_xt[..evals.len()]);
-        let now = Instant::now();
-        let (challenges, _) =
-            SumCheck::prove(&(), pp.num_vars, virtual_poly, tilde_gs_sum, transcript)?;
-
-        let eq_xy_evals = points
-            .iter()
-            .map(|point| eq_xy_eval(&challenges, point))
-            .collect_vec();
-        let g_prime = merged_polys
-            .into_iter()
-            .zip(eq_xy_evals.iter())
-            .map(|((scalar, poly), eq_xy_eval)| (scalar * eq_xy_eval, poly.into_owned()))
-            .sum::<MultilinearPolynomial<_>>();
-
-        let (mut comm, eval) = if cfg!(feature = "sanity-check") {
-            let scalars = evals
-                .iter()
-                .zip(eq_xt.evals())
-                .map(|(eval, eq_xt_i)| eq_xy_evals[eval.point()] * eq_xt_i)
-                .collect_vec();
-            let bases = evals.iter().map(|eval| comms[eval.poly()]);
-            let now = Instant::now();
-            let comm = Self::Commitment::sum_with_scalar(&scalars, bases);
-
-            (comm, g_prime.evaluate(&challenges))
-        } else {
-            (Self::Commitment::default(), F::ZERO)
-        };
-        let mut bh_evals = g_prime.evals().to_vec();
-
-        //convert to type 1
-        reverse_index_bits_in_place(&mut bh_evals);
-
-        comm.bh_evals = Type1Polynomial { poly: bh_evals };
-        // 🔴 2026-09-16 声音性修复(W1_CHECKPOINT v9 §13 缺口 C,约定错位):内层 BaseFold Eval 在 type-1
-        // (位反序)数组上运行,build_eq_x_r_vec 为 LSB↔r₀ 约定 ⟹ 内层证明的是 ṽ(p)=g′(rev p)。外层 sumcheck
-        // 把声称归约到 g′(r)(plonkish 求值约定,r=challenges)。实测 commit_phase eval==g′(rev r)≠g′(r)。
-        // 接口处传 rev(r) ⟹ 内层证明 ṽ(rev r)=g′(r)=g_prime_eval,粘合等式(缺口 A)对诚实证明者成立。
-        // 内层消息值随 eq 改变,字节长度零变化。
-        let point: Vec<F> = challenges.iter().rev().cloned().collect();
-
-        // D18 Phase 3：无组合掩蔽再生（κ 退役；组合承诺的码字本身即 ṽ 世界的线性组合）。
-        let (trees, sum_check_oracles, mut oracles, bh_evals, eq, eval) = commit_phase(
-            &point,
-            &comm,
-            transcript,
-            pp.num_vars,
-            pp.num_rounds,
-            &pp.table_w_weights,
-            pp.code_type.clone(),
-            pp.log_rate,
-        );
-
-        if pp.num_rounds < pp.num_vars {
-            transcript.write_field_elements(&bh_evals.poly);
-            transcript.write_field_elements(&eq.poly);
-        }
-
-        let (queried_els, queries_usize) =
-            query_phase(transcript, &comm, &oracles, pp.num_verifier_queries);
-
-        let mut individual_queries: Vec<Vec<(F, F)>> = Vec::with_capacity(queries_usize.len());
-
-        let mut individual_paths: Vec<Vec<Vec<(Output<H>, Output<H>)>>> =
-            Vec::with_capacity(queries_usize.len());
-        // A5 路线 b（2026-09-15）：个体开口按（查询位置, poly）去重——同一列承诺
-        // 在同一查询位置的值与 Merkle 路径确定相同，现行按 evals 逐条重复书写。
-        // `PCS_BATCH_DEDUP=1` 时每查询只对 evals 中每个**不同 poly**（首现序）
-        // 书写一次；验证侧同构重建（同一映射、同一组校验），验证语义逐条不变，
-        // 仅转录字节更少。默认关 = 字节级现行行为（冻结口径零触碰）。
-        let dedup_on = std::env::var("PCS_BATCH_DEDUP")
-            .map(|v| v == "1")
-            .unwrap_or(false);
-        let (slot_of_eval, slot_poly): (Vec<usize>, Vec<usize>) = {
-            let mut seen: HashMap<usize, usize> = HashMap::new();
-            let slot_of_eval: Vec<usize> = evals
-                .iter()
-                .map(|ev| {
-                    let n = seen.len();
-                    *seen.entry(ev.poly()).or_insert(n)
-                })
-                .collect();
-            let mut slot_poly: Vec<usize> =
-                vec![usize::MAX; *slot_of_eval.last().unwrap_or(&0) + 1];
-            for (j, &s) in slot_of_eval.iter().enumerate() {
-                if slot_poly[s] == usize::MAX {
-                    slot_poly[s] = evals[j].poly();
-                }
-            }
-            (slot_of_eval, slot_poly)
-        };
-        if interleave_on() {
-            // D27:S6′=每查询按 (批次,列) 序写全部列叶值对;S7′=每查询每批次一条路径。
-            let starts = group_starts(&comms);
-            for query in &queries_usize {
-                let mut comm_queries = Vec::with_capacity(comms.len());
-                let mut comm_paths = Vec::with_capacity(starts.len());
-                for &(s0, k) in &starts {
-                    for j in 0..k {
-                        let c = &comms[s0 + j];
-                        comm_queries.push(codeword_pair::<F>(query, &c.codeword.poly));
-                    }
-                }
-                for &(s0, _) in &starts {
-                    let tree_ref: &Vec<Vec<Output<H>>> = comms[s0]
-                        .group_tree
-                        .as_ref()
-                        .expect("交织档承诺缺批次树(证明侧必持 Arc)")
-                        .as_ref();
-                    comm_paths.push(get_merkle_path::<H, F>(tree_ref, *query, true));
-                }
-                individual_queries.push(comm_queries);
-                individual_paths.push(comm_paths);
-            }
-        } else {
-        for query in &queries_usize {
-            let mut comm_queries = Vec::with_capacity(evals.len());
-            let mut comm_paths = Vec::with_capacity(evals.len());
-            if dedup_on {
-                for &p in &slot_poly {
-                    let c = &comms[p];
-                    let res = query_codeword::<F, H>(query, &c.codeword.poly, &c.codeword_tree);
-                    comm_queries.push(res.0);
-                    comm_paths.push(res.1);
-                }
-            } else {
-                for eval in evals {
-                    let c = comms[eval.poly()];
-                    let res = query_codeword::<F, H>(query, &c.codeword.poly, &c.codeword_tree);
-                    comm_queries.push(res.0);
-                    comm_paths.push(res.1);
-                }
-            }
-
-            individual_queries.push(comm_queries);
-            individual_paths.push(comm_paths);
-        }
-        }
-
-        let merkle_paths: Vec<Vec<Vec<(Output<H>, Output<H>)>>> = queried_els
-            .iter()
-            .map(|query| {
-                let indices = &query.1;
-                indices
-                    .into_iter()
-                    .enumerate()
-                    .map(|(i, q)| {
-                        if (i == 0) {
-                            return get_merkle_path::<H, F>(&comm.codeword_tree, *q, false);
-                        } else {
-                            return get_merkle_path::<H, F>(&trees[i - 1], *q, false);
-                        }
-                    })
-                    .collect()
-            })
-            .collect();
-
-        // a proof consists of roots, merkle paths, query paths, sum check oracles, eval, and final oracle
-        //write individual commitment queries for batching
-        //queries for batch
-        individual_queries.iter().flatten().for_each(|(f1, f2)| {
-            transcript.write_field_element(f1).unwrap();
-            transcript.write_field_element(f2).unwrap();
-        });
-        //paths for batch
-        individual_paths
-            .iter()
-            .flatten()
-            .flatten()
-            .for_each(|(h1, h2)| {
-                transcript.write_commitment(h1);
-                transcript.write_commitment(h2);
-            });
-
-        //write sum check oracles
-
-        //write eval
-        transcript.write_field_element(&eval);
-        //write final oracle
-        transcript.write_field_elements(oracles.pop().unwrap().poly.iter().collect_vec());
-        //write query paths
-        queried_els
-            .iter()
-            .map(|q| &q.0)
-            .flatten()
-            .for_each(|query| {
-                transcript.write_field_element(&query.0);
-                transcript.write_field_element(&query.1);
-            });
-        //write merkle paths
-        merkle_paths
-            .iter()
-            .flatten()
-            .flatten()
-            .for_each(|(h1, h2)| {
-                transcript.write_commitment(h1);
-                transcript.write_commitment(h2);
-            });
-
-        Ok(())
+        batch_open_inner::<F, H>(pp, polys, comms, points, evals, None, transcript)
     }
+
+    /// A2（组合 A，2026-10-06）：掩蔽开口入口——明文列全集 + (槽位,λ) + 共享 m。
+    /// g_prime 组合按线性性即时折叠（c·ṽ = c·v + (c·λ)·m），零整份物化。
+    fn batch_open_masked<'a>(
+        pp: &Self::ProverParam,
+        polys: impl IntoIterator<Item = &'a Self::Polynomial>,
+        comms: impl IntoIterator<Item = &'a Self::Commitment>,
+        points: &[Point<F, Self::Polynomial>],
+        evals: &[Evaluation<F>],
+        masked: Option<(&'a Self::Polynomial, &'a [(usize, F)])>,
+        transcript: &mut impl TranscriptWrite<Self::CommitmentChunk, F>,
+    ) -> Result<(), Error> {
+        let polys = polys.into_iter().collect_vec();
+        let comms = comms.into_iter().collect_vec();
+        batch_open_inner::<F, H>(pp, polys, comms, points, evals, masked, transcript)
+    }
+
 
     fn read_commitments(
         _: &Self::VerifierParam,
@@ -2061,21 +2232,29 @@ fn basefold_commit_group<F: PrimeField, H: Hash>(
     pp: &BasefoldProverParams<F>,
     polys: &[&MultilinearPolynomial<F>],
     salt: Output<H>,
+    mask: Option<(&MultilinearPolynomial<F>, &[F])>,
 ) -> Vec<BasefoldCommitment<F, H>> {
-    let encoded: Vec<(Type1Polynomial<F>, Type1Polynomial<F>)> = polys
+    // A2（组合 A，2026-10-06）：批次承诺消费 ṽ=v+λ·m——逐列编码点即时算
+    //（瞬态=单列×worker），上游不再整份物化掩蔽列。λ 与 polys 逐位平行。
+    let encoded: Vec<Type1Polynomial<F>> = polys
         .par_iter()
-        .map(|poly| basefold_encode_column(pp, poly))
+        .enumerate()
+        .map(|(j, poly)| {
+            let lambda = mask.map_or(F::ZERO, |(_, ls)| ls[j]);
+            basefold_encode_column_codeword(pp, poly, lambda, mask.map(|(m, _)| m))
+        })
         .collect();
     // R1 内存优化（归因表 #11，2026-09-21）：建树只读码字——借用即足，废除整份
     // 码字克隆（AUTH 13,057 列×262KB=3.42GB 峰值瞬态归零）；树字节与本来源逐位同。
-    let codewords: Vec<&Type1Polynomial<F>> = encoded.iter().map(|(c, _)| c).collect();
+    // A1（组合 A）：encoded 元组只存码字——bh 在本路径纯瞬态死重，编码点即弃。
+    let codewords: Vec<&Type1Polynomial<F>> = encoded.iter().collect();
     let tree = std::sync::Arc::new(merkelize_interleaved::<F, H>(&codewords, &salt));
     let root = tree[tree.len() - 1][0].clone();
     let k = codewords.len();
     encoded
         .into_iter()
         .enumerate()
-        .map(|(j, (codeword, _bh_evals))| BasefoldCommitment {
+        .map(|(j, codeword)| BasefoldCommitment {
             codeword,
             codeword_tree: vec![vec![root.clone()]],
             // R1 内存优化（归因表 #5 尾项，2026-09-21 消费面审计）：批次承诺的
@@ -2126,6 +2305,71 @@ fn basefold_commit_with_salt<F: PrimeField, H: Hash>(
         group_size: 0,
         col: 0,
         group_tree: None,
+    }
+}
+
+/// A1（组合 A，2026-10-06）：就地系数插值——与
+/// [`interpolate_over_boolean_hypercube_with_copy`] 的 coeffs 通道逐位同
+///（同一差分变换；**不做**位反序——Type2 约定保持；与
+/// [`interpolate_over_boolean_hypercube`]（Type1，含位反序）不同物）。
+/// bh=new_evals（输入列位反序纯拷贝）在此路径建码字即弃、全程零消费
+///（R1 审计 #5 尾项在案）⟹ 不分配。
+fn interpolate_coeffs_in_place<F: PrimeField>(mut evals: Vec<F>) -> Vec<F> {
+    let n = log2_strict(evals.len());
+    for i in 1..n + 1 {
+        let chunk_size = 1 << i;
+        evals.par_chunks_mut(chunk_size).for_each(|chunk| {
+            let half_chunk = chunk_size >> 1;
+            for j in half_chunk..chunk_size {
+                chunk[j] = chunk[j] - chunk[j - half_chunk];
+            }
+        });
+    }
+    evals
+}
+
+/// A1+A2（组合 A，2026-10-06）：批次承诺消费面的单列编码——
+/// ① 掩蔽即时算（A2）：ṽ=v+λ·m 在明文列副本上就地逐元素加 λ·m（等值于
+///    上游物化 v+&(m*λ) 的逐元素值），上游不整份物化掩蔽列；
+/// ② bh 瞬态死重歼灭（A1）：就地插值直出系数（无 coeffs/bh 双份分配）。
+/// 系数序列与 with_copy 路径逐位同 ⟹ 码字/树根/证明字节不变。
+fn basefold_encode_column_codeword<F: PrimeField>(
+    pp: &BasefoldProverParams<F>,
+    poly: &MultilinearPolynomial<F>,
+    lambda: F,
+    mask: Option<&MultilinearPolynomial<F>>,
+) -> Type1Polynomial<F> {
+    // ṽ 逐元素即时算（λ=0 零触碰：evals==v 逐位——MASK_OFF 档字节不变）。
+    let evals = match (mask, lambda == F::ZERO) {
+        (Some(m), false) => poly
+            .evals()
+            .par_iter()
+            .zip(m.evals().par_iter())
+            .map(|(v, mi)| *v + lambda * mi)
+            .collect::<Vec<F>>(),
+        _ => poly.evals().to_vec(),
+    };
+    let coeffs = interpolate_coeffs_in_place(evals);
+    if pp.rs_basecode {
+        let basecode = encode_rs_basecode(
+            &Type2Polynomial { poly: coeffs },
+            1 << pp.log_rate,
+            1 << (pp.num_vars - pp.num_rounds),
+        );
+        assert!(basecode.poly.len() > 0);
+        evaluate_over_foldable_domain_2(
+            pp.num_vars - pp.num_rounds + pp.log_rate,
+            pp.log_rate,
+            basecode,
+            &pp.table,
+        )
+    } else {
+        evaluate_over_foldable_domain(
+            pp.log_rate,
+            Type2Polynomial { poly: coeffs },
+            &pp.table,
+            pp.code_type.clone(),
+        )
     }
 }
 
@@ -4302,6 +4546,77 @@ mod b_fix_e3_chainhead_negatives {
         Pcs::trim(&param, 1 << nv, 1).unwrap()
     }
 
+    /// A1（组合 A，2026-10-06）：就地系数插值与 with_copy 的 coeffs 通道
+    /// 逐位同（同差分变换；不做位反序）——批次承诺码字路径的语义不变性钉定。
+    #[test]
+    fn a1_interpolate_coeffs_in_place_parity() {
+        let _g = super::a3_tree_rebuild_roundtrip::TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let mut rng = ChaCha8Rng::seed_from_u64(0xA1C0_0601);
+        for nv in [2usize, 5, 8] {
+            let evals: Vec<Fr> = (0..1usize << nv).map(|_| Fr::random(&mut rng)).collect();
+            let (coeffs_wc, bh_wc) =
+                interpolate_over_boolean_hypercube_with_copy(&Type2Polynomial {
+                    poly: evals.clone(),
+                });
+            let coeffs_ip = super::interpolate_coeffs_in_place(evals.clone());
+            assert_eq!(coeffs_ip, coeffs_wc.poly, "nv={nv}: coeffs 通道逐位同");
+            // bh（本路径歼灭对象）= 输入位反序纯拷贝——等值面独立复核（审计口径）。
+            let mut bh_manual = evals;
+            reverse_index_bits_in_place(&mut bh_manual);
+            assert_eq!(bh_wc.poly, bh_manual, "nv={nv}: bh=位反序纯拷贝");
+        }
+    }
+
+    /// A2（组合 A，2026-10-06）：掩蔽承诺惰性化语义不变性——同盐同列下，
+    /// 「明文+λ 即时算」的批次组码字/树根与「物化 ṽ 再编码」逐位同（⟹
+    /// 承诺/转录逐字节同的根）。覆盖 λ=0（MASK_OFF 档）与全 λ≠0 两形态。
+    #[test]
+    fn a2_masked_group_commit_codeword_parity() {
+        let _g = super::a3_tree_rebuild_roundtrip::TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        use crate::util::hash::Blake2s256;
+        let nv = 4usize;
+        let (pp, _vp) = neg_setup(nv);
+        let mut rng = ChaCha8Rng::seed_from_u64(0xA2C0_0602);
+        let polys: Vec<MultilinearPolynomial<Fr>> =
+            (0..3).map(|_| MultilinearPolynomial::rand(nv, &mut rng)).collect();
+        let mask = MultilinearPolynomial::<Fr>::rand(nv, &mut rng);
+        for lambdas in [
+            vec![Fr::ZERO; 3],                              // MASK_OFF 档
+            (0..3).map(|_| Fr::random(&mut rng)).collect(), // 全掩蔽
+        ] {
+            // 物化路径（历史行为）：v+&(m*λ) 后整份编码。
+            let materialized: Vec<MultilinearPolynomial<Fr>> = polys
+                .iter()
+                .zip(lambdas.iter())
+                .map(|(v, l)| v + &(&mask * l))
+                .collect();
+            let refs_m: Vec<&MultilinearPolynomial<Fr>> = materialized.iter().collect();
+            let comms_m = super::basefold_commit_group::<Fr, Blake2s256>(
+                &pp,
+                &refs_m,
+                Output::<Blake2s256>::default(),
+                None,
+            );
+            // 惰性路径（A2：明文+λ 编码点即时算）。
+            let refs_p: Vec<&MultilinearPolynomial<Fr>> = polys.iter().collect();
+            let comms_p = super::basefold_commit_group::<Fr, Blake2s256>(
+                &pp,
+                &refs_p,
+                Output::<Blake2s256>::default(),
+                Some((&mask, &lambdas)),
+            );
+            assert_eq!(comms_m.len(), comms_p.len());
+            for (cm, cp) in comms_m.iter().zip(comms_p.iter()) {
+                assert_eq!(cm.codeword.poly, cp.codeword.poly, "码字逐位同（承诺面）");
+                assert_eq!(cm.committed_root(), cp.committed_root(), "树根逐位同（转录面根）");
+            }
+        }
+    }
+
     fn verdict_of(f: impl FnOnce() -> bool) -> bool {
         let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f));
         matches!(r, Ok(true))
@@ -4311,6 +4626,9 @@ mod b_fix_e3_chainhead_negatives {
 
     #[test]
     fn pcs_e3_adaptive_forgery() {
+        let _g = super::a3_tree_rebuild_roundtrip::TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let nv = 6usize;
         let (pp, vp) = neg_setup(nv);
         let mut rng = ChaCha8Rng::seed_from_u64(0xBEE5_0002);
@@ -4580,6 +4898,9 @@ mod b_fix_e3_chainhead_negatives {
 
     #[test]
     fn pcs_single_point_chain_head_forgery() {
+        let _g = super::a3_tree_rebuild_roundtrip::TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let nv = 6usize;
         let (pp, vp) = neg_setup(nv);
         let mut rng = ChaCha8Rng::seed_from_u64(0xBEE5_0003);
@@ -4661,5 +4982,132 @@ mod b_fix_e3_chainhead_negatives {
             !forged_ok,
             "单点链头伪造被接受:缺口 E(roots[0]/round_salts[0] 未绑定承诺身份)未修"
         );
+    }
+}
+
+// =====================================================================
+// A3（2026-10-06 缺陷 A 回归）：交织档批次树的 serde 丢树重建。
+// 场景=zk_cache 命中：pp（含 preprocess/permutation 承诺）经 bincode 往返，
+// group_tree（#[serde(skip)]）丢失而 group_size/col 保留——旧实现在
+// batch_open 查询相 expect("交织档承诺缺批次树") 崩（TRAIL 档缓存命中路径；
+// AUTH 档 pp 4.26GB 超缓存尺寸门永走重算故不触发）。树是 (批次码字,盐) 的
+// 纯函数 ⟹ 由码字重建=原树逐位同物；重建根与已承诺根逐位对账 fail-closed。
+// =====================================================================
+#[cfg(test)]
+mod a3_tree_rebuild_roundtrip {
+    use super::*;
+    use crate::util::hash::Sm3;
+    use crate::util::transcript::{
+        FieldTranscriptRead, FieldTranscriptWrite, InMemoryTranscript, SM3Transcript,
+        TranscriptRead, TranscriptWrite,
+    };
+    use std::io::Cursor;
+
+    type TF = halo2_curves::bn256::Fr;
+    type Tr = SM3Transcript<Cursor<Vec<u8>>>;
+    type Comm = BasefoldCommitment<TF, Sm3>;
+
+    /// env 互斥（PCS_INTERLEAVE 写读测试共锁——neg_setup 同锁取用，防并发翻构型）。
+    pub(super) static TEST_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    #[derive(Debug)]
+    struct A3Spec;
+    impl BasefoldExtParams for A3Spec {
+        fn get_reps() -> usize {
+            4
+        }
+        fn get_rate() -> usize {
+            3
+        }
+        fn get_basecode_rounds() -> usize {
+            0
+        }
+        fn get_rs_basecode() -> bool {
+            false
+        }
+        fn get_code_type() -> String {
+            "random".to_string()
+        }
+    }
+    type Pcs = Basefold<TF, Sm3, A3Spec>;
+
+    fn a3_setup(nv: usize) -> (BasefoldProverParams<TF>, BasefoldVerifierParams<TF>) {
+        let mut rng = ChaCha8Rng::seed_from_u64(0xA3C0_0606);
+        let param = Pcs::setup(1 << nv, 1, &mut rng).unwrap();
+        Pcs::trim(&param, 1 << nv, 1).unwrap()
+    }
+
+    /// ① 正路径：bincode 往返丢树后 batch_open 不再 panic（重建），开/验全绿。
+    #[test]
+    fn a3_serde_roundtrip_rebuild_open_verify_green() {
+        let _g = TEST_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        std::env::set_var("PCS_INTERLEAVE", "1");
+        let nv = 6usize;
+        let (pp, vp) = a3_setup(nv);
+        let mut rng = ChaCha8Rng::seed_from_u64(0xA3C0_0607);
+        let polys: Vec<MultilinearPolynomial<TF>> = (0..3)
+            .map(|_| MultilinearPolynomial::rand(nv, &mut rng))
+            .collect();
+        let points: Vec<Vec<TF>> = (0..2)
+            .map(|_| (0..nv).map(|_| TF::random(&mut rng)).collect())
+            .collect();
+        let evals: Vec<Evaluation<TF>> = vec![
+            Evaluation::new(0, 0, polys[0].evaluate(&points[0])),
+            Evaluation::new(1, 0, polys[1].evaluate(&points[0])),
+            Evaluation::new(2, 1, polys[2].evaluate(&points[1])),
+        ];
+        let comms: Vec<Comm> = Pcs::batch_commit(&pp, &polys).unwrap();
+        assert!(comms[0].is_grouped() && comms[0].group_tree.is_some(), "交织档承诺必持树");
+
+        // zk_cache 命中形态：bincode 往返（group_tree #[serde(skip)] 丢，组位保留）。
+        let bytes = bincode::serialize(&comms).unwrap();
+        let comms_rt: Vec<Comm> = bincode::deserialize(&bytes).unwrap();
+        assert!(comms_rt[0].is_grouped(), "group_size 必须保留");
+        assert!(comms_rt.iter().all(|c| c.group_tree.is_none()), "serde 往返必丢树");
+
+        // 缺陷 A 现场等价：旧实现在此 expect 崩；新实现确定性重建 + 开/验全绿。
+        let mut tr = Tr::new(());
+        Pcs::batch_open(&pp, &polys, &comms_rt, &points, &evals, &mut tr).unwrap();
+        let pf = tr.into_proof();
+        let mut tv = Tr::from_proof((), pf.as_slice());
+        assert!(Pcs::batch_verify(&vp, &comms_rt, &points, &evals, &mut tv).is_ok());
+        std::env::remove_var("PCS_INTERLEAVE");
+    }
+
+    /// ② 负路径：往返后码字被篡改 ⟹ 重建根与已承诺根失配 ⟹ InvalidPcsOpen
+    /// 拒绝（fail-closed——不放行被篡改的缓存承诺）。
+    #[test]
+    fn a3_roundtrip_tampered_codeword_rejected() {
+        let _g = TEST_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        std::env::set_var("PCS_INTERLEAVE", "1");
+        let nv = 6usize;
+        let (pp, _vp) = a3_setup(nv);
+        let mut rng = ChaCha8Rng::seed_from_u64(0xA3C0_0608);
+        let polys: Vec<MultilinearPolynomial<TF>> = (0..3)
+            .map(|_| MultilinearPolynomial::rand(nv, &mut rng))
+            .collect();
+        let points: Vec<Vec<TF>> = (0..2)
+            .map(|_| (0..nv).map(|_| TF::random(&mut rng)).collect())
+            .collect();
+        let evals: Vec<Evaluation<TF>> = vec![
+            Evaluation::new(0, 0, polys[0].evaluate(&points[0])),
+            Evaluation::new(1, 0, polys[1].evaluate(&points[0])),
+            Evaluation::new(2, 1, polys[2].evaluate(&points[1])),
+        ];
+        let comms: Vec<Comm> = Pcs::batch_commit(&pp, &polys).unwrap();
+
+        let bytes = bincode::serialize(&comms).unwrap();
+        let mut comms_rt: Vec<Comm> = bincode::deserialize(&bytes).unwrap();
+        // 篡改首列码字一格（字段加 7）——树随之变，承诺根不变 ⟹ 对账必失配。
+        comms_rt[0].codeword.poly[3] += TF::from(7u64);
+        let mut tr = Tr::new(());
+        let err = Pcs::batch_open(&pp, &polys, &comms_rt, &points, &evals, &mut tr)
+            .err()
+            .expect("篡改码字必须被拒");
+        assert!(
+            matches!(err, Error::InvalidPcsOpen(_)),
+            "失配面必须是 InvalidPcsOpen（根对账 fail-closed），实得 {err:?}"
+        );
+        std::env::remove_var("PCS_INTERLEAVE");
     }
 }

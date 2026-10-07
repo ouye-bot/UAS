@@ -45,13 +45,17 @@ def client(tmp_path, monkeypatch):
     from app.authz import router as authz_router
 
     authz_router._DEPS = None
+    global _ADMIN_SK  # noqa: PLW0603  B1 契约：撤销签名钥（测试面）
     with TestClient(create_app()) as c:
         from tests.accounting import register_and_login
 
-        register_and_login(c, "admin_rv", "admin", "Admin-Pass-1")
+        _ADMIN_SK = register_and_login(c, "admin_rv", "admin", "Admin-Pass-1")
         yield c
     authz_router._DEPS = None
     ra_router._reset_deps_cache()
+
+
+_ADMIN_SK = ""
 
 
 def _mk_case_files() -> str:
@@ -63,7 +67,7 @@ def _mk_case_files() -> str:
     zk_dir = os.environ["FZ_ZK_CASES_DIR"]
     d = os.path.join(zk_dir, case_id)
     os.makedirs(d, exist_ok=True)
-    inst = ["00" * 32] * 25
+    inst = ["00" * 32] * 26
     for name, blob in (
         ("proof.bin", b"proof"),
         ("verifier_param.bin", b"vp"),
@@ -112,6 +116,8 @@ def test_revoke_layered_defense(client):
     # ② 吊销（机构管理员会话门禁；未登录=401 负例——独立无 Cookie 客户端）
     from fastapi.testclient import TestClient as _TC
 
+    from tests.accounting import sign_revoke_body
+
     anon = _TC(client.app)
     assert (
         anon.post(
@@ -119,13 +125,31 @@ def test_revoke_layered_defense(client):
         ).status_code
         == 401
     )
+    # B1 契约：无签名/短理由/纪元错=信封语义拒（先于执行）
+    for bad_body in (
+        {"master_cred_hash_hex": cred["master_cred_hash_hex"], "reason": "e2e 负例"},  # 无签名
+        {
+            "master_cred_hash_hex": cred["master_cred_hash_hex"],
+            "reason": "短",
+            **sign_revoke_body(_ADMIN_SK, [cred["master_cred_hash_hex"]], "短", 1),
+        },  # 理由 <4 字
+    ):
+        r_bad = client.post("/ra/revoke", json=bad_body)
+        assert r_bad.status_code in (400, 401), r_bad.text
+        assert r_bad.json()["code"] in ("bad_sig", "reason_required", "bad_epoch"), r_bad.text
+    handles = [cred["master_cred_hash_hex"]]
+    epoch = client.get("/ra/revocation/snapshot").json()["data"]["epoch"] + 1
     rv = client.post(
         "/ra/revoke",
-        json={"master_cred_hash_hex": cred["master_cred_hash_hex"], "reason": "e2e 负例"},
+        json={
+            "master_cred_hash_hex": handles[0],
+            **sign_revoke_body(_ADMIN_SK, handles, "e2e 负例", epoch),
+        },
     )
     assert rv.status_code == 200, rv.text
     new_root = rv.json()["data"]["root_hex"]
     assert new_root != old_root, "撤销后纪元根必须更迭"
+    assert rv.json()["data"]["ledger_id"] >= 1, "撤销动作须入 append-only 台账"
 
     # ③ 旧子凭证以吊销前撤销根申请 → 409 stale_rev_root（诚实滞后者）
     apply_body = {

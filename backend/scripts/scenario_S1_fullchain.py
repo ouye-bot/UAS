@@ -309,6 +309,7 @@ def stage0() -> tuple[list, threading.Event, subprocess.Popen | None, subprocess
          # R3-3.1：出证进程 RAYON 封顶随桥透传（zkc 继承——桌面 commit 有限）
          f"RAYON_NUM_THREADS={os.environ.get('RAYON_NUM_THREADS', '6')} "
          "FZ_SITL_CONN=tcp:127.0.0.1:5760 "
+         f"FZ_DEVICE_SERIAL={SN} "
          f"PYTHONPATH={m}/backend:{m}/gcs/bridge "
          "FZ_API_BASE=http://127.0.0.1:8000 "
          f"FZ_ZKSVC_DIR={m}/zksvc "
@@ -339,6 +340,10 @@ def stage0() -> tuple[list, threading.Event, subprocess.Popen | None, subprocess
 # ───────────────────────── [1] AUTH 全链 ─────────────────────────
 
 
+ID_NUMBER = "11010119900101" + secrets.token_hex(2)  # 逐轮随机（B7 黑名单纪律）
+SN = "FZ-SN-S1-" + secrets.token_hex(2)  # ⑥代 SN 绑定：桥 FZ_DEVICE_SERIAL 与登记同源（一证一机闭环）
+
+
 def stage1_auth() -> tuple[dict, dict]:
     """登记→…→令牌+链上对账。返回 (tok, 材料)。"""
     from app.crypto.sm2 import decrypt as ecies_decrypt
@@ -346,10 +351,10 @@ def stage1_auth() -> tuple[dict, dict]:
 
     print("== [1] AUTH 全链（真链：登记→出证→受理→worker→取件→recordAuth 对账）==")
     holder_sk, holder_pk = generate_keypair()
-    sn = "FZ-SN-S1-" + secrets.token_hex(2)
+    sn = SN
     rc, reg = api_post("/ra/register", {
         "username": "s1-" + secrets.token_hex(3),
-        "id_number": "110101199001011234",
+        "id_number": ID_NUMBER,
         "cert_level": 3, "sn": sn, "user_pub_hex": holder_pk, "class_id": CLASS_ID,
     })
     expect(rc == 200 and reg["code"] == "ok", "1.1 登记承诺（RA 真实签发+链上）")
@@ -357,7 +362,7 @@ def stage1_auth() -> tuple[dict, dict]:
     rc2, sub = api_post("/ra/sub-credentials", {
         "master_cred_hash_hex": cred["master_cred_hash_hex"],
         "salt_hex": cred["salt_hex"],
-        "id_number": "110101199001011234",
+        "id_number": ID_NUMBER,
         "cert_level": 3, "sn": sn, "holder_pub_hex": holder_pk,
     })
     expect(rc2 == 200 and sub["code"] == "ok", "1.2 子凭证签发（一次性）")
@@ -372,7 +377,7 @@ def stage1_auth() -> tuple[dict, dict]:
 
     start = bridge_post("/prove/start", {
         "plan_hash_hex": plan_hash_hex, "nonce_hex": nonce_hex, "class_id": CLASS_ID,
-        "id_number": "110101199001011234", "cert_level": 3, "sn": sn,
+        "id_number": ID_NUMBER, "cert_level": 3, "sn": sn,
         "salt_hex": cred["salt_hex"], "id_prime_hex": sub["id_prime_hex"],
         "sig_hex": sub["sig_hex"], "expires_at": sub["expires_at"],
         "holder_sk_hex": holder_sk, "holder_pk_hex": holder_pk,

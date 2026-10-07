@@ -2,22 +2,30 @@
 /** 屏①我的记录（说明书 §7.3）：凭证展示/子凭证签发/撤销快照——真实 RA 面。
  * 登记承诺已前移至入口页（登录/注册）；本屏展示与一次性子凭证管理。 */
 import { computed, onMounted, ref } from "vue";
+import { storeToRefs } from "pinia";
 import { sm2 } from "sm-crypto";
 import { api, ApiError } from "../lib/api";
 import HashText from "../components/HashText.vue";
 import DenyBox from "../components/DenyBox.vue";
 import StatusTag from "../components/StatusTag.vue";
 import ParticleField from "../components/ParticleField.vue";
+import FzWatermark from "../components/FzWatermark.vue";
 import { storedPk, cacheSk } from "../lib/keystore";
-import { storeSubBinding, subMatchesMaterial, storeIdentityTag, storeSubSk, storedSubPk } from "../lib/material";
+import { storeIdentityTag, storedSubPk } from "../lib/material";
+import { useMaterialStore } from "../stores/material";
 import { me as authMe, unlockSk } from "../lib/auth";
+import { DEVICE_SERIAL_UNAVAILABLE, getDeviceSerial } from "../lib/device";
 import { sealProfileSlot } from "../lib/keystore";
 import { classLabel } from "../lib/policy";
+
+// 状态收敛批（Pinia 示范迁移点）：sub 与签发落盘走 material store——
+// 键名（fzSub/fzSubBound/fzSubSk）与指纹语义同 lib 单源，视图不再手拼 localStorage
+const materialStore = useMaterialStore();
+const { sub } = storeToRefs(materialStore);
 
 const busy = ref(false);
 const deny = ref<{ code: string; message: string } | null>(null);
 const cred = ref<Record<string, any> | null>(null);
-const sub = ref<Record<string, any> | null>(null);
 const snap = ref<Record<string, any> | null>(null);
 const staleSub = ref(false);
 const revokeCheck = ref<null | { ok: boolean; message: string; detail?: string }>(null);
@@ -58,7 +66,11 @@ async function checkRevocation(): Promise<void> {
     };
   } catch (e: any) {
     if (e?.code === "revoked")
-      revokeCheck.value = { ok: false, message: "已列入吊销名单——提交申请会被自动拒绝，如有疑问请联系管理部门" };
+      // B3 吊销判词（自查面）：明确「重签子凭证无效」——不再误导被吊销者重试
+      revokeCheck.value = {
+        ok: false,
+        message: "已列入吊销名单——提交申请会被数学拒绝，重签一次性子凭证也无法解除；吊销原因与救济请联系管理部门",
+      };
     else revokeCheck.value = { ok: false, message: e?.message ?? String(e) };
   } finally {
     checking.value = false;
@@ -71,6 +83,14 @@ async function checkRevocation(): Promise<void> {
 function userPk(): string {
   return storedPk() ?? "";
 }
+
+// 出示钥轮换时刻（丙-2 M4）：重签成功瞬间旧钥指纹虚影划掉→新 pk′ 指纹翻上
+// （单发 ≤240ms 动画；划痕终态保留——旧钥已废是持续事实）。首次签发无旧钥不播。
+const keyFlip = ref<null | { prev: string; next: string }>(null);
+const subPkHead = computed(() => {
+  const pk = sub.value?.holder_pk_hex as string | undefined;
+  return pk ? pk.slice(0, 16) + "…" : "";
+});
 
 async function issueSub(): Promise<void> {
   busy.value = true; deny.value = null;
@@ -95,10 +115,10 @@ async function issueSub(): Promise<void> {
         holder_pub_hex: subPk,
       }),
     });
-    sub.value = { ...out, holder_pk_hex: subPk };
-    localStorage.setItem("fzSub", JSON.stringify(sub.value));
-    storeSubSk(kp.privateKey); // sk′ 会话域内存态——出证面（申请页）唯一消费点
-    storeSubBinding(); // 绑定指纹落盘——换登记后失配可检
+    // 签发落盘收进 store 单动作（Pinia 示范迁移）：sub 状态+fzSub 落盘+
+    // sk′ 会话域（storeSubSk）+绑定指纹（storeSubBinding）——返回轮换面
+    // { prev, next }（有旧出示钥且不同时），首次签发=null
+    keyFlip.value = materialStore.issueSub(out, subPk, kp.privateKey);
     staleSub.value = false;
     await snapshot();
   } catch (e) {
@@ -112,11 +132,10 @@ async function snapshot(): Promise<void> {
 
 async function loadLocal(): Promise<void> {
   const c = localStorage.getItem("fzCred");
-  const s = localStorage.getItem("fzSub");
   if (c) cred.value = JSON.parse(c);
-  if (s) sub.value = JSON.parse(s);
+  materialStore.reload(); // fzSub 载入走 store（示范迁移——键名兼容）
   // 失配检测：有子凭证但绑定指纹缺失/不等 ⟹ 重新登记或换钥过的旧凭证
-  staleSub.value = !!s && !subMatchesMaterial();
+  staleSub.value = materialStore.isStale();
   await snapshot();
 }
 onMounted(loadLocal);
@@ -129,7 +148,10 @@ async function checkOrphan(): Promise<void> {
   try {
     const info = await authMe();
     if (info?.role === "pilot" && info.status === "pending_profile") {
-      orphan.value = { done: false, busy: false, err: "", pw: "", id_number: "", sn: "", cert_level: 3, class_id: 1 };
+      // SN 单源（2026-10-07）：补资料的序列号同样取桥读数只读预填——与注册
+      // 主径同纪律（孤儿户补完即签发上链，SN 从此与凭证/令牌/桥第 6 查同源）。
+      const sn = await getDeviceSerial();
+      orphan.value = { done: false, busy: false, err: "", pw: "", id_number: "", sn, cert_level: 3, class_id: 1 };
     }
   } catch { /* 会话探测失败按无孤儿处理 */ }
 }
@@ -139,7 +161,7 @@ async function finishOrphan(): Promise<void> {
   if (!g) return;
   g.err = "";
   if (!/^\d{17}[\dXx]$/.test(g.id_number)) { g.err = "身份证号须为 18 位（末位可 X）"; return; }
-  if (!g.sn.trim()) { g.err = "请填写无人机序列号"; return; }
+  if (!g.sn.trim()) { g.err = DEVICE_SERIAL_UNAVAILABLE; return; }
   if (g.pw.length < 8 || !/[A-Za-z]/.test(g.pw) || !/[0-9]/.test(g.pw)) {
     g.err = "密码须 ≥8 位且含字母与数字（与注册时设置的密码一致）";
     return;
@@ -154,7 +176,7 @@ async function finishOrphan(): Promise<void> {
       method: "POST",
       body: JSON.stringify(form),
     });
-    const sealed = sealProfileSlot({ cred: out, form }, g.pw);
+    const sealed = await sealProfileSlot({ cred: out, form }, g.pw);
     await api("/auth/profile/keep", {
       method: "POST",
       body: JSON.stringify({ sealed_profile: JSON.stringify(sealed) }),
@@ -192,6 +214,7 @@ const KPI_META = {
     <!-- 头部横幅：渐变+粒子（三台统一语言） -->
     <div class="fz-hero-band fz-ticks">
       <ParticleField />
+      <FzWatermark glyph="craft" />
       <div class="fz-hero-inner">
         <div class="fz-hero-title">飞手工作台</div>
         <div class="fz-hero-sub">匿名申请 · 一次性凭证 · 全程零明文——合规证明解锁起飞</div>
@@ -218,8 +241,10 @@ const KPI_META = {
       <input v-model="orphan.pw" type="password" />
       <label>身份证号（18 位）</label>
       <input v-model="orphan.id_number" maxlength="18" />
-      <label>无人机序列号</label>
-      <input v-model="orphan.sn" class="mono" />
+      <label>无人机序列号（自动读取自本机地面站桥——不可手改）</label>
+      <input v-model="orphan.sn" class="mono" readonly
+             title="序列号单源=本机地面站桥读数——用户不可修改" />
+      <p v-if="!orphan.sn" class="step-err">{{ DEVICE_SERIAL_UNAVAILABLE }}</p>
       <div class="grid2">
         <div>
           <label>资质等级（1..4）</label>
@@ -236,7 +261,7 @@ const KPI_META = {
         {{ orphan.busy ? "RA 签发与上链中…" : "补全资料并签发上链" }}
       </button>
     </div>
-    <div class="panel" v-else-if="orphan && orphan.done" style="border-left: 4px solid #2e8577">
+    <div class="panel" v-else-if="orphan && orphan.done" style="border-left: 4px solid var(--tone-teal-fg)">
       <h2>✓ 资料已补全——凭证已签发上链</h2>
       <p class="note">下方为您的主凭证信息，可正常申请起飞。</p>
     </div>
@@ -248,7 +273,7 @@ const KPI_META = {
         <div>
           <div v-if="staleSub" class="deny" style="margin-bottom:10px">
             <span class="code">子凭证已失配</span>
-            当前子凭证与现有登记/密钥不配套（可能重新登记过）——请点左侧「签发一次性子凭证」重新签发后再申请。
+            当前子凭证与现有登记/密钥不配套（可能重新登记过）——请点「签发一次性子凭证」重新签发后再申请。
           </div>
           <button class="btn" :disabled="busy" @click="issueSub">{{ staleSub ? "重新签发一次性子凭证" : "签发一次性子凭证" }}</button>
           <p class="note" style="margin-top:8px">每次申请会使用一张全新的一次性凭证，他人无法把您的多次申请关联起来。</p>
@@ -264,7 +289,19 @@ const KPI_META = {
           </div>
           <div v-if="sub" class="kv fz-enter" style="margin-top:14px; border-top: var(--hairline); padding-top:12px">
             <dt>子凭证编号</dt><dd><HashText :value="sub.sub_cred_hash_hex" /></dd>
-            <dt>一次性凭证身份</dt><dd><HashText :value="sub.id_prime_hex" head="8" tail="6" /></dd>
+            <dt>一次性凭证身份</dt>
+            <dd style="display:flex; align-items:center; gap:8px; flex-wrap:wrap">
+              <HashText :value="sub.id_prime_hex" head="8" tail="6" />
+              <span class="fz-pill teal">一次性 · 跨申请不可关联</span>
+            </dd>
+            <dt>出示公钥（pk′）</dt>
+            <dd class="subkey-dd">
+              <template v-if="keyFlip">
+                <span class="subkey-old">{{ keyFlip.prev.slice(0, 16) }}…</span>
+                <span class="subkey-new">{{ keyFlip.next.slice(0, 16) }}…</span>
+              </template>
+              <template v-else>{{ subPkHead }}</template>
+            </dd>
             <dt>发证签名</dt><dd><HashText :value="sub.sig_hex" head="8" tail="6" /></dd>
             <dt>有效至</dt><dd>{{ sub.expires_at }}<template v-if="sub"><br /><StatusTag :tone="subExpired ? 'bad' : 'ok'" :label="subRemainText" /></template></dd>
           </div>
@@ -291,3 +328,26 @@ const KPI_META = {
     </div>
   </div>
 </template>
+
+<style scoped>
+/* 出示钥轮换时刻（丙-2 M4）：重签瞬间旧钥虚影划掉→新钥指纹翻上。
+   单发 ≤240ms；划痕与灰度终态保留（旧钥已废是持续事实，非持续动画）。 */
+.subkey-old {
+  text-decoration: line-through;
+  color: var(--ink-3);
+  margin-right: 8px;
+  animation: subkey-strike 240ms var(--ease) 1 both;
+}
+@keyframes subkey-strike {
+  from { opacity: 0; }
+  to { opacity: 0.55; }
+}
+.subkey-new {
+  display: inline-block;
+  animation: subkey-rise 240ms var(--ease) 1 both;
+}
+@keyframes subkey-rise {
+  from { opacity: 0; transform: translateY(5px); }
+  to { opacity: 1; transform: none; }
+}
+</style>

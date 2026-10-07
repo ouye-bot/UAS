@@ -195,6 +195,35 @@ pub fn host_mul_g(k: &FpSM2, g: Pt) -> Option<Pt> {
     out
 }
 
+/// 行累加斜率（仿射完备化，2026-10-06 缺陷 B 根修）：一般行=割线
+/// λ=(y−sy)/(x−sx)；**pt=prev（P=Q）行=倍点斜率** λ_d=(3x²+a)/(2y)（a=p−3）。
+/// 零避数字重编码的构造性等值：低位数字 (16,1) ⟹ 窗 0/窗 1 选点同为 16·G
+///（k+offset ≡ 2·16^i (mod 16^{i+1}) 的重编码形态；实测每随机标量 ≈0.435%
+/// 命中，三窗标量/证明 ≈1.3%——1/3 量级案卷频率的根源）。该行 acc_{r−1}=pt_r，
+/// 割线 0/0 无定义（旧实现 invert().expect("distinct-x") 即崩），而约束三式在
+/// λ=λ_d、(sx,sy)=2P 处自洽（逐式核验）：
+///   add.lam: λ_d·(x−sxp)−(y−syp) = λ_d·0−0 = 0；
+///   add.sx : sx−λ_d²+sxp+x = (λ_d²−2x)−λ_d²+x+x = 0；
+///   add.sy : sy−λ_d·(sxp−sx)+syp = (λ_d(x−sx)−y)−λ_d·0+y = 0。
+/// host 侧 [`affine_add`] 本就按 P=Q 走 [`affine_double`]（真值正确）——本函数
+/// 只补 λ 格的完备取值，表/链/其余见证格逐位不动。
+/// P=−Q（x 等异 y）= acc 与被加点互逆（标量 ≡0 或 ≡−2·offset mod n 的域外
+/// 形态）：结果 O 无仿射表示，本电路不承载——精确 panic fail-closed（中间步
+/// [`host_chain`] 的「累加链中间碰 O」守卫同语义；[1,n−1] 域门在电路侧拒绝）。
+fn affine_row_slope(pt: Pt, prev: Pt) -> FpSM2 {
+    if pt.0 != prev.0 {
+        (pt.1 - prev.1) * (pt.0 - prev.0).invert().expect("distinct-x")
+    } else if pt.1 == prev.1 {
+        let a = crate::sm2_ec_plonkish::curve_a();
+        (FpSM2::from(3u64) * pt.0.square() + a)
+            * (pt.1 + pt.1)
+                .invert()
+                .expect("2y≠0（SM2 奇阶曲线无 y=0 点）")
+    } else {
+        panic!("窗口累加行遇 P+(−P)=O（标量 ≡0/−2·offset mod n 域外形态——电路不承载 O）")
+    }
+}
+
 // ─────────────── Builder 集成（主装配 gadget，两相） ───────────────
 
 use crate::sm3_compress::{row_mapping, Builder};
@@ -363,7 +392,9 @@ pub fn emit_window_mul(
         b.set_cell_f(sl.w_x, p, pt.0);
         b.set_cell_f(sl.w_y, p, pt.1);
         if r > 0 {
-            let lam = (pt.1 - chain[r - 1].1 .1) * (pt.0 - chain[r - 1].1 .0).invert().expect("distinct-x");
+            // 缺陷 B 根修（2026-10-06）：完备化行斜率——P=Q 行（零避重编码构造性
+            // 等值，见 affine_row_slope）取倍点斜率，P=−Q 行 fail-closed 拒绝。
+            let lam = affine_row_slope(*pt, chain[r - 1].1);
             b.set_cell_f(sl.w_lam, p, lam);
         }
         b.set_cell_f(sl.w_sx, p, acc.0);
@@ -511,6 +542,82 @@ mod tests {
         *seed ^= *seed >> 7;
         *seed ^= *seed << 17;
         *seed
+    }
+
+    /// 缺陷 B 回归（2026-10-06）：零避重编码构造性 P=Q 行——低位数字 (16,1)
+    /// ⟹ 窗 0/窗 1 选点同为 16·G（k+offset ≡ 2·16^i (mod 16^{i+1}) 形态，
+    /// 实测每随机标量 ≈0.435%）。host 链该行 acc_{r−1}=pt_r；完备化斜率
+    /// affine_row_slope 取倍点斜率 λ_d——三式行约束（add.lam/add.sx/add.sy）
+    /// 在 λ=λ_d、(sx,sy)=2P 处逐式归零；终点仍与 native 真值逐位一致。
+    #[test]
+    fn window_pq_row_complete_slope_satisfies_constraints() {
+        use crate::sm2_ec_plonkish::curve_a;
+        let g = g_coords();
+        let t = host_g_table(g);
+        // 碰撞性标量：k ≡ 2·16^i − offset (mod 16^{i+1})——i=1 ⟹ k≡0x0F ⟹
+        // 数字 (16,1)；i=2 ⟹ k≡0x0EF ⟹ 数字 (16,15,1)。
+        for (k_low, hit_row, d012) in [
+            (0x0Fu64, 1usize, (16u8, 1u8, 1u8)),
+            (0x0EFu64, 2usize, (16u8, 15u8, 1u8)),
+        ] {
+            let k = crate::sm2_params::fr_from_limbs(&[k_low, 0, 0, 0]);
+            let digits = digits_1_16(&k);
+            assert_eq!(
+                (digits[0], digits[1], digits[2]),
+                d012,
+                "碰撞形态前提（k=0x{k_low:x}）"
+            );
+            let (chain, out) = host_chain(&digits, &t);
+            // 0-based 行 hit_row：pt == 前行 acc（P=Q——同点）。
+            assert!(
+                chain[hit_row].0 .0 == chain[hit_row - 1].1 .0
+                    && chain[hit_row].0 .1 == chain[hit_row - 1].1 .1,
+                "k=0x{k_low:x} 必须产生 P=Q 行"
+            );
+            let (pt, acc) = (chain[hit_row].0, chain[hit_row].1);
+            let prev = chain[hit_row - 1].1;
+            let lam = affine_row_slope(pt, prev); // 旧实现在此 invert().expect 崩
+            // λ_d = (3x²+a)/(2y)（与 affine_double 同式）。
+            let want = (crate::FpSM2::from(3u64) * pt.0 * pt.0 + curve_a())
+                * (pt.1 + pt.1).invert().unwrap();
+            assert_eq!(lam, want, "P=Q 行完备化斜率=倍点斜率");
+            // 三式行约束逐式归零（emit 的 ec.win.add.* 在该行的诚实取值）。
+            let (x, y, sx, sy) = (pt.0, pt.1, acc.0, acc.1);
+            let (sxp, syp) = (prev.0, prev.1);
+            assert_eq!(lam * (x - sxp) - (y - syp), crate::FpSM2::ZERO, "add.lam");
+            assert_eq!(sx - lam * lam + sxp + x, crate::FpSM2::ZERO, "add.sx");
+            assert_eq!(sy - lam * (sxp - sx) + syp, crate::FpSM2::ZERO, "add.sy");
+            // 终点对拍（native 权威同源）。
+            let want_out = affine_mul_bits(&bits_le(&k), Some(g));
+            assert_eq!(Some(out.unwrap()), want_out, "碰撞性标量终点必须一致");
+        }
+    }
+
+    /// 缺陷 B 宽域回归：一族碰撞形态标量（k ≡ 2·16^i − offset (mod 16^{i+1})，
+    /// i=1..12，各叠 3 个高位扰动）上 host 链终点 == affine_mul_bits 真值
+    ///（host 链经 affine_add 已完备——本测试钉住「碰撞族终点不失真」的语义面）。
+    #[test]
+    fn window_collision_family_matches_native_mul() {
+        let g = g_coords();
+        let t = host_g_table(g);
+        for i in 1..13u32 {
+            for j in 0..3u64 {
+                // 低 i+1 nibble 钉碰撞形态；高位另置扰动（不触碰钉定段）。
+                let m = 1u64 << (4 * (i + 1));
+                let off_low = (m - 1) / 15; // offset 低 i+1 nibble = (16^{i+1}−1)/15
+                let low = (2 * (1u64 << (4 * i)) + m - off_low) % m + j * m;
+                let limbs = [
+                    low + 0xABCD_0000_0000_0000,
+                    0x1234_5678_9ABC_DEF0,
+                    0x0F0E_0D0C_0B0A_0908,
+                    0x00FF_EEDD_CCBB_AA90,
+                ];
+                let k = crate::sm2_params::fr_from_limbs(&limbs);
+                let (_, out) = host_chain(&digits_1_16(&k), &t);
+                let want = affine_mul_bits(&bits_le(&k), Some(g));
+                assert_eq!(out, want, "i={i} j={j} 碰撞族终点失配");
+            }
+        }
     }
 
     fn bits_le(k: &FpSM2) -> Vec<bool> {

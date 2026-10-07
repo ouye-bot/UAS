@@ -11,6 +11,7 @@
 
 from __future__ import annotations
 
+import math
 import struct
 
 from app.crypto.sm3 import sm3_bytes
@@ -18,6 +19,24 @@ from app.crypto.sm3 import sm3_bytes
 GENESIS = b"FZ-TEL-GENESIS"
 SAMPLE_HZ = 2
 CHECKPOINT_INTERVAL_S = 60
+
+# 合理性门（批1-1.4）：录制器零门=客户端可注任意"遥测"（倒拨时钟/传送跳变/
+# 超速爬升）。界=2Hz 采样契约 + SITL speedup=1 物理界。超界样本拒绝入链
+# （rejected_count 计数，/telemetry/state 可见）；拒样不毒化后续录制——
+# 下一正常样本重开连续窗（缺口如实留存于链行时间轴）。
+MAX_DT_S = 2.0        # 样本间隔上界（2Hz 契约内；超界=断链标记）
+MAX_VERT_MS = 25.0    # 垂直速度上界 m/s（SITL speedup=1 物理界）
+MAX_JUMP_M = 200.0    # 水平跳变上界 m/样本（传送带/坐标注入界）
+_M_PER_1E7_DEG = 111_320.0 / 1e7  # 1e-7° 纬向米数（经向×cos(lat)）
+
+
+class SampleRejected(ValueError):
+    """遥测样本合理性门拒绝（超界不入链）。"""
+
+    def __init__(self, code: str, message: str) -> None:
+        super().__init__(message)
+        self.code = code
+        self.message = message
 
 
 def sample_hash(prev_head: bytes, t_epoch: int, alt_cm: int, lat_1e7: int, lon_1e7: int) -> bytes:
@@ -38,8 +57,76 @@ class TelemetryChain:
         self.last_cp_t = 0.0
         self.checkpoints: list[dict] = []
         self.anchored_seq = 0  # 已真链锚定的最大 seq（阶段一：转发面断点续锚）
+        # 合理性门状态（批1-1.4）：rejected_count 上报 /telemetry/state；
+        # last_wall=服务端采样墙钟（unix 浮点秒——2Hz 同秒双拍下速度/间隔
+        # 判定须浮点粒度，整数 t_epoch 只做倒拨门）；_resync=拒样后重开窗。
+        self.rejected_count = 0
+        self.last_wall: float | None = None
+        self.last_reject: dict | None = None
+        self._resync = False
 
-    def push(self, t_epoch: int, alt_cm: int, lat_1e7: int, lon_1e7: int) -> bytes:
+    def _reject(self, code: str, message: str) -> None:
+        self.rejected_count += 1
+        self._resync = True
+        self.last_reject = {"code": code, "message": message}
+        raise SampleRejected(code, message)
+
+    def push(
+        self,
+        t_epoch: int,
+        alt_cm: int,
+        lat_1e7: int,
+        lon_1e7: int,
+        wall: float | None = None,
+    ) -> bytes:
+        """样本入链（合理性门——批1-1.4）。
+
+        wall=服务端采样墙钟（time.time() 浮点秒）——服务端时间轴单源（客户端
+        给定 t_epoch 忽略作哈希时间轴外的输入；链行 t=服务端折算）。倒拨门/
+        水平跳变门对直构链（wall=None，单测/回放装配）恒生效；间隔/速度门
+        仅在服务端墙钟在位时判定（整数秒粒度在 2Hz 下同秒双拍，不可判速度）。
+        """
+        t_epoch = int(t_epoch)
+        if self.samples and not self._resync:
+            lt, lalt, llat, llon = self.samples[-1]
+            if t_epoch < lt:
+                self._reject(
+                    "clock_rollback",
+                    f"遥测时间倒拨（t={t_epoch} < 上一样本 {lt}）——样本拒绝入链",
+                )
+            dlat_m = (lat_1e7 - llat) * _M_PER_1E7_DEG
+            dlon_m = (lon_1e7 - llon) * _M_PER_1E7_DEG * math.cos(math.radians(lat_1e7 / 1e7))
+            dm = math.hypot(dlat_m, dlon_m)
+            if dm > MAX_JUMP_M:
+                self._reject(
+                    "teleport_jump",
+                    f"水平跳变 {dm:.0f}m 超界 {MAX_JUMP_M:.0f}m/样本——样本拒绝入链",
+                )
+            if wall is not None and self.last_wall is not None:
+                dtw = wall - self.last_wall
+                if dtw <= 0:
+                    if (alt_cm, lat_1e7, lon_1e7) != (lalt, llat, llon):
+                        self._reject(
+                            "zero_dt_motion",
+                            f"零间隔状态突变（t={t_epoch}）——样本拒绝入链",
+                        )
+                else:
+                    if dtw > MAX_DT_S:
+                        self._reject(
+                            "dt_exceeded",
+                            f"样本间隔 {dtw:.1f}s 超出 2Hz 契约上界 {MAX_DT_S:.0f}s"
+                            "——样本拒绝入链（断链标记，采样已中断）",
+                        )
+                    vert = abs(alt_cm - lalt) / dtw  # cm/s
+                    if vert > MAX_VERT_MS * 100:
+                        self._reject(
+                            "vert_speed",
+                            f"垂直速度 {vert / 100:.1f}m/s 超物理界 {MAX_VERT_MS:.0f}m/s"
+                            "——样本拒绝入链",
+                        )
+        if wall is not None:
+            self.last_wall = wall
+        self._resync = False
         self.head = sample_hash(self.head, t_epoch, alt_cm, lat_1e7, lon_1e7)
         self.samples.append((t_epoch, alt_cm, lat_1e7, lon_1e7))
         self.n += 1

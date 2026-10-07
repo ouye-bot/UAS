@@ -7,6 +7,12 @@
 //! 任务面：Task 3 profile/assemble、Task 4 prove、Task 5 sm3file、Task 6 verify-only
 //! （计划：crypto/01_设计文档/plans/2026-09-03-SP4-ZK证明服务.md）。
 
+// A3（组合 A，2026-10-06）：mimalloc 全局分配器——prove 峰值窗列级分配 churn
+// 压 Windows LFH 碎片残差。分配器换代零语义面：证明字节由转录链决定，与堆
+// 布局无涉（固定种子/盐通道均不读堆地址）。
+#[global_allocator]
+static GLOBAL_ALLOC: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 pub mod assemble;
 pub mod ctx_tag;
 pub mod pin_fingerprint;
@@ -14,6 +20,9 @@ pub mod profile;
 pub mod prove;
 pub mod sm3file;
 pub mod sm3_host;
+// 优化 2：跨证明确定性产物磁盘缓存（仅 pinned 公开输入确定性产物——随机性
+// 纪律红线见模块头；每证明盲化 λ/transcript 熵绝不入缓存）。
+pub mod zk_cache;
 // SM3 查表化织入层重导出（部署默认函数——生产 pin 口径）。
 pub use plonkish_sm2_probe::sm3_lookup_weave;
 

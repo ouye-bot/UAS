@@ -3,3 +3,10 @@
 # export FZ_UAS_WSL="/mnt/<盘>/你的部署路径/uas"
 # export FZ_TMP_WSL="/mnt/<盘>/临时目录（引擎钥/令牌文件所在）"
 # export FZ_ARCHIVE="/mnt/<盘>/归档目录（可选）"
+# ⚠ 串行闸 RAM 判决（铁律，2026-10-06 换代复测）：单张 AUTH 出证实测峰值
+# **7.5GB**（⑥代内存组合 A+⑦代电路+验证根修后采样实测；旧代 11.7~14GB 作
+# 废）——19.75GB 宿主下 FZ_PROVE_MAX_CONCURRENT=1 仍为安全缺省（闸=2=
+# 15GB 级并发峰值，栈在线时贴 OOM 线）；内存宽裕宿主可审慎开 2 并实测。
+# 准入线 FZ_PROVE_MIN_AVAIL_GIB 缺省 8.5=峰值+1.0 余量，换代须重测再校准。
+# 真并行吞吐走 FZ_PROVE_REMOTE 远程 prover 池。
+# export FZ_PROVE_MAX_CONCURRENT=1

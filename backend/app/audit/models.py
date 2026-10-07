@@ -37,6 +37,27 @@ class Warrant(Base):
     unlocked_id_number: Mapped[str | None] = mapped_column(String(32), nullable=True)
 
 
+class DisposalRequest(Base):
+    """处置待办（2026-10-04 处置联动 A5/B2）：结案结论=verified（属实）时由
+    结案挂钩自动生成——审计定谳的下一棒是机构处置（谁/何时/处置说明逐项留痕）。
+
+    - req_hash_hex 唯一=幂等锚：同案同请求重复挂钩/重复触发不重复建单；
+    - 误报（mistaken）/无法查证（inconclusive）不建单——无处置对象；
+    - username 取该请求解锁实名（warrants.unlocked_username——unlocked 数据，
+      executed 前置保证已回填；不可得时如实存空串，不臆造）。"""
+
+    __tablename__ = "disposal_requests"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    req_hash_hex: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    case_no: Mapped[str] = mapped_column(String(128))
+    username: Mapped[str] = mapped_column(String(128), default="")
+    created_ts: Mapped[dt.datetime] = mapped_column(DateTime, default=dt.datetime.utcnow)
+    status: Mapped[str] = mapped_column(String(16), default="pending")  # pending / done
+    resolved_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    resolved_ts: Mapped[dt.datetime | None] = mapped_column(DateTime, nullable=True)
+
+
 class CollabIssued(Base):
     """RA 协作函出具台账（FZC2 配套）：出具行为可追溯——谁/何时/对哪张令状/哪个凭证。"""
 

@@ -5,10 +5,17 @@
 //! t_epoch≠0）→ ④ 输入面存在性与档位一致 → ⑤ 分发。
 //!
 //! 结构五元组（[`StructureTuple`]）是档位锚的载体：结构是锚、时间只是参考档
-//! （锚断言一律走五元组）。AUTH 结构锚：104,543 约束 / 11,448 advice /
-//! lookups 536 [实测 2026-09-23 R2 换代——B4-T7 104,287+256=SMT 链 64 组×4
-//! 查表门（撤销空洞封堵 weave_proto_gates）；13,057−1,609=体B CommitOne
-//! 空挂死列清偿 plan_z_parts_single；24+512=SMT 64 组×8 通道]。
+//! （锚断言一律走五元组）。AUTH 结构锚：**19,434 约束 / 8,410 advice /
+//! lookups 195 / 实例 26** [实测 2026-10-06 ⑦代，服务路径 canonical spec
+//! 装配产出；`auth_assemble_honest_structure` 三值 assert_eq! 钉定，漂移即红]。
+//! 演进链：B4-T7 104,287 → R2 换代 104,543（SMT 链 64 组×4 查表门=撤销空洞
+//! 封堵 weave_proto_gates；体B CommitOne 空挂死列清偿 plan_z_parts_single，
+//! advice 13,057→11,448；SMT 64 组×8 通道，lookup 24→536）→ SM3 查表化全量
+//! 收口 44,383 → 电路手术 ~38.2K → 20,102 → 19,578（advice 11,448→10,283）→
+//! ⑥代 19,608 / 10,534 / 556 / 26（SN 绑定第 5 组查表门+组合 A 内存优化）→
+//! **⑦代 19,434 / 8,410 / 195 / 26**（SM3 组列共享+查表通道合并：69 组 34 列
+//! 独占→lane band 列池 799 列，552 通道→191；msg-limb 桥列 packing 704→128；
+//! 门 276→102。ring 1,060,013——环账本只重路由不增减）。
 
 use plonkish_sm2_probe::sm2_auth_assemble::{sn_hash_of, AuthPreimage};
 use plonkish_sm2_probe::sm2_full_statement_assemble::{
@@ -20,7 +27,8 @@ use plonkish_sm2_probe::sm2_verify_assemble::{verify_replay, Assembled};
 use crate::ctx_tag::fp_from_be32_hex;
 use crate::profile::{
     AssembleError, CheckpointInput, JobSpec, Profile, ProfileInput, ENV_ALLOW_AUTH,
-    ENV_ALLOW_TRAIL, SUPPORTED_LOG_RATE, SUPPORTED_REPS, TRAIL_N,
+    ENV_ALLOW_TRAIL, ENV_FORBID_SPEC_KEY, ENV_HOLDER_SK, SUPPORTED_LOG_RATE, SUPPORTED_REPS,
+    TRAIL_N,
 };
 
 /// 装配结构五元组（判决件同口径）。
@@ -37,6 +45,17 @@ pub struct StructureTuple {
     /// 电路行数对数（规模 = 2^k 行）。
     pub nv: usize,
 }
+
+/// AUTH 装配结构钉定三值（⑦代 2026-10-06 实测——服务路径 canonical spec
+/// 装配产出，auth_assemble_honest_structure 消费；vendor auth_census 对拍
+/// 同值）。换代必须三值同动+注释同步+pin 重发布（publish_pin）。
+pub const AUTH_CONSTRAINTS_PIN: usize = 19_434;
+/// advice 列数钉定。
+pub const AUTH_ADVICE_PIN: usize = 8_410;
+/// 公开实例数钉定（实例 0..24：e/C₁/C₂/pred_out/pk_I/apk/Z_A/ctx_tag/pred_id/
+/// T/θ/rev_root/class——B4-d7 布局；索引 25=sn_hash：SM3(sn) 全 32B BE 折叠
+/// ——SN 绑定换代（⑥代）第 5 组查表门 digest 词根环大折叠 pin.bind 钉定）。
+pub const AUTH_INSTANCES_PIN: usize = 26;
 
 /// `Assembled` 的结构视图扩展（论文栈类型零触碰）。
 pub trait AssembledExt {
@@ -60,6 +79,31 @@ fn allow(profile: Profile) -> bool {
     match profile {
         Profile::Auth => std::env::var(ENV_ALLOW_AUTH).as_deref() == Ok("1"),
         Profile::Trail => std::env::var(ENV_ALLOW_TRAIL).as_deref() == Ok("1"),
+    }
+}
+
+/// 出示私钥交付通道裁决（批 4-6，SP-20 R-4②收口）：env=主路径（私钥字节
+/// 不落盘），spec 明文=回落档（job.json 磁盘明文窗口）。
+///
+/// 装配入口判据：spec 携带非空 holder_sk_hex → 回落档（FZ_ZK_FORBID_SPEC_KEY=1
+/// 时拒绝装配，人话指路 env 注入）；spec 空 → 自 ENV_HOLDER_SK 取（空=缺私钥
+/// 人话拒绝）。返回 (sk_hex, channel)，channel ∈ {"witness","env"}——判决件
+/// issuer_key_source 审计面同源（env 通道自述 "env"，spec 通道自述 "witness"，
+/// 与既有判决件字节口径一致）。
+pub fn resolve_holder_sk(spec_value: &str) -> Result<(String, &'static str), AssembleError> {
+    let spec_sk = spec_value.trim();
+    if !spec_sk.is_empty() {
+        if std::env::var(ENV_FORBID_SPEC_KEY).as_deref() == Ok("1") {
+            return Err(AssembleError::SpecKeyForbidden);
+        }
+        return Ok((spec_sk.to_string(), "witness"));
+    }
+    match std::env::var(ENV_HOLDER_SK) {
+        Ok(v) if !v.trim().is_empty() => Ok((v.trim().to_string(), "env")),
+        _ => Err(AssembleError::BadFieldElement {
+            name: "holder_sk_hex",
+            reason: "出示私钥缺失（spec 未携带且 env FZ_ZK_HOLDER_SK_HEX 未注入）",
+        }),
     }
 }
 
@@ -143,9 +187,14 @@ fn assemble_trail(input: &ProfileInput) -> Result<Assembled, AssembleError> {
         rows_hex,
         alt_max_cm,
         t_start,
+        sample_period_ms,
         chain_head_hex,
         auth_id,
         device_pk_hex,
+        min_lat,
+        max_lat,
+        min_lon,
+        max_lon,
         checkpoints,
         binding,
     } = input
@@ -159,15 +208,46 @@ fn assemble_trail(input: &ProfileInput) -> Result<Assembled, AssembleError> {
             reason: "高度上限域 1..65535（cm）",
         });
     }
-    // R4 复验 P0-1 根修：引擎绑定一致性三查（alt_max/auth_id/chain_head——
-    // 高度上限不再由证明者自报，见下方引擎签名验签）。
+    // 二批换代（改动1/2）：围栏矩形+采样周期域校验（fail-fast——围栏退化/
+    // 周期 0=时间门退化）。
+    if *sample_period_ms == 0 || *sample_period_ms > 60_000 {
+        return Err(AssembleError::BadBytes {
+            name: "sample_period_ms",
+            reason: "采样周期域 1..60000（ms）",
+        });
+    }
+    if min_lat > max_lat || min_lon > max_lon {
+        return Err(AssembleError::BadBytes {
+            name: "fence",
+            reason: "围栏矩形退化（min 界须 ≤ max 界）",
+        });
+    }
+    const LAT_LIMIT: i32 = 900_000_000; // ±90° × 1e7
+    const LON_LIMIT: i32 = 1_800_000_000; // ±180° × 1e7
+    if *min_lat < -LAT_LIMIT
+        || *max_lat > LAT_LIMIT
+        || *min_lon < -LON_LIMIT
+        || *max_lon > LON_LIMIT
+    {
+        return Err(AssembleError::BadBytes {
+            name: "fence",
+            reason: "围栏界越经纬度值域（|lat|≤90°、|lon|≤180° ×1e7）",
+        });
+    }
+    // R4 复验 P0-1 根修 + 二批改动3 扩域：引擎绑定一致性八查（alt_max/auth_id/
+    // chain_head/围栏 4 界——高度上限与围栏不再由证明者自报，见下方引擎签名
+    // 验签；周期不入绑定——电路 Δt 逐对自证）。
     if binding.alt_max_cm != *alt_max_cm
         || binding.auth_id != *auth_id
         || binding.chain_head_hex.to_ascii_lowercase() != chain_head_hex.to_ascii_lowercase()
+        || binding.min_lat != *min_lat
+        || binding.max_lat != *max_lat
+        || binding.min_lon != *min_lon
+        || binding.max_lon != *max_lon
     {
         return Err(AssembleError::BadBytes {
             name: "binding",
-            reason: "引擎绑定与语句字段不一致（alt_max/auth_id/chain_head）",
+            reason: "引擎绑定与语句字段不一致（alt_max/auth_id/chain_head/围栏 4 界）",
         });
     }
     let rows_raw = hex::decode(rows_hex)
@@ -222,15 +302,19 @@ fn assemble_trail(input: &ProfileInput) -> Result<Assembled, AssembleError> {
             reason: "样本链末头≠锚定链头（记录与锚定不一致——fail-closed）",
         });
     }
-    // R4 复验 P0-1：引擎绑定签名验签（fold_be_integer 口径，与检查点验签
-    // 同族）——引擎钥在证明者域外 ⟹ 高度上限不可自报；第三方经
-    // /authz/engine/pub 复核同一签名。
+    // R4 复验 P0-1 + 二批改动3：引擎绑定签名验签（fold_be_integer 口径，与
+    // 检查点验签同族）——引擎钥在证明者域外 ⟹ 高度上限/围栏 4 界不可自报；
+    // 第三方经 /authz/engine/pub 复核同一签名。
     let epk = pk_from_hex_str("binding.engine_pub_hex", &binding.engine_pub_hex)?;
     let bind_msg = format!(
-        "FZ-TRAIL-BIND|{}|{}|{}",
+        "FZ-TRAIL-BIND2|{}|{}|{}|{}|{}|{}|{}",
         binding.auth_id,
         binding.alt_max_cm,
-        binding.chain_head_hex.to_ascii_lowercase()
+        binding.chain_head_hex.to_ascii_lowercase(),
+        binding.min_lat,
+        binding.max_lat,
+        binding.min_lon,
+        binding.max_lon,
     );
     let bind_dg = plonkish_sm2_probe::sm3_native_ref::hash(bind_msg.as_bytes());
     let bind_e = plonkish_sm2_probe::trail_host::fold_be_integer(&bind_dg);
@@ -253,7 +337,7 @@ fn assemble_trail(input: &ProfileInput) -> Result<Assembled, AssembleError> {
     if !bind_sig_ok {
         return Err(AssembleError::BadBytes {
             name: "binding",
-            reason: "引擎绑定签名未通过验签（alt_max 非引擎授权或报文被改）",
+            reason: "引擎绑定签名未通过验签（alt_max/围栏非引擎授权或报文被改）",
         });
     }
     let samples = plonkish_sm2_probe::trail_host::TrailSamples {
@@ -270,6 +354,13 @@ fn assemble_trail(input: &ProfileInput) -> Result<Assembled, AssembleError> {
             alt_max_cm: u16::try_from(*alt_max_cm).expect("①已校验域"),
             t_start: *t_start,
             head_fold: plonkish_sm2_probe::trail_host::fold_words_be(&chain_head),
+            sample_period_ms: *sample_period_ms,
+            fence: plonkish_sm2_probe::trail_weave::FenceRect {
+                min_lat: *min_lat,
+                max_lat: *max_lat,
+                min_lon: *min_lon,
+                max_lon: *max_lon,
+            },
         },
     );
     // TrailCircuit → Assembled 适配（vendor 侧 from_parts 构造器：
@@ -322,6 +413,10 @@ fn assemble_auth(spec: &JobSpec, input: &ProfileInput) -> Result<Assembled, Asse
     let binding = spec.binding.as_ref().expect("③ 已校验");
     let bp = binding.resolve()?;
 
+    // 出示私钥交付通道裁决（批 4-6：FZ_ZK_FORBID_SPEC_KEY=1 时 spec 明文回落
+    // 拒绝装配——先于一切私钥消费，fail-closed）。
+    let (holder_sk_hex, _sk_channel) = resolve_holder_sk(holder_sk_hex)?;
+
     // 字段解析（fail-fast：域/长度/值域逐面校验）。
     let pk_holder = pk_from_hex_str("holder_pk_hex", holder_pk_hex)?;
     let pk_ra = pk_from_hex_str("ra_pk_hex", ra_pk_hex)?;
@@ -330,10 +425,12 @@ fn assemble_auth(spec: &JobSpec, input: &ProfileInput) -> Result<Assembled, Asse
     let id_number_raw = fixed_bytes::<18>("id_number_hex", id_number_hex)?;
     let serial = hex::decode(serial_hex)
         .map_err(|_| AssembleError::BadBytes { name: "serial_hex", reason: "非法 hex" })?;
-    if serial.is_empty() || serial.len() > 64 {
+    // SN 绑定换代（2026-10-06）：上界 64→55（单块填充域——第 5 组 SM3 查表门
+    // 定宽 64B 块见证；阈值只紧不松）。
+    if serial.is_empty() || serial.len() > 55 {
         return Err(AssembleError::BadBytes {
             name: "serial_hex",
-            reason: "序列号 1..64 字节",
+            reason: "序列号 1..55 字节",
         });
     }
     if sig_hex.len() != 128 || !sig_hex.chars().all(|c| c.is_ascii_hexdigit()) {
@@ -343,7 +440,7 @@ fn assemble_auth(spec: &JobSpec, input: &ProfileInput) -> Result<Assembled, Asse
         });
     }
     let sk_holder = {
-        let l = sm2_params::hex_to_limbs_le(holder_sk_hex);
+        let l = sm2_params::hex_to_limbs_le(&holder_sk_hex);
         // R1-1b 数值序修复（2026-09-21）：[u64;4] 的派生比较是**字典序**（从 limbs[0]
         // =最低字比起）——n_limbs 的最低字 ≈0.33×2^64，导致约 2/3 的合法私钥被误拒
         //（黄金向量恰好侥幸通过）。改为从最高字向低字的数值比较。
@@ -424,6 +521,9 @@ fn assemble_auth(spec: &JobSpec, input: &ProfileInput) -> Result<Assembled, Asse
         class_id: *class_id,
         id_number: id_number_raw,
         sn_h: plonkish_sm2_probe::sm2_auth_assemble::sn_hash_of(&pi.serial),
+        // SN 绑定换代（2026-10-06）：serial 原文入第 5 组查表门见证
+        //（digest(sn_witness)==实例 25 sn_hash——SM3 全 32B）。
+        serial: pi.serial.clone(),
         smt_siblings: Some(smt_siblings),
         smt_root: Some(smt_root),
     };
@@ -455,6 +555,229 @@ fn assemble_auth(spec: &JobSpec, input: &ProfileInput) -> Result<Assembled, Asse
 }
 
 fn del_host(_h: plonkish_sm2_probe::sm2_full_statement_assemble::FullStatementHost) {}
+
+/// AUTH 装配结构钉定（批 3.1，2026-10-04）：TRAIL 档早有结构五元组钉定
+/// （`trail_assemble_honest_structure`），AUTH 恰恰没有——评委点名的
+/// 「最刺眼的自伤」。本测试补齐同款钉定：诚实载荷（canonical spec）装配
+/// 成功后，对结构五元组三值（约束/advice/公开实例）逐条 `assert_eq!` 钉死
+/// 当前实测值。断言失败=AUTH 构型漂移信号（vendor 钉定树变化/装配路径
+/// 被改）——若有意换代，必须同步更新本钉定断言与 profile.rs/assemble.rs
+/// 结构锚注释及口径文档，并走 pin 重发布流程（publish_pin）。
+#[cfg(test)]
+mod auth_structure_tests {
+    use super::*;
+    use crate::test_env::ENV_MUTEX as AUTH_ENV_LOCK;
+
+    /// AUTH 档准入门禁串行锁（TrailEnvGuard/spec_key EnvGuard 同法——env
+    /// set/remove 竞态防线；全测试族共用同一把 test_env::ENV_MUTEX）。
+    struct AuthEnvGuard {
+        _lock: std::sync::MutexGuard<'static, ()>,
+    }
+    impl AuthEnvGuard {
+        fn allow() -> Self {
+            let g = AUTH_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+            std::env::set_var("FZ_ZK_ALLOW_AUTH", "1");
+            AuthEnvGuard { _lock: g }
+        }
+    }
+    impl Drop for AuthEnvGuard {
+        fn drop(&mut self) {
+            std::env::remove_var("FZ_ZK_ALLOW_AUTH");
+        }
+    }
+
+    fn canonical_spec() -> JobSpec {
+        serde_json::from_str(include_str!("../tests/auth_canonical_spec.json"))
+            .expect("AUTH canonical spec 解析")
+    }
+
+    /// 正例：诚实载荷装配成功——结构五元组钉定（三值实测见 eprintln；
+    /// 漂移即红，人话指向换代动作）。⑦代（2026-10-06）：SM3 组列共享+查表
+    /// 通道合并——19,434 / 8,410 / 26，lookups 195（实测 eprintln 口径）。
+    #[test]
+    fn auth_assemble_honest_structure() {
+        let _env = AuthEnvGuard::allow();
+        let asm = assemble(&canonical_spec()).expect("诚实 AUTH 载荷必须装配成功");
+        let st = asm.structure();
+        eprintln!(
+            "[auth-svc] constraints={} advice={} rings={} inst={} nv={} lookups={}",
+            st.constraints, st.advice_cols, st.copy_rings, st.instances, st.nv,
+            asm.info.lookups.len()
+        );
+        assert_eq!(
+            asm.info.lookups.len(), 195,
+            "AUTH lookup 通道数⑦代钉定（552 SM3 通道按 lane×band 合并为 191+窗 4）"
+        );
+        assert_eq!(
+            st.constraints, AUTH_CONSTRAINTS_PIN,
+            "AUTH 构型漂移——约束数与钉定不符。若有意换代请同步更新钉定断言与口径文档（assemble.rs auth_structure_tests / profile.rs 结构锚）"
+        );
+        assert_eq!(
+            st.advice_cols, AUTH_ADVICE_PIN,
+            "AUTH 构型漂移——advice 列数与钉定不符。若有意换代请同步更新钉定断言与口径文档（assemble.rs auth_structure_tests / profile.rs 结构锚）"
+        );
+        assert_eq!(
+            st.instances, AUTH_INSTANCES_PIN,
+            "AUTH 构型漂移——公开实例数与钉定不符。若有意换代请同步更新钉定断言与口径文档（assemble.rs auth_structure_tests / profile.rs 结构锚）"
+        );
+    }
+
+    /// ⑦代负例扩型①（2026-10-06，通道合并形态——跨组行带污染）：把共享 band
+    /// 列上某组行带的查表值改成离表元组（模拟 A 组行带值被错喂/或证明者直接
+    /// 伪造 limb）——合并后的单条通道对 band 列**逐行**查 ⟹ 离表元组必须被
+    /// 查表论证拒绝（mock 口径；prove 级拒绝=候 prove 窗 e2e_auth_full/黄金
+    /// 向量 v7 重生成验证债）。
+    #[test]
+    fn auth_packed_band_offtable_pollution_rejected() {
+        use plonkish_backend::util::expression::Expression;
+        let _env = AuthEnvGuard::allow();
+        let asm = assemble(&canonical_spec()).expect("诚实 AUTH 载荷必须装配成功");
+        let np = asm.info.preprocess_polys.len();
+        let resolve = |p: usize, r: usize| -> plonkish_sm2_probe::FpSM2 {
+            asm.info.preprocess_polys[p - 1][r]
+        };
+        // 定位一条 3-元组 SM3 通道（XOR2 lane band：3 输入 advice 对 + 3 表对）
+        let chan = asm
+            .info
+            .lookups
+            .iter()
+            .find(|c| {
+                c.len() == 3
+                    && c.iter().all(|(a, b)| match (a, b) {
+                        (Expression::Polynomial(qa), Expression::Polynomial(qb)) => {
+                            qa.poly() > np && qb.poly() <= np
+                        }
+                        _ => false,
+                    })
+            })
+            .expect("⑦代 XOR2 lane band 通道在案");
+        let cols: Vec<usize> = chan
+            .iter()
+            .map(|(a, _)| match a {
+                Expression::Polynomial(q) => q.poly() - 1 - np,
+                _ => unreachable!(),
+            })
+            .collect();
+        let table: std::collections::HashSet<[plonkish_sm2_probe::FpSM2; 3]> = (0..4096)
+            .map(|r| {
+                let mut t = [plonkish_sm2_probe::FpSM2::from(0u64); 3];
+                for (j, (_, b)) in chan.iter().enumerate() {
+                    if let Expression::Polynomial(q) = b {
+                        t[j] = resolve(q.poly(), r);
+                    }
+                }
+                t
+            })
+            .collect();
+        // 基线：诚实见证该通道全行在表
+        for r in 0..4096usize {
+            let tup = [
+                asm.advice[cols[0]][r],
+                asm.advice[cols[1]][r],
+                asm.advice[cols[2]][r],
+            ];
+            assert!(table.contains(&tup), "基线行 {r} 已离表——装配漂移");
+        }
+        // 攻击：某组行带的输出格 c 改为 (a⊕b)±1——离表（跨组行带污染形态）
+        let row = (1..4096).find(|&r| {
+            let v = asm.advice[cols[2]][r];
+            v != plonkish_sm2_probe::FpSM2::from(0u64)
+                && v != plonkish_sm2_probe::FpSM2::from(15u64)
+        }).expect("存在非 0/15 输出 limb 行") ;
+        let mut polluted = asm.advice.clone();
+        polluted[cols[2]][row] = polluted[cols[2]][row]
+            + plonkish_sm2_probe::FpSM2::from(1u64);
+        let tup = [
+            polluted[cols[0]][row],
+            polluted[cols[1]][row],
+            polluted[cols[2]][row],
+        ];
+        assert!(!table.contains(&tup), "篡改后仍在表——负例失真");
+        let mut bad = 0usize;
+        for r in 0..4096usize {
+            let t = [
+                polluted[cols[0]][r],
+                polluted[cols[1]][r],
+                polluted[cols[2]][r],
+            ];
+            if !table.contains(&t) {
+                bad += 1;
+            }
+        }
+        assert!(bad > 0, "跨组行带污染未被合并通道击中——查表论证失守");
+    }
+
+    /// ⑦代负例扩型②（错误行选择路由）：把合法 limb 值路由到 band 列的
+    /// 非活跃行（行选择错位——零元组行被单点污染）⟹ 元组 (v,0,0) 离表，
+    /// 合并通道必拒；且该值不入任何环 ⟹ 环审计不受噪声干扰（拒绝原因
+    /// 恰为查表面）。
+    #[test]
+    fn auth_packed_band_misrouted_row_rejected() {
+        use plonkish_backend::util::expression::Expression;
+        let _env = AuthEnvGuard::allow();
+        let asm = assemble(&canonical_spec()).expect("诚实 AUTH 载荷必须装配成功");
+        let np = asm.info.preprocess_polys.len();
+        let chan = asm
+            .info
+            .lookups
+            .iter()
+            .find(|c| {
+                c.len() == 3
+                    && c.iter().all(|(a, b)| match (a, b) {
+                        (Expression::Polynomial(qa), Expression::Polynomial(qb)) => {
+                            qa.poly() > np && qb.poly() <= np
+                        }
+                        _ => false,
+                    })
+            })
+            .expect("⑦代 XOR2 lane band 通道在案");
+        let col0 = match &chan[0].0 {
+            Expression::Polynomial(q) => q.poly() - 1 - np,
+            _ => unreachable!(),
+        };
+        let table: std::collections::HashSet<[plonkish_sm2_probe::FpSM2; 3]> = (0..4096)
+            .map(|r| {
+                let mut t = [plonkish_sm2_probe::FpSM2::from(0u64); 3];
+                for (j, (_, b)) in chan.iter().enumerate() {
+                    if let Expression::Polynomial(q) = b {
+                        t[j] = asm.info.preprocess_polys[q.poly() - 1][r];
+                    }
+                }
+                t
+            })
+            .collect();
+        // 找一行全零元组行（band 列非活跃行——行选择路由的落点）
+        let col_a = col0;
+        let zero_row = (1..4096)
+            .find(|&r| {
+                (0..3).all(|j| {
+                    let c = match &chan[j].0 {
+                        Expression::Polynomial(q) => q.poly() - 1 - np,
+                        _ => unreachable!(),
+                    };
+                    asm.advice[c][r] == plonkish_sm2_probe::FpSM2::from(0u64)
+                })
+            })
+            .expect("band 列存在全零非活跃行");
+        let mut polluted = asm.advice.clone();
+        polluted[col_a][zero_row] = plonkish_sm2_probe::FpSM2::from(5u64);
+        // 逐行复核（与①同口径）
+        let mut bad = 0usize;
+        for r in 0..4096usize {
+            let mut t = [plonkish_sm2_probe::FpSM2::from(0u64); 3];
+            for (j, (a, _)) in chan.iter().enumerate() {
+                if let Expression::Polynomial(q) = a {
+                    let c = q.poly() - 1 - np;
+                    t[j] = polluted[c][r];
+                }
+            }
+            if !table.contains(&t) {
+                bad += 1;
+            }
+        }
+        assert!(bad > 0, "错误行选择路由（零行污染）未被合并通道击中");
+    }
+}
 
 /// 公钥 hex（128 hex x‖y）→ 坐标；非法=BadBytes。
 fn pk_from_hex_str(name: &'static str, hex: &str) -> Result<(plonkish_sm2_probe::FpSM2, plonkish_sm2_probe::FpSM2), AssembleError> {
@@ -541,9 +864,14 @@ mod trail_tests {
                 rows_hex: v["rows_hex"].as_str().unwrap().to_string(),
                 alt_max_cm: v["alt_max_cm"].as_u64().unwrap() as u32,
                 t_start: v["t_start"].as_u64().unwrap() as u32,
+                sample_period_ms: v["sample_period_ms"].as_u64().unwrap() as u32,
                 chain_head_hex: v["chain_head_hex"].as_str().unwrap().to_string(),
                 auth_id: v["auth_id"].as_u64().unwrap(),
                 device_pk_hex: v["device_pk_hex"].as_str().unwrap().to_string(),
+                min_lat: v["min_lat"].as_i64().unwrap() as i32,
+                max_lat: v["max_lat"].as_i64().unwrap() as i32,
+                min_lon: v["min_lon"].as_i64().unwrap() as i32,
+                max_lon: v["max_lon"].as_i64().unwrap() as i32,
                 checkpoints: cps,
                 binding: serde_json::from_value(v["binding"].clone())
                     .expect("TRAIL binding fixture"),
@@ -554,19 +882,29 @@ mod trail_tests {
     /// 正例：诚实载荷装配成功——结构五元组钉定（B6 判决行：constraints=534/
     /// advice=4454/rings=1,965,044/instances=3/nv=12。2026-10 换代：alt_max/
     /// t_start 迁公开实例——constraints 532+2 钉、advice 4452+2 中继列、
-    /// z prep 4+2、实例 1→3、环 +2 中继环(n+1 成员/2 成员)）。
+    /// z prep 4+2、实例 1→3、环 +2 中继环(n+1 成员/2 成员)。
+    /// 2026-10 二批换代（改动1 围栏门族+改动2 周期实例化）：constraints
+    /// 534→681（+1 周期钉 +136 围栏 bool +2 符号 tie +4 半平面 recomb
+    /// +4 围栏钉）、advice 4454→4611（+16 nib 影子 +128 δ 位 +8 轴顶位
+    /// +5 中继列）、prep 30→35（+5 钉选择器）、实例 3→8、环 +2053。
+    /// ⑦代（2026-10-06 SM3 组列共享+查表通道合并）：128 组 34 列独占
+    /// 4,352 列→lane band 列池 1,484 列（SPLIT3 2,688 行/组>2,048 ⟹ 每带
+    /// 1 组=物理瓶颈，425 列为下界主体）、1,024 通道→357、proto 门 512→
+    /// 184（lane×band）⟹ constraints 681→353、advice 4,611→1,743。环账本
+    /// 只重路由不增减。
     #[test]
     fn trail_assemble_honest_structure() {
         let _env = TrailEnvGuard::allow();
         let v = fixture();
         let asm = assemble(&spec_of(&v)).expect("诚实 TRAIL 载荷必须装配成功");
         let st = asm.structure();
-        assert_eq!(st.constraints, 534, "TRAIL n=128 约束钉定（+2 实例钉）");
-        assert_eq!(st.advice_cols, 4454, "TRAIL n=128 advice 列（+2 中继列）");
-        assert_eq!(st.instances, 3, "实例面=chain_head‖alt_max‖t_start（2026-10 换代）");
+        assert_eq!(st.constraints, 353, "TRAIL n=128 约束钉定（⑦代：proto 门 512→184 lane×band）");
+        assert_eq!(st.advice_cols, 1743, "TRAIL n=128 advice 列（⑦代：SM3 组列 4,352→1,484 lane band 池）");
+        assert_eq!(st.instances, 8, "实例面=chain_head‖alt_max‖t_start‖周期‖围栏 4 界（二批换代）");
         assert_eq!(st.nv, 12, "行规模 2^12");
-        eprintln!("[trail-svc] constraints={} advice={} rings={} inst={} nv={}",
-            st.constraints, st.advice_cols, st.copy_rings, st.instances, st.nv);
+        eprintln!("[trail-svc] constraints={} advice={} rings={} inst={} nv={} lookups={}",
+            st.constraints, st.advice_cols, st.copy_rings, st.instances, st.nv,
+            asm.info.lookups.len());
     }
 
     /// R4 复验 P0-1：引擎绑定一致性——抬上限（binding≠spec alt_max）必拒。
@@ -650,6 +988,289 @@ mod trail_tests {
         match r {
             Err(AssembleError::BadBytes { name: "t_start", .. }) => {}
             other => panic!("t_start 篡改必须拒——实得 {:?}", other.is_ok()),
+        }
+    }
+
+    /// 二批改动3 负例①：围栏自报（spec 抬宽东界、binding 仍持窄界）⟹
+    /// 绑定一致性八查拒绝（围栏与 alt_max 同款——证明者不可自报）。
+    #[test]
+    fn trail_fence_self_report_rejected() {
+        let _env = TrailEnvGuard::allow();
+        let mut v = fixture();
+        v["max_lon"] = serde_json::Value::from(v["max_lon"].as_i64().unwrap() + 10_000_000);
+        let r = assemble(&spec_of(&v));
+        match r {
+            Err(AssembleError::BadBytes { name: "binding", .. }) => {}
+            other => panic!("围栏自报必须被绑定一致性拒绝——实得 {:?}", other.map(|_| ())),
+        }
+    }
+
+    /// 二批改动3 负例②：绑定签名换报文（围栏界注入 BIND2 域后，旧格式
+    /// BIND 签名/被改签名一律验签拒绝）。
+    #[test]
+    fn trail_binding_sig_v2_tamper_rejected() {
+        let _env = TrailEnvGuard::allow();
+        let mut v = fixture();
+        v["binding"]["sig_hex"] = serde_json::Value::from("11".repeat(128));
+        let r = assemble(&spec_of(&v));
+        match r {
+            Err(AssembleError::BadBytes { name: "binding", .. }) => {}
+            other => panic!("BIND2 签名篡改必须被拒——实得 {:?}", other.map(|_| ())),
+        }
+    }
+
+    /// 二批改动1 负例③：围栏矩形退化（min_lat > max_lat）=BadBytes 拒。
+    #[test]
+    fn trail_fence_degenerate_rejected() {
+        let _env = TrailEnvGuard::allow();
+        let mut v = fixture();
+        let lo = v["min_lat"].as_i64().unwrap();
+        let hi = v["max_lat"].as_i64().unwrap();
+        v["min_lat"] = serde_json::Value::from(hi);
+        v["max_lat"] = serde_json::Value::from(lo);
+        let r = assemble(&spec_of(&v));
+        match r {
+            Err(AssembleError::BadBytes { name: "fence", .. }) => {}
+            other => panic!("退化围栏必须拒——实得 {:?}", other.map(|_| ())),
+        }
+    }
+
+    /// 二批改动2 负例④：采样周期 0（时间门退化）=BadBytes 拒。
+    #[test]
+    fn trail_period_zero_rejected() {
+        let _env = TrailEnvGuard::allow();
+        let mut v = fixture();
+        v["sample_period_ms"] = serde_json::Value::from(0);
+        let r = assemble(&spec_of(&v));
+        match r {
+            Err(AssembleError::BadBytes { name: "sample_period_ms", .. }) => {}
+            other => panic!("周期 0 必须拒——实得 {:?}", other.is_ok()),
+        }
+    }
+
+    /// ⑦代负例扩型③（TRAIL 通道合并形态——跨组行带污染）：TRAIL 语句 128 组
+    /// 共享 lane band 列；把某组行带的查表值改成离表元组 ⟹ 合并通道逐行查
+    /// 必拒（mock 口径；prove 级=候 prove 窗 trail_weave_e2e_n128_verdict）。
+    #[test]
+    fn trail_packed_band_offtable_pollution_rejected() {
+        use plonkish_backend::util::expression::Expression;
+        let _env = TrailEnvGuard::allow();
+        let v = fixture();
+        let asm = assemble(&spec_of(&v)).expect("诚实 TRAIL 载荷必须装配成功");
+        let np = asm.info.preprocess_polys.len();
+        let chan = asm
+            .info
+            .lookups
+            .iter()
+            .find(|c| {
+                c.len() == 3
+                    && c.iter().all(|(a, b)| match (a, b) {
+                        (Expression::Polynomial(qa), Expression::Polynomial(qb)) => {
+                            qa.poly() > np && qb.poly() <= np
+                        }
+                        _ => false,
+                    })
+            })
+            .expect("⑦代 TRAIL XOR2 lane band 通道在案");
+        let cols: Vec<usize> = chan
+            .iter()
+            .map(|(a, _)| match a {
+                Expression::Polynomial(q) => q.poly() - 1 - np,
+                _ => unreachable!(),
+            })
+            .collect();
+        let table: std::collections::HashSet<[plonkish_sm2_probe::FpSM2; 3]> = (0..4096)
+            .map(|r| {
+                let mut t = [plonkish_sm2_probe::FpSM2::from(0u64); 3];
+                for (j, (_, b)) in chan.iter().enumerate() {
+                    if let Expression::Polynomial(q) = b {
+                        t[j] = asm.info.preprocess_polys[q.poly() - 1][r];
+                    }
+                }
+                t
+            })
+            .collect();
+        for r in 0..4096usize {
+            let tup = [
+                asm.advice[cols[0]][r],
+                asm.advice[cols[1]][r],
+                asm.advice[cols[2]][r],
+            ];
+            assert!(table.contains(&tup), "基线行 {r} 已离表——装配漂移");
+        }
+        let row = (1..4096)
+            .find(|&r| {
+                let val = asm.advice[cols[2]][r];
+                val != plonkish_sm2_probe::FpSM2::from(0u64)
+                    && val != plonkish_sm2_probe::FpSM2::from(15u64)
+            })
+            .expect("存在非 0/15 输出 limb 行");
+        let mut polluted = asm.advice.clone();
+        polluted[cols[2]][row] += plonkish_sm2_probe::FpSM2::from(1u64);
+        let mut bad = 0usize;
+        for r in 0..4096usize {
+            let t = [
+                polluted[cols[0]][r],
+                polluted[cols[1]][r],
+                polluted[cols[2]][r],
+            ];
+            if !table.contains(&t) {
+                bad += 1;
+            }
+        }
+        assert!(bad > 0, "TRAIL 跨组行带污染未被合并通道击中——查表论证失守");
+    }
+
+    /// ⑦代负例扩型④（TRAIL 错误行选择路由）：合法 limb 落到 band 列非活跃
+    /// 行（行选择错位）⟹ (v,0,0) 离表必拒。
+    #[test]
+    fn trail_packed_band_misrouted_row_rejected() {
+        use plonkish_backend::util::expression::Expression;
+        let _env = TrailEnvGuard::allow();
+        let v = fixture();
+        let asm = assemble(&spec_of(&v)).expect("诚实 TRAIL 载荷必须装配成功");
+        let np = asm.info.preprocess_polys.len();
+        let chan = asm
+            .info
+            .lookups
+            .iter()
+            .find(|c| {
+                c.len() == 3
+                    && c.iter().all(|(a, b)| match (a, b) {
+                        (Expression::Polynomial(qa), Expression::Polynomial(qb)) => {
+                            qa.poly() > np && qb.poly() <= np
+                        }
+                        _ => false,
+                    })
+            })
+            .expect("⑦代 TRAIL XOR2 lane band 通道在案");
+        let table: std::collections::HashSet<[plonkish_sm2_probe::FpSM2; 3]> = (0..4096)
+            .map(|r| {
+                let mut t = [plonkish_sm2_probe::FpSM2::from(0u64); 3];
+                for (j, (_, b)) in chan.iter().enumerate() {
+                    if let Expression::Polynomial(q) = b {
+                        t[j] = asm.info.preprocess_polys[q.poly() - 1][r];
+                    }
+                }
+                t
+            })
+            .collect();
+        let zero_row = (1..4096)
+            .find(|&r| {
+                (0..3).all(|j| {
+                    let c = match &chan[j].0 {
+                        Expression::Polynomial(q) => q.poly() - 1 - np,
+                        _ => unreachable!(),
+                    };
+                    asm.advice[c][r] == plonkish_sm2_probe::FpSM2::from(0u64)
+                })
+            })
+            .expect("band 列存在全零非活跃行");
+        let mut polluted = asm.advice.clone();
+        let col_a = match &chan[0].0 {
+            Expression::Polynomial(q) => q.poly() - 1 - np,
+            _ => unreachable!(),
+        };
+        polluted[col_a][zero_row] = plonkish_sm2_probe::FpSM2::from(5u64);
+        let mut bad = 0usize;
+        for r in 0..4096usize {
+            let mut t = [plonkish_sm2_probe::FpSM2::from(0u64); 3];
+            for (j, (a, _)) in chan.iter().enumerate() {
+                if let Expression::Polynomial(q) = a {
+                    let c = q.poly() - 1 - np;
+                    t[j] = polluted[c][r];
+                }
+            }
+            if !table.contains(&t) {
+                bad += 1;
+            }
+        }
+        assert!(bad > 0, "TRAIL 错误行选择路由（零行污染）未被合并通道击中");
+    }
+}
+
+/// 批 4-6：出示私钥交付通道裁决（resolve_holder_sk）四形态单测——轻量纯函数
+/// 面（不触电路装配，毫秒级；prove 重测试内存窗不受影响）。
+#[cfg(test)]
+mod spec_key_tests {
+    use super::resolve_holder_sk;
+    use crate::profile::{AssembleError, ENV_FORBID_SPEC_KEY, ENV_HOLDER_SK};
+    use crate::test_env::ENV_MUTEX;
+
+    /// env 串行锁守卫（TrailEnvGuard 同法——env set/remove 竞态防线）；
+    /// Drop 时清两个通道键（测试零残留）。
+    struct EnvGuard {
+        _lock: std::sync::MutexGuard<'static, ()>,
+    }
+    impl EnvGuard {
+        /// 以 (键, 值) 列表预置 env 后持锁。
+        fn preset(vars: &[(&str, &str)]) -> Self {
+            let g = ENV_MUTEX.lock().unwrap();
+            for (k, v) in vars {
+                std::env::set_var(k, v);
+            }
+            EnvGuard { _lock: g }
+        }
+        /// 持锁且两通道键全清（缺省回落档形态）。
+        fn clean() -> Self {
+            let g = ENV_MUTEX.lock().unwrap();
+            std::env::remove_var(ENV_FORBID_SPEC_KEY);
+            std::env::remove_var(ENV_HOLDER_SK);
+            EnvGuard { _lock: g }
+        }
+    }
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            std::env::remove_var(ENV_FORBID_SPEC_KEY);
+            std::env::remove_var(ENV_HOLDER_SK);
+        }
+    }
+
+    /// 缺省（无旗标）：spec 明文回落照常放行=witness 通道——既有测试/CLI
+    /// 构型行为不变（批 4-6 兼容锚）。
+    #[test]
+    fn spec_channel_default_unchanged() {
+        let _env = EnvGuard::clean();
+        let (sk, ch) = resolve_holder_sk("ab".repeat(32).as_str()).expect("缺省回落放行");
+        assert_eq!(ch, "witness");
+        assert_eq!(sk, "ab".repeat(32));
+    }
+
+    /// FZ_ZK_FORBID_SPEC_KEY=1 + spec 明文 ⟹ SpecKeyForbidden，人话指路
+    /// env 注入（错误消息含 env 变量名）。
+    #[test]
+    fn spec_channel_forbidden_when_flag_set() {
+        let _env = EnvGuard::preset(&[(ENV_FORBID_SPEC_KEY, "1")]);
+        let err = resolve_holder_sk("cd".repeat(32).as_str()).expect_err("回落档必须拒");
+        match &err {
+            AssembleError::SpecKeyForbidden => {}
+            other => panic!("实得 {other:?}"),
+        }
+        assert!(
+            err.to_string().contains(ENV_HOLDER_SK),
+            "错误消息须指路 env 注入通道：{err}"
+        );
+    }
+
+    /// FZ_ZK_FORBID_SPEC_KEY=1 + spec 空 + env 注入 ⟹ env 通道放行（桥生产
+    /// 拼装形态——私钥字节不落盘）。
+    #[test]
+    fn env_channel_with_forbid_and_empty_spec() {
+        let sk = "ef".repeat(32);
+        let _env = EnvGuard::preset(&[(ENV_FORBID_SPEC_KEY, "1"), (ENV_HOLDER_SK, &sk)]);
+        let (got, ch) = resolve_holder_sk("").expect("env 通道放行");
+        assert_eq!(ch, "env");
+        assert_eq!(got, sk);
+    }
+
+    /// 两通道皆空 ⟹ 缺私钥人话拒绝（BadFieldElement·holder_sk_hex）。
+    #[test]
+    fn missing_everywhere_rejected() {
+        let _env = EnvGuard::clean();
+        let err = resolve_holder_sk("  ").expect_err("两通道皆空必须拒");
+        match &err {
+            AssembleError::BadFieldElement { name, .. } => assert_eq!(*name, "holder_sk_hex"),
+            other => panic!("实得 {other:?}"),
         }
     }
 }

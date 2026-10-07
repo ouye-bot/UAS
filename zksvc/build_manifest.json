@@ -6,7 +6,7 @@
  "source_repo": "M3_probe/repos/sl_wt (system/uas-auth)",
  "source_branch": "system/uas-auth",
  "extraction": "git -c core.autocrlf=false archive 8bb4a7c plonkish（CRLF 教训⑪纪律）",
- "aggregate_sm3": "961ee911d1226d6c6768a78d0dd05240bddf514ec04dd2582cac204d6a243aba",
+ "aggregate_sm3": "7ca54f447d2e9bd70573faa1de0b5f5596cab8dccc7a4f3ac5be51c498f52d94",
  "file_count": 148,
  "aggregate": "eba59f5c5f204ee84c57bb5fea8f10a4bdb4c3a5cce40fb3c8308881c06af145"
 }

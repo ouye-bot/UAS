@@ -14,8 +14,9 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue"
 import FlightGlobe from "../components/FlightGlobe.vue";
 import FlightGauges from "../components/FlightGauges.vue";
 import { bridge, ApiError, randInt, fromHex, toHex } from "../lib/api";
-import { pickupToken, verifyTokenSig, canonicalTokenBody, checkTokenFields, tokenPayloadHex } from "../lib/token";
+import { pickupToken, verifyTokenSig, canonicalTokenBody, checkTokenFields, tokenPayloadHex, quotaExhausted as quotaExhaustedFn } from "../lib/token";
 import { loadPlan } from "../lib/plan";
+import { logbookBackfillAuthId, logbookUpdate } from "../lib/material";
 import { flightStage, stepperState, windowSubline } from "../lib/flight";
 import HashText from "../components/HashText.vue";
 import DenyBox from "../components/DenyBox.vue";
@@ -25,6 +26,9 @@ const receiptCode = ref(localStorage.getItem("fzLastReceipt") || "");
 // 会话钥只在 sessionStorage（关窗即焚）——localStorage 回落读是死代码且构成
 // "曾有人写盘就会读到旧值"的回归面（2026-09-28 深检 C 席建议，已删）
 const sessionSk = ref(sessionStorage.getItem("fzSessionSk") || "");
+// 私钥敏感遮蔽（视觉 X 批 X4）：默认 password 态防 shoulder-surfing，
+// 一键显隐（粘贴/核对时用）——键值与存储语义零改动
+const skVisible = ref(false);
 const busy = ref(false);
 const denyPickup = ref<{ code: string; message: string } | null>(null);
 const denyArm = ref<{ code: string; message: string } | null>(null);
@@ -74,6 +78,9 @@ const link = ref<any>(null);
 const anchorResult = ref<any>(null);
 const fenceBreached = ref(false);
 const breachText = ref("");
+// 飞行中吊销告警（B5 批2）：桥端闩锁值透传（结构化：detected_at/auth_id/
+// status/rev_epoch）——armed 后撤销不再无感飞完。UI 细化由前端批接手。
+const revokeAlert = ref<{ detected_at: number; auth_id: number; status: number | null; rev_epoch: number | null } | null>(null);
 const eventSent = ref(false); // 超限事件已补发上链（一次飞行一次）
 let sampleTimer: ReturnType<typeof setInterval> | null = null;
 let tick: ReturnType<typeof setInterval> | null = null;
@@ -124,23 +131,39 @@ const armed = computed(() => !!armResult.value?.ok);
 // 刷新后按钮复活⟹再点必撞 token_used，队长大厅实测七）
 const tokenConsumed = ref(false);
 const canRearm = ref(false);
+// 授权包配额（2026-10-06 多架次拍板）：remaining/sorties 来自桥 /arm/status
+// （backend /authz/status 权威）；local_sorties=本地架次账本（显示辅面）。
+const quotaRemaining = ref<number | null>(null);
+const quotaSorties = ref<number | null>(null);
+const quotaLocal = ref<number | null>(null);
+// 配额耗尽判定：remaining 权威在场=remaining<=0；缺省（旧桥/查询失败）=
+// 退化回令牌一次性原语义（used 即耗尽——零弱化兼容）。单源=lib/token
+// quotaExhausted（tests/lib/token.test.ts 钉定）。
+const quotaExhausted = computed(() => quotaExhaustedFn(tokenConsumed.value, quotaRemaining.value));
 // 解锁按钮状态机（四态，优先级自上而下）：
 //   busy=解锁序列进行中 / 无令牌=不可用 / 重解锁窗口开=可点（同授权延续）/
-//   已消费=禁用（一次授权一次解锁）/ 其余=正常可点。
+//   配额耗尽=禁用 / 其余=正常可点（多架次配额未尽可再次解锁新架次）。
 const armButton = computed(() => {
   if (busy.value) return { label: "解锁中…（写入围栏并确认）", disabled: true, title: "围栏三参数写入确认→ARM→上锁位确认" };
   if (canRearm.value) return { label: "重新解锁（同一授权延续）", disabled: false, title: "授权门仍开且飞控已回落上锁——重解锁不重复消费令牌" };
-  if (tokenConsumed.value) return { label: "✓ 已解锁过（令牌已消费）", disabled: true, title: "一次授权一次解锁——新飞行请回「起飞申请」申领新令牌" };
+  if (quotaExhausted.value) return { label: "✓ 已解锁过（令牌已消费）", disabled: true, title: "一次授权一次解锁——新飞行请回「起飞申请」申领新令牌" };
   if (!info.value) return { label: "解锁起飞", disabled: true, title: "先领取令牌" };
   return { label: "解锁起飞", disabled: false, title: "写入围栏参数并解锁电机" };
 });
 async function refreshArmStatus(): Promise<void> {
-  if (!tokenPayload.value) { tokenConsumed.value = false; canRearm.value = false; return; }
+  if (!tokenPayload.value) {
+    tokenConsumed.value = false; canRearm.value = false;
+    quotaRemaining.value = null; quotaSorties.value = null; quotaLocal.value = null;
+    return;
+  }
   try {
-    const r = await bridge<{ used: boolean; can_rearm: boolean }>(
+    const r = await bridge<{ used: boolean; can_rearm: boolean; remaining: number | null; sorties: number | null; local_sorties: number | null }>(
       `/arm/status?token_payload_hex=${tokenPayload.value}`);
     tokenConsumed.value = !!r.used;
     canRearm.value = !!r.can_rearm;
+    quotaRemaining.value = typeof r.remaining === "number" ? r.remaining : null;
+    quotaSorties.value = typeof r.sorties === "number" ? r.sorties : null;
+    quotaLocal.value = typeof r.local_sorties === "number" ? r.local_sorties : null;
   } catch { /* 桥瞬断——保持现值 */ }
 }
 // 消费状态绑定令牌本体：领取新令牌/换令牌必须重查（此前只在进页面时查一次
@@ -176,6 +199,13 @@ async function pickup(): Promise<void> {
     info.value = { ok: sigOk, tok: p.tok, warnings };
     tokenPayload.value = tokenPayloadHex(p);
     localStorage.setItem("fzTokenPayload", tokenPayload.value);
+    // 档案回填（档案积累批）：取件成功=授权编号揭晓——挂到申请时的骨架行
+    // （按案卷号/回执码匹配 pending 行，只回填不新建）
+    logbookBackfillAuthId(
+      localStorage.getItem("fzLastCaseId"),
+      receiptCode.value.trim(),
+      Number(p.tok.authId),
+    );
   } catch (e: any) {
     denyPickup.value = { code: e?.code ?? "pickup_failed", message: e?.message ?? String(e) };
   } finally { busy.value = false; }
@@ -207,7 +237,7 @@ async function arm(tamper = false): Promise<void> {
     if (armResult.value?.ok) {
       pushEvent("arm", armResult.value.rearmed
         ? "飞控重新解锁（同一授权延续——授权门未重新消费）"
-        : "解锁起飞（一次授权一次解锁；围栏参数已随令牌冻结）");
+        : "解锁起飞（围栏参数已随令牌冻结；剩余架次见令牌区）");
       if (armResult.value.rearmed) fcArmed.value = true;
     }
   } catch (e: any) {
@@ -318,6 +348,16 @@ function recordSample(r: any): void {
     breachText.value = r.last_statustext || "Max Alt fence breached";
     localStorage.setItem("fzFlightFenceBreached", "1"); // 证书卡披露源（跨页）
   }
+  // 飞行中吊销告警（B5 批2）：桥已闩锁——事件时间线只推一次（诚实边界：
+  // 桥不发飞控指令，判词明示「请手动降落」而非谎称已自动处置）
+  if (r.revoke_alert && !revokeAlert.value) {
+    revokeAlert.value = r.revoke_alert;
+    pushEvent(
+      "revoke",
+      `飞行中检出授权已被吊销（rev_epoch=${r.revoke_alert.rev_epoch ?? "—"}）——地面站无法收回控制权，请立即手动降落`,
+      true,
+    );
+  }
 }
 
 // ---- 结束飞行并封链（R3-2：检查点锚定上链+DISARM——生命周期闭环） ----
@@ -337,6 +377,23 @@ const flightDuration = computed(() => {
   return `${Math.floor(sec / 60)} 分 ${sec % 60} 秒（进行中）`;
 });
 const sealConfirm = ref(false); // 封链二次确认（不可撤销动作防误触——队长拍板：弹窗式）
+
+/** 封链统计入档（档案积累批）：样本数/检查点数/超限记录如实披露——检查点
+ * 数取封链锚定响应的 anchored（桥侧权威计数）；authId 取本页令牌，回落
+ * fzTrailAuthId（刷新恢复后仍可入档）。档案行由受理动作立行——此处无行
+ * 即 no-op，不虚增。 */
+function archiveFlightStats(): void {
+  const aid = Number(info.value?.tok?.authId ?? localStorage.getItem("fzTrailAuthId"));
+  if (!Number.isFinite(aid) || aid <= 0) return;
+  const cpFromEvents = events.value.filter((e) => e.kind === "checkpoint").length;
+  logbookUpdate(aid, {
+    sealedAt: Math.floor(Date.now() / 1000),
+    nSamples: samples.value.length,
+    checkpointCount: typeof anchorResult.value?.anchored === "number" ? anchorResult.value.anchored : cpFromEvents,
+    breachFlag: fenceBreached.value || localStorage.getItem("fzFlightFenceBreached") === "1",
+  });
+}
+
 async function endFlight(): Promise<void> {
   if (!sealConfirm.value) { sealConfirm.value = true; return; }
   sealConfirm.value = false;
@@ -348,6 +405,7 @@ async function endFlight(): Promise<void> {
     if (anchorResult.value?.ok) {
       sealed.value = true;
       sessionStorage.setItem("fzFlightSealed", "1"); // 切页回来仍是"已封链"（会话域）
+      archiveFlightStats(); // 档案积累批：封链成功即入档（newFlight 清空前已就位）
     }
     await bridge("/sitl/disarm", { method: "POST" });
     // C-P2-2：停桨后横幅回 DISARMED（否则 ARMED 横幅与已停桨事实自相矛盾）
@@ -361,8 +419,12 @@ async function endFlight(): Promise<void> {
 }
 
 /** 新架次（2026-09-28 队长拍板）：封链后就地重置飞行状态——旧令牌已消费，
- * 新架次从「领取令牌」重新开始；3D 原点保持（同一场地），链与事件全新。 */
+ * 新架次从「领取令牌」重新开始；3D 原点保持（同一场地），链与事件全新。
+ * 档案积累批：改「先归档再清空」——单架次键清除前统计已由 endFlight 入档
+ * （此处幂等冲刷一次作双保险——封链后刷新过页面时 endFlight 的入档已覆盖，
+ * 重复合并同值无害）；清空后档案行是本架次统计的唯一幸存面。 */
 function newFlight(): void {
+  if (sealed.value) archiveFlightStats();
   sealed.value = false;
   sessionStorage.removeItem("fzFlightSealed");
   chain.value = null;
@@ -373,6 +435,7 @@ function newFlight(): void {
   fenceBreached.value = false;
   breachText.value = "";
   eventSent.value = false;
+  revokeAlert.value = null; // 新架次：旧架次吊销告警不跨架次残留
   altCmNow.value = null;
   ctrlMode.value = "manual";
   chainStartT.value = 0;
@@ -652,6 +715,11 @@ async function reattachFlight(): Promise<void> {
     fenceBreached.value = !!st.breach_seen || localStorage.getItem("fzFlightFenceBreached") === "1";
     breachText.value = fenceBreached.value ? "固件围栏触发（恢复自服务器状态）" : "";
     eventSent.value = !!st.breach_event_filed;
+    // 吊销告警跨切页回放（服务器闩锁是唯一事实源——刷新/切页不丢告警）
+    if (st.revoke_alert) {
+      revokeAlert.value = st.revoke_alert;
+      pushEvent("revoke", "恢复进行中架次：本架次曾检出授权吊销告警（详见下方红条）", true);
+    }
     chainStartT.value = typeof st.started_ts === "number" ? st.started_ts : null;
     sealed.value = sessionStorage.getItem("fzFlightSealed") === "1";
     pushEvent("chain", `已恢复进行中架次显示（服务器回放：${st.n_samples} 样本 · 检查点 ${st.checkpoint_count}）`);
@@ -689,7 +757,11 @@ onBeforeUnmount(() => {
       <div class="grid2">
         <div>
           <label>回执码</label><input v-model="receiptCode" class="mono" />
-          <label>会话私钥（本地保存，零上传）</label><input v-model="sessionSk" class="mono" />
+          <label>会话私钥（本地保存，零上传）</label>
+          <div class="sk-row">
+            <input v-model="sessionSk" class="mono" :type="skVisible ? 'text' : 'password'" autocomplete="off" spellcheck="false" />
+            <button class="btn ghost sk-toggle" type="button" :title="skVisible ? '遮蔽私钥（防旁人窥屏）' : '显示私钥（核对/粘贴时用）'" @click="skVisible = !skVisible">{{ skVisible ? "遮蔽" : "显示" }}</button>
+          </div>
           <div style="margin-top:12px">
             <button class="btn" :disabled="busy" @click="pickup">领取令牌</button>
           </div>
@@ -705,9 +777,15 @@ onBeforeUnmount(() => {
           <div class="kv">
             <dt>授权编号</dt><dd style="color: var(--accent-ink); font-weight:700">{{ info.tok.authId }}</dd>
             <dt>高度上限</dt><dd>{{ info.tok.alt_max }} m</dd>
+            <!-- 授权包配额（2026-10-06 多架次拍板）：剩余架次（桥 /arm/status
+                 → backend /authz/status 权威值；未知=—不误报） -->
+            <dt>剩余架次</dt>
+            <dd :style="{ fontWeight: 700, color: quotaRemaining !== null && quotaRemaining <= 0 ? 'var(--bad, #c0392b)' : 'var(--accent-ink)' }">
+              {{ quotaRemaining !== null ? quotaRemaining : "—" }}<span v-if="quotaSorties"> / {{ quotaSorties }}</span>
+            </dd>
             <dt>时间窗</dt><dd>{{ fmtTs(info.tok.t_start) }} ~ {{ fmtTs(info.tok.t_end) }}</dd>
             <dt>剩余有效期</dt>
-            <dd :style="{ color: expired ? 'var(--bad, #c0392b)' : remainS < 300 ? '#b7791f' : 'inherit', fontWeight: 700 }">
+            <dd :style="{ color: expired ? 'var(--bad, #c0392b)' : remainS < 300 ? 'var(--tone-amber-fg)' : 'inherit', fontWeight: 700 }">
               {{ expired ? "已过期" : remainText }}
             </dd>
             <dt>计划哈希</dt><dd><HashText :value="info.tok.plan_hash" head="12" tail="8" /></dd>
@@ -724,7 +802,9 @@ onBeforeUnmount(() => {
       <p class="desc">核验通过后解锁起飞，并自动为飞控设置高度上限（令牌上限与计划高度取小）。</p>
       <div class="gate-banner" :class="armed ? 'armed' : 'disarmed'">
         <span class="gate-state">{{ armed ? "ARMED" : "DISARMED" }}</span>
-        <span :class="armed ? 'fz-pulse' : ''" style="width:10px; height:10px; border-radius:50%; display:inline-block; background: var(--accent)" />
+        <!-- 动画预算回收（视觉 X 批 X5）：armed 常动点与记录点 rec-dot 择一——
+             保留 rec-dot（采样=最需要「活着」信号的面），此点改静态 -->
+        <span style="width:10px; height:10px; border-radius:50%; display:inline-block; background: var(--accent)" />
         <span class="gate-sub">
           {{ armed
             ? `已解锁 · 授权编号 ${armResult.auth_id ?? "—"} · 围栏 ${fenceM ?? "—"} m`
@@ -749,150 +829,179 @@ onBeforeUnmount(() => {
     <div class="panel fz-enter">
       <h2>飞行记录</h2>
       <p class="desc">解锁后：①「开始记录」开启遥测链与自动采样 → ②「自动飞到目标高度」或「手动爬升」进入合规高度带（低于围栏即为合规）→ ③ 采满样本后到「留痕与 TRAIL」生成合规证书 → ④「结束飞行并封链」收尾。飞行控制三种来源互斥——手动爬升、定高悬停、自动飞行，任一操作即接管；悬停与自动飞行在定高模式下执行。</p>
-      <div style="display:flex; gap:8px; flex-wrap:wrap; margin-bottom:10px; align-items:center">
-        <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center">
-          <StatusTag :tone="linkState.tone" :label="linkState.label" />
-          <StatusTag v-if="sitlReady && armed && chain" tone="accent" :label="`自动真采样中（2Hz）· ${samples.length}/128 点`" />
-          <StatusTag v-if="armed" tone="gold" :label="`飞行控制：${ctrlModeLabel}`" />
-        </div>
-      </div>
-      <!-- 合规记录窗口卡（E 席设计：点数记录的用户化表达——进度/预期/检查点/窗口红线） -->
-      <div class="wincard fz-enter" :class="{ full: samples.length >= 128, breach: breachInWindow }" style="margin-bottom:10px">
-        <div class="wincard-head">
-          <b>合规记录窗口</b>
-          <span class="mono">{{ samples.length }}/128 点</span>
-          <span v-if="chain && !sealed" class="rec-dot" :class="{ stalled: telemetryStalled }"></span>
-          <span v-if="telemetryStalled" class="note" style="color:#b7791f">遥测中断——采样暂停</span>
-        </div>
-        <div class="winbar"><div class="winbar-fill" :style="{ width: Math.min(100, (samples.length / 128) * 100) + '%' }"></div></div>
-        <div class="wincard-sub">{{ windowSub }}</div>
-        <div class="wincard-sub">已锚定上链 {{ checkpointCount }} 次（每 60 秒一次——飞行证据随进度固化）</div>
-      </div>
-      <div v-if="fenceBreached" class="deny fz-enter" style="margin-bottom:10px">
-        <span class="code">⚠ 固件围栏触发</span>
-        硬拦截已生效（STATUSTEXT：{{ breachText }}）——超限事件将随检查点锚定上链取证。
-      </div>
-      <div
-        v-if="armed && fcMode && !['STABILIZE', 'ALT_HOLD'].includes(fcMode)"
-        class="note fz-enter"
-        style="margin-bottom: 8px; border-left: 3px solid #e0a855; padding-left: 10px"
-      >
-        ⚠ 飞控处于自主模式 <b>{{ fcMode }}</b>——下一次爬升/悬停指令会先切回定高模式再执行；若切换失败将被拒绝并提示
-      </div>
-      <div
-        v-if="armed && fcArmed === false"
-        class="note fz-enter"
-        style="margin-bottom: 8px; border-left: 3px solid #e05555; padding-left: 10px"
-      >
-        🔴 飞控已上锁（地面怠速自动上锁）——爬升/自动飞行不会生效。请重新点击
-        <b>「解锁起飞」</b>（同一授权延续，无需重新出证）
-      </div>
-      <FlightGauges :att="att" :alt-cm="altCmNow" :fence-m="fenceM" style="margin-bottom: 10px" />
-      <div v-if="chain" style="display:flex; gap:8px; flex-wrap:wrap; margin-bottom:8px">
-        <span v-if="bat?.voltage_v != null" class="tag" style="padding:3px 10px">🔋 {{ bat.voltage_v.toFixed(2) }} V<span v-if="bat.remaining_pct != null"> · {{ bat.remaining_pct }}%</span></span>
-        <span v-if="bat?.current_a != null" class="tag" style="padding:3px 10px">⚡ {{ bat.current_a.toFixed(1) }} A</span>
-        <span v-if="gps" class="tag" style="padding:3px 10px">🛰 GPS {{ gps.sats }} 颗{{ gps.fix >= 3 ? " · 已定位" : " · 定位中" }}</span>
-        <span v-if="hud" class="tag" style="padding:3px 10px">💨 {{ hud.speed_ms.toFixed(1) }} m/s</span>
-        <span v-if="hud" class="tag" style="padding:3px 10px">🧭 航向 {{ hud.heading_deg }}°</span>
-        <span v-if="hud" class="tag" style="padding:3px 10px">🎛 油门 {{ hud.throttle_pct }}%</span>
-      </div>
-      <div class="fz-globe-frame">
-      <FlightGlobe
-        style="height: 460px; margin-bottom: 0"
-        :samples="samples"
-        :att="att"
-        :fence-m="fenceM"
-        :fence-breached="fenceBreached"
-        :anchor-count="checkpointCount"
-        :armed="armed && fcArmed !== false"
-      />
-      </div>
-      <canvas ref="altCanvas" class="fz-chart"></canvas>
-      <canvas v-if="globeFailed" ref="trackCanvas" class="fz-chart" style="margin-top:10px"></canvas>
-      <div class="grid2" style="margin-top:10px">
-        <div v-if="globeFailed"></div>
-        <div>
-          <label>目标高度（米，自动飞达后悬停）</label>
-          <input v-model.number="targetAltM" type="number" :min="2" :max="Math.max(2, (fenceM ?? 50) - 3)" />
-          <p v-if="targetAltM2 < targetAltM" class="note" style="color:#b7791f;margin-top:4px">超出围栏——实际按 {{ targetAltM2 }} m 执行</p>
-          <div style="display:flex; gap:8px; margin-top:8px; flex-wrap:wrap">
-            <button class="btn" :disabled="!sitlReady || !armed || !chain || autoFlying" @click="flyToTarget">{{ autoFlying ? "自动飞行中…" : "自动飞到目标高度" }}</button>
-            <button class="btn ghost" :disabled="!autoFlying" @click="stopAuto">停止自动</button>
+
+      <!-- 分区（视觉 S 批 S6：大面板拆 记录/机动/收尾 三组——全部文本与按钮
+           title 原样保留，仅容器重排；组标题为最小新增装饰文本） -->
+      <div class="fgroup">
+        <h3 class="fgroup-t">记录</h3>
+        <div style="display:flex; gap:8px; flex-wrap:wrap; margin-bottom:10px; align-items:center">
+          <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center">
+            <StatusTag :tone="linkState.tone" :label="linkState.label" />
+            <StatusTag v-if="sitlReady && armed && chain" tone="accent" :label="`自动真采样中（2Hz）· ${samples.length}/128 点`" />
+            <StatusTag v-if="armed" tone="gold" :label="`飞行控制：${ctrlModeLabel}`" />
           </div>
         </div>
-      </div>
-      <div style="display:flex; gap:10px; flex-wrap:wrap; align-items:center; margin-top:10px">
-        <button class="btn" :class="{ primary: stage === 'record_ready' }" :disabled="!!chain" :title="armed ? '开启遥测链与自动采样（每 0.5 秒记录一点）' : '需先解锁起飞'" @click="startChain">开始记录</button>
-        <div v-if="!sitlReady && chain" class="deny fz-enter" style="flex:1 1 100%">
-          <span class="code">飞控未连接</span>
-          等待 SITL 桥接线（tcp:5760）——真实测试策略：不提供合成遥测。桥接线后本区自动恢复飞控控件。
-        </div>
-        <button v-if="sitlReady" class="btn ghost" :disabled="!armed || sealing"
-        title="按住持续爬升，松开即定高保持；持续按住可强行突破围栏（将触发违规取证）"
-        @pointerdown="climbHoldStart(1)" @pointerup="climbHoldStop"
-        @pointerleave="climbHoldStop" @pointercancel="climbHoldStop">按住爬升</button>
-        <button v-if="sitlReady" class="btn ghost" :disabled="!armed || sealing"
-        title="按住持续下降（地面保护：不低于 0.3m），松开即定高保持"
-        @pointerdown="climbHoldStart(-1)" @pointerup="climbHoldStop"
-        @pointerleave="climbHoldStop" @pointercancel="climbHoldStop">按住下降</button>
-        <button v-if="sitlReady" class="btn ghost" :disabled="!armed || sealing" title="保持当前高度（定高模式）" @click="hover()">悬停</button>
-        <button v-if="!sealed" class="btn" :disabled="!chain || sealing" style="border-color:#d98484; color:#a33" @click="endFlight">{{ sealing ? "封链中…" : "结束飞行并封链" }}</button>
-        <button v-if="sealed" class="btn" @click="newFlight">开始新架次（领取新令牌后可再次飞行）</button>
-      </div>
-      <div v-if="sealConfirm && !sealed && !sealing && chain" class="deny fz-enter" style="margin-top:8px">
-        确认结束飞行？电机将立即停止（DISARM），检查点锚定上链，本架次不可继续。
-        <button class="btn" style="margin-left:10px" :disabled="sealing" @click="endFlight">确认封链</button>
-        <button class="btn ghost" style="margin-left:8px" @click="sealConfirm = false">取消</button>
-      </div>
-      <div v-if="fenceBreached && chain && samples.length < 128" class="deny fz-enter" style="margin-top:8px">
-        ⚠ 合规记录窗口（前 128 点）内出现超限样本——本窗口的 TRAIL 合规证书将无法生成。
-      </div>
-      <div v-if="chain && samples.length" class="note fz-enter" style="margin-top:8px">
-        当前高度 <b>{{ currentAltM }} m</b><template v-if="fenceM"> · 围栏 {{ fenceM }} m</template>
-      </div>
-      <div v-if="chain" class="kv fz-enter" style="margin-top:12px">
-        <dt>飞行链起始锚</dt><dd><HashText :value="chain.genesis_head_hex" head="14" tail="8" /></dd>
-        <dt>设备公钥</dt><dd><HashText :value="chain.device_pub_hex" head="14" tail="8" /></dd>
-        <dt v-if="samples.length">最新链头</dt><dd v-if="samples.length"><HashText :value="samples[samples.length - 1].head" head="14" tail="8" /></dd>
-      </div>
-      <div v-if="events.length" class="kv fz-enter" style="margin-top:12px">
-        <dt>事件时间线（飞行中实时）</dt>
-        <dd>
-          <div
-            v-for="(e, i) in events"
-            :key="i"
-            style="display:flex; gap:8px; align-items:baseline; padding:2px 0"
-            :style="e.red ? 'color:#e05555' : ''"
-          >
-            <span class="mono" style="opacity:0.75">{{ new Date(e.t * 1000).toLocaleTimeString() }}</span>
-            <span>{{ e.text }}</span>
+        <!-- 合规记录窗口卡（E 席设计：点数记录的用户化表达——进度/预期/检查点/窗口红线） -->
+        <div class="wincard fz-enter" :class="{ full: samples.length >= 128, breach: breachInWindow }" style="margin-bottom:10px">
+          <div class="wincard-head">
+            <b>合规记录窗口</b>
+            <span class="mono">{{ samples.length }}/128 点</span>
+            <span v-if="chain && !sealed" class="rec-dot" :class="{ stalled: telemetryStalled }"></span>
+            <span v-if="telemetryStalled" class="note" style="color:var(--tone-amber-fg)">遥测中断——采样暂停</span>
           </div>
-        </dd>
+          <div class="winbar"><div class="winbar-fill" :style="{ width: Math.min(100, (samples.length / 128) * 100) + '%' }"></div></div>
+          <div class="wincard-sub">{{ windowSub }}</div>
+          <div class="wincard-sub">已锚定上链 {{ checkpointCount }} 次（每 60 秒一次——飞行证据随进度固化）</div>
+        </div>
+        <div v-if="fenceBreached" class="deny fz-enter" style="margin-bottom:10px">
+          <span class="code">⚠ 固件围栏触发</span>
+          硬拦截已生效（STATUSTEXT：{{ breachText }}）——超限事件将随检查点锚定上链取证。
+        </div>
+        <!-- 飞行中吊销告警（B5 批2 数据面：字段/判词由本视图承载，样式零新增——
+             复用 deny 红条；UI 细化由前端批接手） -->
+        <div v-if="revokeAlert" class="deny fz-enter" style="margin-bottom:10px">
+          <span class="code">🔴 授权已吊销（{{ new Date(revokeAlert.detected_at * 1000).toLocaleTimeString() }} 检出）</span>
+          本架次授权在链上已被撤销（rev_epoch={{ revokeAlert.rev_epoch ?? "—" }}，auth_id={{ revokeAlert.auth_id }}）。
+          地面站无法收回已授权飞行——请立即手动降落；落地后本授权不可再次解锁，原因与救济见「我的记录」自查。
+        </div>
+        <div
+          v-if="armed && fcMode && !['STABILIZE', 'ALT_HOLD'].includes(fcMode)"
+          class="note fz-enter"
+          style="margin-bottom: 8px; border-left: 3px solid #e0a855; padding-left: 10px"
+        >
+          ⚠ 飞控处于自主模式 <b>{{ fcMode }}</b>——下一次爬升/悬停指令会先切回定高模式再执行；若切换失败将被拒绝并提示
+        </div>
+        <div
+          v-if="armed && fcArmed === false"
+          class="note fz-enter"
+          style="margin-bottom: 8px; border-left: 3px solid #e05555; padding-left: 10px"
+        >
+          🔴 飞控已上锁（地面怠速自动上锁）——爬升/自动飞行不会生效。请重新点击
+          <b>「解锁起飞」</b>（同一授权延续，无需重新出证）
+        </div>
+        <FlightGauges :att="att" :alt-cm="altCmNow" :fence-m="fenceM" style="margin-bottom: 10px" />
+        <div v-if="chain" style="display:flex; gap:8px; flex-wrap:wrap; margin-bottom:8px">
+          <span v-if="bat?.voltage_v != null" class="tag" style="padding:3px 10px">🔋 {{ bat.voltage_v.toFixed(2) }} V<span v-if="bat.remaining_pct != null"> · {{ bat.remaining_pct }}%</span></span>
+          <span v-if="bat?.current_a != null" class="tag" style="padding:3px 10px">⚡ {{ bat.current_a.toFixed(1) }} A</span>
+          <span v-if="gps" class="tag" style="padding:3px 10px">🛰 GPS {{ gps.sats }} 颗{{ gps.fix >= 3 ? " · 已定位" : " · 定位中" }}</span>
+          <span v-if="hud" class="tag" style="padding:3px 10px">💨 {{ hud.speed_ms.toFixed(1) }} m/s</span>
+          <span v-if="hud" class="tag" style="padding:3px 10px">🧭 航向 {{ hud.heading_deg }}°</span>
+          <span v-if="hud" class="tag" style="padding:3px 10px">🎛 油门 {{ hud.throttle_pct }}%</span>
+        </div>
+        <div class="fz-globe-frame">
+        <FlightGlobe
+          style="height: clamp(320px, 40vw, 460px); margin-bottom: 0"
+          :samples="samples"
+          :att="att"
+          :fence-m="fenceM"
+          :fence-breached="fenceBreached"
+          :anchor-count="checkpointCount"
+          :armed="armed && fcArmed !== false"
+        />
+        </div>
+        <canvas ref="altCanvas" class="fz-chart"></canvas>
+        <canvas v-if="globeFailed" ref="trackCanvas" class="fz-chart" style="margin-top:10px"></canvas>
+        <div style="display:flex; gap:10px; flex-wrap:wrap; align-items:center; margin-top:10px">
+          <button class="btn" :class="{ primary: stage === 'record_ready' }" :disabled="!!chain" :title="armed ? '开启遥测链与自动采样（每 0.5 秒记录一点）' : '需先解锁起飞'" @click="startChain">开始记录</button>
+          <div v-if="!sitlReady && chain" class="deny fz-enter" style="flex:1 1 100%">
+            <span class="code">飞控未连接</span>
+            等待 SITL 桥接线（tcp:5760）——真实测试策略：不提供合成遥测。桥接线后本区自动恢复飞控控件。
+          </div>
+        </div>
+        <div v-if="fenceBreached && chain && samples.length < 128" class="deny fz-enter" style="margin-top:8px">
+          ⚠ 合规记录窗口（前 128 点）内出现超限样本——本窗口的 TRAIL 合规证书将无法生成。
+        </div>
+        <div v-if="chain && samples.length" class="note fz-enter" style="margin-top:8px">
+          当前高度 <b>{{ currentAltM }} m</b><template v-if="fenceM"> · 围栏 {{ fenceM }} m</template>
+        </div>
+        <div v-if="chain" class="kv fz-enter" style="margin-top:12px">
+          <dt>飞行链起始锚</dt><dd><HashText :value="chain.genesis_head_hex" head="14" tail="8" /></dd>
+          <dt>设备公钥</dt><dd><HashText :value="chain.device_pub_hex" head="14" tail="8" /></dd>
+          <dt v-if="samples.length">最新链头</dt><dd v-if="samples.length"><HashText :value="samples[samples.length - 1].head" head="14" tail="8" /></dd>
+        </div>
+        <div v-if="events.length" class="kv fz-enter" style="margin-top:12px">
+          <dt>事件时间线（飞行中实时）</dt>
+          <dd>
+            <!-- 垂直时间线（视觉 X 批 X2）：左轨+节点；检查点=金节点——与 3D
+                 锚定脉冲同语言（--gold 静态节点+淡金光环，不加常动动画） -->
+            <div
+              v-for="(e, i) in events"
+              :key="i"
+              class="evt-line"
+              :class="{ last: i === events.length - 1 }"
+              :style="e.red ? 'color:#e05555' : ''"
+            >
+              <span class="evt-dot" :class="{ gold: e.kind === 'checkpoint', red: e.red }"></span>
+              <span class="mono evt-t">{{ new Date(e.t * 1000).toLocaleTimeString() }}</span>
+              <span class="evt-x">{{ e.text }}</span>
+            </div>
+          </dd>
+        </div>
       </div>
-      <div v-if="sealed" class="note fz-enter" style="margin-top:10px; border:1px solid var(--line); border-radius:8px; padding:10px 12px">
-        <p style="margin:0 0 6px"><b>飞行记录单</b>（本机留痕——链上证据见判决件与检查点锚定）</p>
+
+      <div class="fgroup">
+        <h3 class="fgroup-t">机动</h3>
         <div class="grid2">
-          <div class="kv">
-            <dt>飞行时长</dt><dd>{{ flightDuration }}</dd>
-            <dt>峰值高度</dt><dd>{{ peakAltM }} m</dd>
-            <dt>围栏余量</dt><dd>{{ fenceM != null ? Math.max(fenceM - peakAltM, 0) : "—" }} m{{ fenceBreached ? "（已触发——超限取证见 TRAIL 屏）" : "" }}</dd>
-          </div>
-          <div class="kv">
-            <dt>样本 / 锚定事件</dt><dd>{{ samples.length }} / {{ events.filter(e => e.kind === "checkpoint").length }}</dd>
-            <dt>结束电池 / GPS</dt><dd>{{ bat?.remaining_pct != null ? bat.remaining_pct + "%" : "—" }} · {{ gps ? gps.sats + " 颗" : "—" }}</dd>
-            <dt>链头终值</dt><dd><HashText v-if="samples.length" :value="samples[samples.length - 1].head" head="12" tail="6" /></dd>
+          <div v-if="globeFailed"></div>
+          <div>
+            <label>目标高度（米，自动飞达后悬停）</label>
+            <input v-model.number="targetAltM" type="number" :min="2" :max="Math.max(2, (fenceM ?? 50) - 3)" />
+            <p v-if="targetAltM2 < targetAltM" class="note" style="color:var(--tone-amber-fg);margin-top:4px">超出围栏——实际按 {{ targetAltM2 }} m 执行</p>
+            <div style="display:flex; gap:8px; margin-top:8px; flex-wrap:wrap">
+              <button class="btn" :disabled="!sitlReady || !armed || !chain || autoFlying" @click="flyToTarget">{{ autoFlying ? "自动飞行中…" : "自动飞到目标高度" }}</button>
+              <button class="btn ghost" :disabled="!autoFlying" @click="stopAuto">停止自动</button>
+            </div>
           </div>
         </div>
+        <div style="display:flex; gap:10px; flex-wrap:wrap; align-items:center; margin-top:10px">
+          <button v-if="sitlReady" class="btn ghost" :disabled="!armed || sealing"
+          title="按住持续爬升，松开即定高保持；持续按住可强行突破围栏（将触发违规取证）"
+          @pointerdown="climbHoldStart(1)" @pointerup="climbHoldStop"
+          @pointerleave="climbHoldStop" @pointercancel="climbHoldStop">按住爬升</button>
+          <button v-if="sitlReady" class="btn ghost" :disabled="!armed || sealing"
+          title="按住持续下降（地面保护：不低于 0.3m），松开即定高保持"
+          @pointerdown="climbHoldStart(-1)" @pointerup="climbHoldStop"
+          @pointerleave="climbHoldStop" @pointercancel="climbHoldStop">按住下降</button>
+          <button v-if="sitlReady" class="btn ghost" :disabled="!armed || sealing" title="保持当前高度（定高模式）" @click="hover()">悬停</button>
+        </div>
       </div>
-      <div v-if="anchorResult" class="note fz-enter" style="margin-top:8px">
-        <template v-if="anchorResult.ok">
-          ✓ 封链完成：已锚定 {{ anchorResult.anchored }} 个检查点（anchored_seq={{ anchorResult.anchored_seq }}）——第三方可经链上 verifyHead 复验。
-        </template>
-        <template v-else>
-          封链失败：{{ anchorResult.code }}——检查点未锚定（fail-closed，可重试续锚）。
-        </template>
+
+      <div class="fgroup">
+        <h3 class="fgroup-t">收尾</h3>
+        <div style="display:flex; gap:10px; flex-wrap:wrap; align-items:center">
+          <button v-if="!sealed" class="btn" :disabled="!chain || sealing" style="border-color:#d98484; color:var(--tone-red-fg)" @click="endFlight">{{ sealing ? "封链中…" : "结束飞行并封链" }}</button>
+          <button v-if="sealed" class="btn" @click="newFlight">开始新架次（领取新令牌后可再次飞行）</button>
+        </div>
+        <div v-if="sealConfirm && !sealed && !sealing && chain" class="deny fz-enter" style="margin-top:8px">
+          确认结束飞行？电机将立即停止（DISARM），检查点锚定上链，本架次不可继续。
+          <button class="btn" style="margin-left:10px" :disabled="sealing" @click="endFlight">确认封链</button>
+          <button class="btn ghost" style="margin-left:8px" @click="sealConfirm = false">取消</button>
+        </div>
+        <div v-if="sealed" class="note fz-enter" style="margin-top:10px; border:1px solid var(--line); border-radius:8px; padding:10px 12px">
+          <p style="margin:0 0 6px"><b>飞行记录单</b>（本机留痕——链上证据见判决件与检查点锚定）</p>
+          <div class="grid2">
+            <div class="kv">
+              <dt>飞行时长</dt><dd>{{ flightDuration }}</dd>
+              <dt>峰值高度</dt><dd>{{ peakAltM }} m</dd>
+              <dt>围栏余量</dt><dd>{{ fenceM != null ? Math.max(fenceM - peakAltM, 0) : "—" }} m{{ fenceBreached ? "（已触发——超限取证见 TRAIL 屏）" : "" }}</dd>
+            </div>
+            <div class="kv">
+              <dt>样本 / 锚定事件</dt><dd>{{ samples.length }} / {{ events.filter(e => e.kind === "checkpoint").length }}</dd>
+              <dt>结束电池 / GPS</dt><dd>{{ bat?.remaining_pct != null ? bat.remaining_pct + "%" : "—" }} · {{ gps ? gps.sats + " 颗" : "—" }}</dd>
+              <dt>链头终值</dt><dd><HashText v-if="samples.length" :value="samples[samples.length - 1].head" head="12" tail="6" /></dd>
+            </div>
+          </div>
+        </div>
+        <div v-if="anchorResult" class="note fz-enter" style="margin-top:8px">
+          <template v-if="anchorResult.ok">
+            ✓ 封链完成：已锚定 {{ anchorResult.anchored }} 个检查点（anchored_seq={{ anchorResult.anchored_seq }}）——第三方可经链上 verifyHead 复验。
+          </template>
+          <template v-else>
+            封链失败：{{ anchorResult.code }}——检查点未锚定（fail-closed，可重试续锚）。
+          </template>
+        </div>
+        <DenyBox v-if="denyLog" :code="denyLog.code" :message="denyLog.message" />
       </div>
-      <DenyBox v-if="denyLog" :code="denyLog.code" :message="denyLog.message" />
     </div>
   </div>
 </template>
@@ -936,6 +1045,13 @@ onBeforeUnmount(() => {
   border-radius: 8px;
   display: block;
 }
+/* 飞行记录大面板分区（视觉 S 批 S6：记录/机动/收尾——组标题+发丝分隔，
+   仅版式增量，业务 DOM 语义与文本零改动） */
+.fgroup { border-top: var(--hairline); margin-top: 14px; padding-top: 10px; }
+.fgroup-t {
+  font-size: 12px; letter-spacing: 3px; font-weight: 700;
+  color: var(--ink-3); margin: 0 0 10px;
+}
 .gate-banner {
   display: flex; align-items: center; gap: 12px;
   border: var(--hairline); border-left-width: 4px; border-radius: 10px;
@@ -949,14 +1065,7 @@ onBeforeUnmount(() => {
 }
 .gate-banner.armed .gate-state { color: var(--accent-ink); }
 .gate-sub { color: var(--ink-2, var(--ink)); font-size: 13px; }
-.stepper { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 10px 14px; }
-.step { display: flex; align-items: center; gap: 6px; color: var(--ink-3, #64748b); font-size: 13px; }
-.step-n { width: 20px; height: 20px; border-radius: 50%; border: 1.5px solid var(--line-strong, #c9d4e2); display: inline-flex; align-items: center; justify-content: center; font-size: 11px; }
-.step.active { color: var(--accent-ink, #1d4ed8); font-weight: 700; }
-.step.active .step-n { border-color: var(--accent, #2f6fed); background: var(--accent-soft, #e8f0fe); }
-.step.done { color: var(--ok, #2e7d32); }
-.step.done .step-n { border-color: var(--ok, #2e7d32); color: var(--ok, #2e7d32); }
-.step-arrow { color: var(--ink-3, #94a3b8); margin: 0 2px; }
+/* 步进器样式已上移 ui.css（丙-2 M1 全局单一定义处——审计台同源消费） */
 .wincard { border: 1px solid var(--line, #d8e0ea); border-radius: 10px; padding: 10px 14px; background: var(--panel-2, #f7f9fc); }
 .wincard.full { border-color: var(--ok, #2e7d32); }
 .wincard.breach { border-color: #d98484; background: #fdf3f3; }
@@ -965,7 +1074,33 @@ onBeforeUnmount(() => {
 .winbar { height: 8px; border-radius: 4px; background: var(--line, #e5eaf1); overflow: hidden; margin-top: 6px; }
 .winbar-fill { height: 100%; background: linear-gradient(90deg, #2f6fed, #35d07f); border-radius: 4px; transition: width 0.4s; }
 .rec-dot { width: 9px; height: 9px; border-radius: 50%; background: #e05555; animation: recblink 1.2s infinite; }
-.rec-dot.stalled { background: #b7791f; animation: none; }
+.rec-dot.stalled { background: var(--tone-amber-fg); animation: none; }
 @keyframes recblink { 0%, 60% { opacity: 1; } 61%, 100% { opacity: 0.25; } }
+
+/* 事件时间线垂直化（视觉 X 批 X2）：左轨发丝线+节点；检查点金节点
+   （--gold × --gold-soft 光环——3D 锚定脉冲同色相同语言，静态零动画） */
+.evt-line { position: relative; display: flex; gap: 8px; align-items: baseline; padding: 3px 0 3px 20px; }
+.evt-line::before {
+  content: "";
+  position: absolute;
+  left: 5px; top: 0; bottom: 0;
+  width: 1px;
+  background: var(--line);
+}
+.evt-line:last-child::before { bottom: 50%; }
+.evt-dot {
+  position: absolute;
+  left: 2px; top: 9px;
+  width: 7px; height: 7px;
+  border-radius: 50%;
+  background: var(--ink-3);
+}
+.evt-dot.gold { background: var(--gold); box-shadow: 0 0 0 3px var(--gold-soft); }
+.evt-dot.red { background: #e05555; }
+.evt-t { opacity: 0.75; flex: none; }
+/* 私钥行（视觉 X 批 X4）：遮蔽切换按钮与输入同行 */
+.sk-row { display: flex; gap: 8px; align-items: center; }
+.sk-row input { flex: 1; }
+.sk-toggle { flex: none; padding: 8px 12px; font-size: 12px; }
 
 </style>

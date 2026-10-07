@@ -39,6 +39,13 @@ class RejectIn(BaseModel):
     sig_hex: str = Field(min_length=16, max_length=512)
 
 
+class ResolveDisposalIn(BaseModel):
+    """处置完成 body（A5/B2）：说明选填——管理员处置留痕（reason_prefill
+    不入库，前端用案号+结论现拼）。"""
+
+    note: str = Field(default="", max_length=2000)
+
+
 @router.get("/collab-requests")
 def list_collab_requests(
     status: str = "",
@@ -126,6 +133,45 @@ def reject(
 # `seed_accounts.py --reset`（线下执行；重置动作逐笔入 account_admin_log
 # 台账；公钥纪元史 append-only 保证换钥后历史签名可复验）。
 # 负例回归（POST 该路径=404）见 test_accounts.py::test_online_reset_endpoint_retired。
+
+
+# ---- 处置待办（2026-10-04 处置联动 A5/B2）：审计结案 verified 自动建单，机构处置 ----
+
+
+@router.get("/disposal-todos")
+def list_disposal_todos(
+    session: Session = Depends(get_session),
+    _p=Depends(require_role("admin")),
+):
+    """处置待办清单（admin）：全部待办按 created_ts 倒序——审计定谳（verified）
+    的下一棒是机构处置，逐单可见状态与处置说明。"""
+    from app.audit import disposal as disposal_svc
+
+    return JSONResponse(
+        status_code=200,
+        content={"code": "ok", "message": "", "data": {"items": disposal_svc.list_todos(session)}},
+    )
+
+
+@router.post("/disposal-todos/{todo_id}/resolve")
+def resolve_disposal_todo(
+    todo_id: int,
+    body: ResolveDisposalIn,
+    session: Session = Depends(get_session),
+    _p=Depends(require_role("admin")),
+):
+    """处置完成（pending→done）：说明入库留痕；已 done 再 resolve=409
+    （条件 UPDATE 数据库仲裁——重复处置恰一胜者）。"""
+    from app.audit import disposal as disposal_svc
+
+    try:
+        out = disposal_svc.resolve_todo(session, todo_id=todo_id, note=body.note)
+    except disposal_svc.DisposalError as exc:
+        return _deny(exc)
+    return JSONResponse(
+        status_code=200,
+        content={"code": "ok", "message": "已标记处置完成", "data": out},
+    )
 
 
 @router.post("/accounts/{username}/delete")

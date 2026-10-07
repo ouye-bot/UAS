@@ -1,18 +1,22 @@
 {
+  "AdminGovernor": {
+    "address": "0x67b7d2ac0d38098e681439e125eff5205742b4e2",
+    "block": 6933
+  },
   "IdentityRegistry": {
-    "address": "0x74885ceb4fd2a4a8c7e4763ea3ce2b65d787b047",
-    "block": 4323
+    "address": "0x95c4a1be3a92fbc5fa5b42d02f9ff53e70c18e1e",
+    "block": 6934
   },
   "PolicyRegistry": {
-    "address": "0x34daa52d2e1d058f0f61bb3d7f0c7e20e3f6f059",
-    "block": 4324
+    "address": "0x4c7fa97d616f0d484562a52d2f2e98961798c231",
+    "block": 6935
   },
   "FlightAuthRegistry": {
-    "address": "0x233610b9b4733f2306c9392bacf61d488b90ac48",
-    "block": 4325
+    "address": "0x2593a9ababaf2444e399a1cde1d73828c5b7ef4c",
+    "block": 6936
   },
   "TelemetryAnchor": {
-    "address": "0x55cfdb40b91dd7129d56bb22321528e64c1583bd",
-    "block": 4326
+    "address": "0x6b48ce49230969bbbf4a9729254c593e118cf1e3",
+    "block": 6937
   }
 }

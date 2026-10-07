@@ -72,6 +72,18 @@ class FailWorker(OkWorker):
         return (2, "InvalidSnark: sumcheck mismatch (stub)")
 
 
+class CapturingWorker(OkWorker):
+    """捕获 expected 的替身（绑定挑战同源断言位）。"""
+
+    def __init__(self):
+        super().__init__()
+        self.seen: dict | None = None
+
+    def zkc_verify(self, case_dir, expected):
+        self.seen = dict(expected)
+        return (0, "verify ok (stub)")
+
+
 def _enqueued(session, session_sk, session_pk, deps=None, nonce_hex="11" * 16):
     _sk, ra_pub = ra_signing_keypair()
     msg = build_message(
@@ -101,7 +113,11 @@ def _enqueued(session, session_sk, session_pk, deps=None, nonce_hex="11" * 16):
 
     d = _os.path.join(_tf.mkdtemp(prefix="fzcase"), "case")
     _os.makedirs(d)
-    inst = ["0" * 64] * 25
+    from conftest import seed_sn_chain
+
+    seed_sn_chain(session, msg, b"FZ-SN-W")
+    inst = ["0" * 64] * 26
+    inst[25] = _fe_be32_hex_from_bytes32(_sm3(b"FZ-SN-W"))  # SN 绑定换代：实例 25
     inst[19] = _fe_be32_hex_from_digest(
         _sm3(bytes.fromhex(binding_challenge("ab" * 32, nonce_hex)))
     )
@@ -158,17 +174,52 @@ def test_worker_approve_full_chain(session, tmp_path):
     payload = ecies_decrypt(sk, bytes.fromhex(out["token_cipher_hex"]))
     body, sig = payload.rsplit(b"|", 1)
     tok = json.loads(body)
-    # A2：plan_hash 在场；B4-d7：零设备字段
+    # A2：plan_hash 在场；⑥代 SN 绑定（2026-10-06）：serial 原文仍零明文入令牌
+    # （零设备明文口径保持），sn_hash=服务端权威 SM3(serial) 全 32B 入载荷
+    # （engine 签名域覆盖——桥第 6 查消费同一字段）。
     assert tok["plan_hash"] == "ab" * 32
     assert tok["alt_max"] == 120  # class 1 轻型条例数值
     assert tok["authId"] == 7
-    assert "sn_hash" not in tok and "sn" not in tok
+    assert "sn" not in tok
+    from app.crypto.sm3 import sm3_bytes as _sm3b
+
+    assert tok["sn_hash"] == _sm3b(b"FZ-SN-W").hex(), "sn_hash=服务端权威 SM3(serial)"
     # 令牌签名可验（engine 公钥）
     from app.crypto.sm2 import verify_digest
     from app.crypto.sm3 import sm3_bytes
 
     _esk, epub = engine_signing_keypair()
     assert verify_digest(epub, sm3_bytes(body), sig.decode())
+
+
+def test_worker_verdict_expected_carries_exp_u(session, tmp_path):
+    """S6 闭环归档（2026-10-04）：判决件 expected.exp_u 在场——第三方拿到判决件
+    即可自行核对「凭证有效期覆盖授权窗」（exp_u ≥ t_end；t_end 经链上
+    recordAuth/getAuth 记录同源可得）。exp_u 源=受理面从已验签 M_A′[160:164]
+    解出落库（applications.exp_u）。"""
+    sk, pk = generate_keypair()
+    row = _enqueued(session, sk, pk)
+    session.commit()
+    stats = w.process_pending(session, OkWorker())
+    assert stats["approved"] == 1
+    vpath = Path(tmp_path) / "verdicts" / f"app-{row.id}.verdict.json"
+    verdict = json.loads(vpath.read_text(encoding="utf-8"))
+    assert verdict["expected"]["exp_u"] == 1900000000  # _enqueued 夹具的签发效期
+
+
+def test_worker_verdict_carries_anchor_mode(session, tmp_path):
+    """批 4-3 档位显式化：判决件顶层自述链锚档（mode=fake/real）——第三方核对
+    「这份授权登记是否落真链」不必猜档（fake 档 tx="fake" 形态同源可辨）。"""
+    import os as _os
+
+    sk, pk = generate_keypair()
+    row = _enqueued(session, sk, pk)
+    session.commit()
+    assert w.process_pending(session, OkWorker())["approved"] == 1
+    vpath = Path(tmp_path) / "verdicts" / f"app-{row.id}.verdict.json"
+    verdict = json.loads(vpath.read_text(encoding="utf-8"))
+    want = "fake" if _os.environ.get("FZ_CHAIN_ANCHOR", "fake") == "fake" else "real"
+    assert verdict["mode"] == want
 
 
 def test_worker_reject_bad_proof(session, tmp_path):
@@ -182,6 +233,60 @@ def test_worker_reject_bad_proof(session, tmp_path):
     assert row.status == "rejected" and "exit 2" in row.reject_reason
     r = session.get(Receipt, row.receipt_id)
     assert r.status == "failed"
+
+
+def test_gate_stores_pinned_binding_challenge(session):
+    """2026-10-07 prove 窗根修：受理门把⑤钉实例 19 用的同一 challenge_hex 落库
+    （applications.challenge_hex）——复验与验证同源的唯一权威源。"""
+    from app.authz.service import binding_challenge
+
+    sk, pk = generate_keypair()
+    row = _enqueued(session, sk, pk, nonce_hex="33" * 16)
+    assert row.challenge_hex == binding_challenge("ab" * 32, "33" * 16), (
+        "受理行必须携带门⑤现算并钉实例的挑战快照"
+    )
+
+
+def test_worker_consumes_stored_challenge_under_key_drift(session, tmp_path, monkeypatch):
+    """钥漂移根修回归（e2e_auth_full ⑥ 实弹）：challenge_hex 是钥控 HMAC 值——
+    受理（门⑤）与复验（worker）两进程 FZ_AUTHZ_BINDING_KEY 漂移时，worker 按
+    env 重建必得不同挑战 ⟹ 实例 19 假拒（proof 本身有效）。现 worker 消费受理
+    落库值：漂移场景下 expected.challenge_hex 仍=门⑤钉定值，复验不假拒。"""
+    from app.authz.service import binding_challenge
+
+    sk, pk = generate_keypair()
+    row = _enqueued(session, sk, pk)
+    session.commit()
+    pinned = row.challenge_hex
+    assert pinned == binding_challenge("ab" * 32, "11" * 16)
+    # 模拟 worker 进程 env 钥漂移（部署方换钥/未注入——真案卷假拒的实弹形态）
+    monkeypatch.setenv("FZ_AUTHZ_BINDING_KEY", secrets.token_hex(32))
+    drifted = binding_challenge("ab" * 32, "11" * 16)
+    assert drifted != pinned, "夹具预检：换钥后重建值必须不同（漂移成立）"
+
+    worker = CapturingWorker()
+    stats = w.process_pending(session, worker)
+    assert stats["approved"] == 1, "钥漂移不得再假拒真案卷"
+    assert worker.seen["challenge_hex"] == pinned, (
+        "worker 必须消费受理落库的钉定挑战，不得按本进程 env 重建"
+    )
+
+
+def test_worker_legacy_row_challenge_fallback_recompute(session, tmp_path):
+    """历史行（0024 迁移前，challenge_hex=""）回落旧重建式——语义=改动前唯一
+    路径，迁移桥不放松任何核对（新行恒走落库值）。"""
+    sk, pk = generate_keypair()
+    row = _enqueued(session, sk, pk)
+    session.commit()
+    row.challenge_hex = ""  # 历史行形态
+    session.commit()
+
+    from app.authz.service import binding_challenge
+
+    worker = CapturingWorker()
+    stats = w.process_pending(session, worker)
+    assert stats["approved"] == 1
+    assert worker.seen["challenge_hex"] == binding_challenge("ab" * 32, "11" * 16)
 
 
 def test_worker_reject_auth_id_mismatch(session, tmp_path):
@@ -228,7 +333,10 @@ def test_gate_chain_sub_used_rejects(session):
 
 
 class ReadbackBinding:
-    """getAuth 回读替身：echo 闸门写入的记录（match）或全零（mismatch）。"""
+    """getAuth 回读替身：echo 闸门写入的记录（match）或全零（mismatch）。
+
+    12 元组（授权包配额制 2026-10-06：末位 remaining——worker 读后写对拍
+    含配额一致性 rec[11]==登记架次数）。"""
 
     def __init__(self, match: bool):
         self.match = match
@@ -249,8 +357,9 @@ class ReadbackBinding:
                 0,
                 0,
                 0,
+                int(k.get("sorties", 1)),
             ]
-        return [b"\x00" * 32] * 8 + [0, 0, 0]
+        return [b"\x00" * 32] * 8 + [0, 0, 0, 0]
 
 
 class ReadbackWorker(OkWorker):
@@ -303,6 +412,74 @@ def test_worker_rev_root_moved_rejects(session, tmp_path, monkeypatch):
     assert row.status == "rejected" and "rev_root_moved" in row.reject_reason
     r = session.get(Receipt, row.receipt_id)
     assert r.status == "failed"
+
+
+# ---- 授权包配额制（2026-10-06 多架次拍板）：worker 透传与配额落库 ----
+
+
+def test_worker_sorties_passthrough_and_quota_ledger(session, tmp_path, monkeypatch):
+    """sorties 透传链写 + 配额账本落库：申请行 sorties=3 → recordAuth kw 带
+    sorties=3；approved 后 auth_records.remaining=3（消费回报递减起点）。"""
+    monkeypatch.setenv("FZ_CHAIN_ANCHOR", "real")
+    row = _enqueued(session, *generate_keypair())
+    row.sorties = 3
+    session.commit()
+    worker = ReadbackWorker(match=True)
+    stats = w.process_pending(session, worker)
+    assert stats["approved"] == 1
+    assert worker.binding.captured["sorties"] == 3, "recordAuth 配额参数透传"
+    from sqlalchemy import select
+
+    from app.authz.models import AuthRecord
+
+    rec = session.scalar(select(AuthRecord).where(AuthRecord.application_id == row.id))
+    assert rec is not None and rec.sorties == 3 and rec.remaining == 3
+
+
+def test_worker_sorties_default_one(session, tmp_path, monkeypatch):
+    """缺省配额 1 等价：申请未申报 sorties → recordAuth kw sorties=1，
+    auth_records.remaining=1（与令牌一次性历史语义逐字等价）。"""
+    monkeypatch.setenv("FZ_CHAIN_ANCHOR", "real")
+    row = _enqueued(session, *generate_keypair())
+    assert row.sorties == 1, "admission_gate 缺省配额=1"
+    worker = ReadbackWorker(match=True)
+    stats = w.process_pending(session, worker)
+    assert stats["approved"] == 1
+    assert worker.binding.captured["sorties"] == 1
+    from sqlalchemy import select
+
+    from app.authz.models import AuthRecord
+
+    rec = session.scalar(select(AuthRecord).where(AuthRecord.application_id == row.id))
+    assert rec is not None and rec.sorties == 1 and rec.remaining == 1
+
+
+def test_gate_sorties_out_of_range_rejected(session):
+    """配额形检（fail-closed）：0/6 越界=400 bad_sorties（1~5 合法域）。
+    形检位于门控序最前——先于全部材料/链面检查。"""
+    import pytest
+
+    from app.authz.service import AuthzError, admission_gate
+
+    for bad in (0, 6):
+        _sk, pk = generate_keypair()
+        with pytest.raises(AuthzError) as ei:
+            admission_gate(
+                session,
+                GateDeps(),
+                session_pk_hex=pk,
+                sub_cred_message_hex="",
+                sub_sig_hex="",
+                sub_cred_hash_hex="ff" * 32,
+                nonce_hex="22" * 16,
+                plan_hash_hex="ab" * 32,
+                class_id=1,
+                proof_path="x",
+                spec_path="x",
+                rev_root_hex="00" * 32,
+                sorties=bad,
+            )
+        assert ei.value.code == "bad_sorties"
 
 
 # ---- R4 第二批 B-P2-6：authId 预测竞态根修（临界区互斥）----
@@ -426,3 +603,55 @@ def test_worker_concurrent_record_auth_both_approved(tmp_path, monkeypatch):
     recs = s1.scalars(_sel(AuthRecord).order_by(AuthRecord.auth_id)).all()
     assert [r.auth_id for r in recs] == [101, 102]
     s1.close()
+
+
+def test_worker_canonical_sanitized_for_forbid_gate(tmp_path, monkeypatch):
+    """2026-10-06 prove 窗根修回归：FORBID=1 下 worker 须用「脱敏 canonical 副本
+    +env 钥」拼 zkc 环境——真案卷复验不再被装配禁令误拒（e2e_auth_full ⑥ 实弹
+    抓出的批 4 漏洞：禁令=spec 文件出现明文钥即拒，env 在场不豁免）。"""
+    import json as _json
+    import os as _os
+
+    import app.zk.worker as w
+
+    zksvc = tmp_path / "zksvc"
+    exe = zksvc / "target" / "release" / "zkc.exe"
+    exe.parent.mkdir(parents=True)
+    exe.write_bytes(b"")  # 存在性哨（真 zkc 不跑——subprocess 打桩）
+    canonical = zksvc / "tests" / "auth_canonical_spec.json"
+    canonical.parent.mkdir(parents=True)
+    canonical.write_text(_json.dumps({
+        "profile": "auth", "reps": 16, "log_rate": 1,
+        "binding": {"challenge_hex": "ff" * 32},
+        "input": {"kind": "auth", "holder_sk_hex": "ab" * 32,
+                  "holder_pk_hex": "cd" * 64, "sig_hex": "ef" * 64},
+    }), encoding="utf-8")
+    (tmp_path / "instances.json").write_text("{}", encoding="utf-8")
+
+    captured: dict = {}
+
+    def _fake_run(cmd, **k):
+        captured.update(k.get("env") or {})
+        _san = (k.get("env") or {}).get("FZ_AUTH_CANONICAL_SPEC", "")
+        if _san:  # 调用时点快照（finally 焚毁后不可读）
+            with open(_san, encoding="utf-8") as _f:
+                captured["_san_content"] = _f.read()
+
+        class _R:
+            returncode = 0
+            stdout = ""
+            stderr = ""
+        return _R()
+
+    monkeypatch.setattr(w.subprocess, "run", _fake_run)
+    monkeypatch.setenv("FZ_ZK_FORBID_SPEC_KEY", "1")
+
+    wd = w.WorkerDeps()
+    wd.zksvc_dir = str(zksvc)
+    rc, _ = wd.zkc_verify(str(tmp_path), {"instances": ["11"] * 26})
+    assert rc == 0
+    san = captured.get("FZ_AUTH_CANONICAL_SPEC", "")
+    assert san and san != str(canonical), "必须指向脱敏副本而非仓内原件"
+    assert captured.get("FZ_ZK_HOLDER_SK_HEX") == "ab" * 32, "夹具钥必须走 env"
+    assert _json.loads(captured["_san_content"])["input"]["holder_sk_hex"] == "",         "副本必须零私钥字节"
+    assert not _os.path.exists(san), "脱敏副本须用毕即焚"

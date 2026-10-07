@@ -1,10 +1,12 @@
-"""账户服务（2026-09-29 账户门户批）：注册/激活/挑战-应答登录/会话/资料签发。
+"""账户服务（2026-09-29 账户门户批；2026-10-04 批 2 密码底座升档）。
 
 安全语义（docs/评审/2026-09-29-账户门户与三角色工作台/设计方案.md §2）：
 - 服务端零密码材料：登录认证=SM2 挑战-应答签名（nonce 一次性+TTL）；
-  预置机构账户首登激活用初始密码核对子（KDF 派生值）一次性核对后即焚。
-- 私钥/身份资料仅存客户端密码 KEK 密封件——服务器无法解封，库泄露
-  只得到离线猜测面（KDF 21000 轮拉高成本；OPAQUE 列演进项）。
+  预置机构账户首登激活用初始密码核对子（独立派生域 KDF 派生值——批 2-2.2
+  与 KEK 解耦，非 KEK 等价物）一次性核对后即焚。
+- 私钥/身份资料仅存客户端密码 KEK 密封件（v4 信封=PBKDF2-HMAC-SM3 ≥600k
+  轮，OWASP 2023 档；v3 旧密封件版本分派兼容解封+惰性重封升级）——服务器
+  无法解封，库泄露只得到离线猜测面；OPAQUE 列演进项。
 - 密钥核对：解封出的私钥须与账户登记公钥派生一致（pubkey_from_priv），
   防密封件与公钥错配。
 """
@@ -14,16 +16,20 @@ from __future__ import annotations
 import datetime as dt
 import hmac
 import json
+import os
 import re
 import secrets
-import threading
 import time
 
 from fastapi import HTTPException
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
-from app.accounts.kdf import derive_kek
+from app.accounts.kdf import (
+    KDF_LEGACY_V3_ITERATIONS,
+    derive_activation_verifier,
+    kdf_iterations,
+)
 from app.accounts.models import (
     CHALLENGE_TTL_SECONDS,
     SESSION_TTL_HOURS,
@@ -31,10 +37,12 @@ from app.accounts.models import (
     AccountAdminLog,
     AccountPubkeyHistory,
     AuthChallenge,
+    RateLimitBucket,
     WebSession,
 )
 from app.crypto.sm2 import pubkey_from_priv, verify as sm2_verify
 from app.crypto.sm3 import sm3_bytes
+from app.deployment import is_production
 
 USERNAME_RE = re.compile(r"[A-Za-z0-9._\-]{2,32}")
 LOGIN_MSG_PREFIX = "FZ-AUTH-LOGIN|"
@@ -120,6 +128,16 @@ def log_account_action(
 SESSION_COOKIE = "fz_session"
 
 
+def cookie_secure() -> bool:
+    """会话 Cookie Secure 标志（批 2-2.5② 配置化）：env FZ_COOKIE_SECURE
+    显式设定（true/1/yes/on）优先；未设定时 production 档自动 True（TLS 面），
+    演示档（环回 http）缺省 False——保演示可跑。"""
+    raw = (os.environ.get("FZ_COOKIE_SECURE") or "").strip().lower()
+    if raw:
+        return raw in ("1", "true", "yes", "on")
+    return is_production()
+
+
 class AccountError(Exception):
     def __init__(self, code: str, message: str = "", status: int = 400) -> None:
         super().__init__(message or code)
@@ -127,32 +145,53 @@ class AccountError(Exception):
         self.status = status
 
 
-# ---- /auth/* 尝试限速（内存固定窗：演示形态诚实注记——多进程部署须共享存储）----
+# ---- /auth/* 尝试限速（批 2-2.5①：固定窗落库 rate_limit_buckets——多副本
+# 部署共享同窗、重启不清零。行为与旧内存窗一致：窗内第 max+1 发起 429，
+# 429 不再累计；窗满自动重开。时间基=墙钟（跨进程共享窗——monotonic 是
+# 进程私有的，落库后不可用）。----
 class AttemptLimiter:
     def __init__(self, max_attempts: int = 10, window_s: float = 300.0) -> None:
         self._max = max_attempts
         self._win = window_s
-        self._hits: dict[str, tuple[float, int]] = {}
-        self._lock = threading.Lock()
 
-    def check(self, key: str) -> None:
-        now = time.monotonic()
-        with self._lock:
-            hit = self._hits.get(key)
-            if hit and now - hit[0] < self._win:
-                if hit[1] >= self._max:
-                    raise AccountError(
-                        "rate_limited",
-                        "尝试过于频繁——请稍候再试（5 分钟窗口）",
-                        429,
-                    )
-                self._hits[key] = (hit[0], hit[1] + 1)
-            else:
-                self._hits[key] = (now, 1)
+    def check(self, key: str, session: Session) -> None:
+        now = time.time()
+        row = (
+            session.query(RateLimitBucket)
+            .filter(RateLimitBucket.bucket_key == key)
+            .with_for_update()
+            .first()
+        )
+        if row is None:
+            session.add(
+                RateLimitBucket(bucket_key=key, window_start=_utcnow(), hits=1)
+            )
+            session.commit()
+            return
+        if now - row.window_start.replace(tzinfo=dt.UTC).timestamp() >= self._win:
+            row.window_start = _utcnow()
+            row.hits = 1
+            session.commit()
+            return
+        if row.hits >= self._max:
+            session.commit()
+            raise AccountError(
+                "rate_limited",
+                "尝试过于频繁——请稍候再试（5 分钟窗口）",
+                429,
+            )
+        row.hits += 1
+        session.commit()
 
-    def reset(self, key: str) -> None:
-        with self._lock:
-            self._hits.pop(key, None)
+    def reset(self, key: str, session: Session) -> None:
+        row = (
+            session.query(RateLimitBucket)
+            .filter(RateLimitBucket.bucket_key == key)
+            .first()
+        )
+        if row is not None:
+            session.delete(row)
+            session.commit()
 
 
 auth_limiter = AttemptLimiter()
@@ -163,13 +202,38 @@ def _utcnow() -> dt.datetime:
 
 
 # ---- 密封件结构校验（fail-closed：坏结构在注册/激活即拒，不带病入库）----
+# v4 现行（PBKDF2-HMAC-SM3）+ v3 legacy（激活/惰性升级兼容面）——未知版本拒。
+# 拍板③①：注册面停发 v3（register_account 版本门只收 v4）——存量 v3 账户
+# 仍走登录惰性升级；存量清零前由 FZ_V3_CUTOFF_TS 截止策略与 production
+# 存量告警收口（见 v3_cutoff_ts / v3_envelope_stock_report）。
+_SEALED_BLOB_VERSIONS = (3, 4)
+_KDF_ITER_FLOOR = 1_000  # v4 信封迭代数下限（低于此=形态拒绝——防弱工作因子入库）
+_V3_REGISTER_REJECTED_MSG = "注册须使用当前密钥封装格式（v4）——请刷新页面后重试"
+
+
+def _blob_version(blob_text: str) -> int | None:
+    """信封版本号提取（坏 JSON/非 dict/缺 v 槽=None——形态责任在
+    _validate_sealed_blob 的 fail-closed 门，此处不做第二裁决）。"""
+    try:
+        obj = json.loads(blob_text)
+    except ValueError:
+        return None
+    if isinstance(obj, dict) and isinstance(obj.get("v"), int):
+        return obj["v"]
+    return None
+
+
 def _validate_sealed_blob(blob_text: str, pubkey_hex: str) -> None:
     try:
         obj = json.loads(blob_text)
     except ValueError as e:
         raise AccountError("bad_blob", "密封件不是有效 JSON") from e
-    if not isinstance(obj, dict) or obj.get("v") != 3 or obj.get("pk") != pubkey_hex:
-        raise AccountError("bad_blob", "密封件形态不符（v3 信封且公钥须一致）")
+    if (
+        not isinstance(obj, dict)
+        or obj.get("v") not in _SEALED_BLOB_VERSIONS
+        or obj.get("pk") != pubkey_hex
+    ):
+        raise AccountError("bad_blob", "密封件形态不符（v3/v4 信封且公钥须一致）")
     enc = obj.get("enc")
     if not isinstance(enc, dict):
         raise AccountError("bad_blob", "密封件缺少密码密封槽")
@@ -183,6 +247,16 @@ def _validate_sealed_blob(blob_text: str, pubkey_hex: str) -> None:
             raise AccountError("bad_blob", f"密封槽字段 {f} 非法 hex") from e
     if len(enc["ct"]) < 2:
         raise AccountError("bad_blob", "密封密文为空")
+    if obj["v"] == 4:
+        from app.accounts.kdf import KDF_NAME_V4
+
+        if enc.get("kdf") != KDF_NAME_V4:
+            raise AccountError("bad_blob", "v4 密封槽 KDF 标记非法（须 pbkdf2-sm3）")
+        it = enc.get("iter")
+        if not isinstance(it, int) or it < _KDF_ITER_FLOOR:
+            raise AccountError(
+                "bad_blob", f"v4 密封槽 KDF 迭代数低于下限（须 ≥{_KDF_ITER_FLOOR}）"
+            )
 
 
 def _validate_pubkey(pubkey_hex: str) -> None:
@@ -213,6 +287,10 @@ def register_account(
     if not USERNAME_RE.fullmatch(username or ""):
         raise AccountError("bad_username", "用户名仅限字母/数字/._-（2..32）")
     _validate_pubkey(pubkey_hex)
+    # 拍板③①：注册停发 v3——旧信封不再入库（前端旧缓存封出 v3=422 引导
+    # 刷新；存量 v3 账户不受影响——登录惰性升级与截止策略见 login）。
+    if _blob_version(sealed_blob) == 3:
+        raise AccountError("v3_register_rejected", _V3_REGISTER_REJECTED_MSG, 422)
     _validate_sealed_blob(sealed_blob, pubkey_hex)
     dup = session.execute(
         select(Account).where(Account.username == username)
@@ -234,10 +312,26 @@ def register_account(
 
 def prelogin(session: Session, username: str) -> dict:
     """登录前置：返回认证模式。challenge=稳态（取密封件+签名）；activation=
-    预置机构账户首登（KDF 核对子激活）。"""
+    预置机构账户首登激活（核对子激活）。activation 附核对子格式（verifier）
+    与迭代数（rounds）——客户端据此按同一派生域复算：
+    - "v1"=独立核对子域（现行种子——PBKDF2-HMAC-SM3 + FZ-ACTIVATE-VERIFY|v1）；
+    - "legacy_v3"=旧种子（库内核对子为旧链 KEK 等价值——兼容读取，激活即换代）。"""
     row = get_account(session, username)
     if row.status == "pending_activation":
-        return {"mode": "activation", "kdf_salt_hex": row.init_kdf_salt_hex, "rounds": 21000}
+        if row.init_verifier_ver == "v1":
+            return {
+                "mode": "activation",
+                "kdf_salt_hex": row.init_kdf_salt_hex,
+                "verifier": "v1",
+                "rounds": kdf_iterations(),
+            }
+        # 旧种子格式（init_verifier_ver 为 NULL）——兼容读取
+        return {
+            "mode": "activation",
+            "kdf_salt_hex": row.init_kdf_salt_hex,
+            "verifier": "legacy_v3",
+            "rounds": KDF_LEGACY_V3_ITERATIONS,
+        }
     if row.status == "pending_profile":
         return {"mode": "challenge"}  # 已可登录（资料未补，工作台受限）
     return {"mode": "challenge"}
@@ -258,22 +352,37 @@ def issue_challenge(session: Session, username: str) -> str:
     if not row.pubkey_hex:
         raise AccountError("not_activated", "账户尚未激活（未生成密钥）", 409)
     nonce = secrets.token_hex(32)
-    # 顺手清过期挑战（演示规模全表扫可接受；量大走索引+后台清理）
+    # 顺手清过期挑战（批 4-7 卫生件：原逐行载入+逐行 DELETE=每请求全表扫；
+    # 现单条索引范围批量 DELETE——ix_auth_challenges_created_ts（0017）承载）。
     cutoff = _utcnow() - dt.timedelta(seconds=CHALLENGE_TTL_SECONDS * 10)
-    for stale in session.execute(
-        select(AuthChallenge).where(AuthChallenge.created_ts < cutoff)
-    ).scalars():
-        session.delete(stale)
+    session.execute(
+        delete(AuthChallenge).where(AuthChallenge.created_ts < cutoff),
+        execution_options={"synchronize_session": False},
+    )
     session.add(AuthChallenge(nonce_hex=nonce, username=username))
     session.commit()
     return nonce
+
+
+def upgrade_sealed_blob(session: Session, username: str, sealed_blob: str) -> None:
+    """惰性重封回传（批 2-2.1）：客户端把存量 v3 密封件解封后以同口令 v4
+    重封（keystore 惰性升级），登录/解锁会话内回传换新。校验 v4 形态+公钥
+    绑定一致（不带病入库）；非属主会话不可达（principal 由路由层锁定）。"""
+    row = get_account(session, username)
+    if not row.pubkey_hex:
+        raise AccountError("not_activated", "账户尚未激活（未生成密钥）", 409)
+    _validate_sealed_blob(sealed_blob, row.pubkey_hex)
+    row.sealed_blob = sealed_blob
+    session.commit()
 
 
 def activate(
     session: Session, username: str, verifier_hex: str, pubkey_hex: str, sealed_blob: str
 ) -> None:
     """预置机构账户首登激活：初始密码核对子一次性比对（恒时）→写入钥对→
-    焚烧核对子——此后进入纯挑战-应答态（密码材料归零）。"""
+    焚烧核对子——此后进入纯挑战-应答态（密码材料归零）。
+    核对子格式按 init_verifier_ver 分派（"v1"=独立域现行；NULL=旧种子
+    KEK 等价格式，兼容读取——激活即焚=换代，库内不再留 KEK 等价物）。"""
     row = get_account(session, username)
     if row.status != "pending_activation":
         raise AccountError("not_activatable", "该账户不在待激活状态", 409)
@@ -285,6 +394,7 @@ def activate(
     row.pubkey_hex = pubkey_hex.lower()
     row.sealed_blob = sealed_blob
     row.init_verifier_hex = None
+    row.init_verifier_ver = None
     row.init_kdf_salt_hex = None
     row.status = "active"
     append_pubkey_epoch(session, username, pubkey_hex)  # 首激活=纪元 1；重置后再激活=新纪元
@@ -296,11 +406,37 @@ def verify_init_verifier(username: str, verifier_hex: str) -> bool:
     return bool(verifier_hex) and len(verifier_hex) == 32
 
 
+def v3_cutoff_ts() -> int:
+    """v3 登录截止期（拍板③②）：env FZ_V3_CUTOFF_TS=Unix 秒。
+
+    缺省/0=不启用（现状：v3 登录放行+前端惰性升级 v3→v4）；>0 且已到点
+    （now>=cutoff）=存量 v3 信封登录拒绝（处置=机构重置）。显式非法值
+    （非整数/负数）=抛错——配置错误必须可见，不许静默当 0（fail-visible）。"""
+    raw = (os.environ.get("FZ_V3_CUTOFF_TS") or "").strip()
+    if not raw:
+        return 0
+    try:
+        ts = int(raw)
+    except ValueError as e:
+        raise ValueError("FZ_V3_CUTOFF_TS 须为 Unix 秒整数（0=不启用）") from e
+    if ts < 0:
+        raise ValueError("FZ_V3_CUTOFF_TS 须 ≥0（0=不启用）")
+    return ts
+
+
 def login(session: Session, username: str, nonce_hex: str, sig_hex: str) -> tuple[str, Account]:
     """挑战-应答登录：nonce 一次性消费+SM2 验签→发会话 token（库存 SM3）。"""
     row = get_account(session, username)
     if not row.pubkey_hex:
         raise AccountError("not_activated", "账户尚未激活（未生成密钥）", 409)
+    # 拍板③②：v3 登录截止——截止期已到（cutoff>0 且 now>=cutoff）后存量
+    # v3 信封账户拒登（403 处置=机构重置）；在挑战消费之前裁决（拒绝不烧
+    # nonce）。未启用/未到点=现状惰性升级（前端登录会话内 v3→v4 重封回传）。
+    cutoff = v3_cutoff_ts()
+    if cutoff and time.time() >= cutoff and _blob_version(row.sealed_blob or "") == 3:
+        raise AccountError(
+            "v3_cutoff", "旧版密钥封装已过截止期——请联系机构重置凭证", 403
+        )
     ch = session.execute(
         select(AuthChallenge).where(AuthChallenge.nonce_hex == nonce_hex)
     ).scalar_one_or_none()
@@ -356,11 +492,63 @@ def logout(session: Session, token: str) -> None:
         session.commit()
 
 
+def purge_expired_sessions(session: Session) -> int:
+    """过期会话回收（2026-10-04 worker 扩展前置批）：web_sessions 只进不清=
+    慢性膨胀——删除 expires_ts 已过的行。backend 启动钩调用（失败不阻断
+    启动）。返回删除行数。"""
+    from sqlalchemy import delete
+
+    n = session.execute(delete(WebSession).where(WebSession.expires_ts < _utcnow())).rowcount
+    session.commit()
+    return n
+
+
+def mask_username(username: str) -> str:
+    """账户名掩码（告警/日志展示面）：首尾保留、中间 * 化——全名不进日志。
+    ≤2 字符保留首字符（注册门≥2，单字符名不存在）。"""
+    if len(username) <= 2:
+        return username[:1] + "*"
+    return username[0] + "*" * (len(username) - 2) + username[-1]
+
+
+def scan_v3_envelope_accounts(session: Session) -> list[str]:
+    """存量 v3 信封账户清点（拍板③③）：逐行解析 sealed_blob 的 v 槽。
+    空密封件/坏形态不计入（形态问题由入库门 fail-closed 负责——此处只
+    统计"格式合法的 v3 信封"）。"""
+    rows = session.execute(
+        select(Account.username, Account.sealed_blob).where(Account.sealed_blob.is_not(None))
+    ).all()
+    return [u for u, blob in rows if _blob_version(blob) == 3]
+
+
+def v3_envelope_stock_report(session: Session) -> str | None:
+    """production 档存量 v3 信封启动告警（拍板③③）：存量>0 返回显式告警
+    文案（数量+账户名掩码+处置指引——登录触发惰性升级或机构重置）；不拒启
+    ——账户级问题不阻断服务（调用面 try/except 兜底：库不可达同样只告警）。
+    非 production 档恒 None（demo 环回零影响）。"""
+    if not is_production():
+        return None
+    names = scan_v3_envelope_accounts(session)
+    if not names:
+        return None
+    masked = ", ".join(mask_username(n) for n in names)
+    return (
+        f"[FZ-STARTUP][WARN] 检测到存量 v3 密封信封账户 {len(names)} 个（{masked}）——"
+        "v3 注册已停发；一旦启用登录截止（FZ_V3_CUTOFF_TS）该批账户将无法登录。"
+        "处置：请通知其尽快登录触发惰性升级（v3→v4 同口令重封），逾期者由机构"
+        "按离线种子脚本重置凭证。（账户级问题——本告警不阻断启动）"
+    )
+
+
 def seed_institutional_account(
     session: Session, username: str, role: str, initial_password: str
 ) -> Account:
-    """预置机构账户（审计员/管理员）：初始密码→KDF 核对子；首登激活后焚毁。
-    幂等：待激活态可重置核对子（落台账）；active 态拒绝（防误覆盖已激活钥对）。"""
+    """预置机构账户（审计员/管理员）：初始密码→激活核对子；首登激活后焚毁。
+    批 2-2.2：核对子=独立派生域（derive_activation_verifier——info=
+    FZ-ACTIVATE-VERIFY|v1 入盐域），与 KEK 派生域分离——库泄露拿到的核对子
+    不是可用 KEK，只有与正文密封件同级的离线猜测面。init_verifier_ver="v1"
+    标记格式（旧种子 NULL=兼容读取面）。幂等：待激活态可重置核对子（落
+    台账）；active 态拒绝（防误覆盖已激活钥对）。"""
     if role not in ("auditor", "admin"):
         raise AccountError("bad_role", "预置账户角色限 auditor/admin")
     row = session.execute(
@@ -370,7 +558,8 @@ def seed_institutional_account(
         if row.status == "pending_activation":
             salt = secrets.token_hex(16)
             row.init_kdf_salt_hex = salt
-            row.init_verifier_hex = derive_kek(initial_password, salt)
+            row.init_verifier_ver = "v1"
+            row.init_verifier_hex = derive_activation_verifier(initial_password, salt)
             log_account_action(
                 session, action="reseed_pending", username=username, operator="offline_seed_script"
             )
@@ -383,7 +572,8 @@ def seed_institutional_account(
         role=role,
         status="pending_activation",
         init_kdf_salt_hex=salt,
-        init_verifier_hex=derive_kek(initial_password, salt),
+        init_verifier_ver="v1",
+        init_verifier_hex=derive_activation_verifier(initial_password, salt),
     )
     session.add(row)
     session.commit()
@@ -413,7 +603,8 @@ def reset_institutional_account(
     )
     row.status = "pending_activation"
     row.init_kdf_salt_hex = salt
-    row.init_verifier_hex = derive_kek(new_password, salt)
+    row.init_verifier_ver = "v1"
+    row.init_verifier_hex = derive_activation_verifier(new_password, salt)
     row.pubkey_hex = None
     row.sealed_blob = None
     row.sealed_profile = None

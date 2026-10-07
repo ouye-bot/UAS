@@ -19,7 +19,9 @@ use plonkish_sm2_probe::sm2_z_anchor::fe_be32;
 use plonkish_sm2_probe::FpSM2;
 use std::collections::{BTreeMap, BTreeSet};
 
-const VECTOR: &str = include_str!("../../../../../../../uas/zksvc/tests/auth_golden_vector.json");
+// 包内相对路径换代（SN 绑定批，2026-10-06）：本工作区布局=uas/zksvc/vendor/
+// plonkish-4201a82/...——7 级上行=uas 根（上游共享仓的 uas/uas 双层不存在）。
+const VECTOR: &str = include_str!("../../../../../../../zksvc/tests/auth_golden_vector.json");
 
 /// 极简扁平 JSON 字段提取（bin 无 serde_json——dev-dep 纪律）。
 /// 仅支持 `"key": "str"` / `"key": num` 两形态；黄金向量为机器生成扁平对象。
@@ -85,6 +87,7 @@ fn main() {
         class_id: pi.class_id,
         id_number: pi.id_number,
         sn_h: sn_hash_of(&pi.serial),
+        serial: pi.serial.clone(),
         smt_siblings: Some(siblings),
         smt_root: Some(root),
     };
@@ -287,15 +290,21 @@ fn main() {
         println!("  {:<28} {} 列", t, n);
     }
 
-    // e2e 结构守卫（R3-3.1 换代锚 2026-09-24）：漂移=环境漂移，当场爆。
-    // R3-3.1 判决行 [实测 SV 云服务器 12C/46G]：44,383 = 104,543（R2 锚）
-    // − 60,160（承诺 C 块查表化：布尔 ZONE0 体出局，weave_commit_block_*
-    // 第 4 组 36 约束+8 查表接管）；10,360 = 11,448 − 1,088（布尔体列族
-    // −1,700 与 C 组 +226/影子 +64 净额）；lookups 544 = 536 + 8（C 单组
-    // 8 通道）。
-    assert_eq!(info.constraints.len(), 44_383, "AUTH 服务档约束数漂移（R3-3.1 锚）");
-    assert_eq!(ncols, 10_360, "AUTH 服务档 advice 列数漂移（R3-3.1 锚）");
-    assert_eq!(info.lookups.len(), 544, "AUTH 服务档 lookup 通道数漂移（R3-3.1 锚）");
+    // e2e 结构守卫（⑦代换代锚 2026-10-06——SM3 组列共享+查表通道合并）：漂移=
+    // 环境漂移，当场爆。演进链：R3-3.1 判决行 44,383/10,360/544 [实测 SV 云服务
+    // 器 12C/46G] → 电路手术 ~38.2K → 20,102 → 19,578（advice 10,283/实例 25/
+    // lookups 548）→ ⑥代 19,608/10,534/556/26（SN 绑定第 5 组查表门+组合 A）→
+    // ⑦代 19,434/8,410/195/26：69 组 SM3 查表门 34 列独占→lane band 列池 799 列
+    //（XOR2 19 带 57 / XOR3 34 带 136 / MAJ 7 带 28 / CH 28 / SPLIT1 26 带 130 /
+    // SPLIT3 46 带 230 / ADD 26 带 182 / INPUT 4 / CONST 每电路 1 共 4——SPLIT3
+    // 2,688 行/组 > 4095/2 ⟹ 每带恰 1 组，列下界主体）；552 SM3 通道按 lane×band
+    // 合并为 191；msg-limb 桥列 packing 704→128（行去重 first-fit 16 集×8）；
+    // 门 276→102（lane×band + 每电路 const 门）。估算「~8 通道/全组 1 套 34 列」
+    // 按扁平行带推得，忽略列角色对齐约束（一物理列承载两角色格 ⟹ 查表元组/
+    // 线性门跨角色混载必违约）——实测以 census 为准（本断言）。
+    assert_eq!(info.constraints.len(), 19_434, "AUTH 服务档约束数漂移（⑦代锚）");
+    assert_eq!(ncols, 8_410, "AUTH 服务档 advice 列数漂移（⑦代锚）");
+    assert_eq!(info.lookups.len(), 195, "AUTH 服务档 lookup 通道数漂移（⑦代锚）");
     println!("[auth-census] 完成耗时 {:?}", t0.elapsed());
     let _ = fr_from_limbs(&[0; 4]); // 保持 import 对拍面
 }

@@ -252,12 +252,17 @@ where
         } else {
             MultilinearPolynomial::rand(pp.num_vars, &mut mask_rng)
         };
-        let mask_comm = Pcs::batch_commit_and_write(&pp.pcs, [&mask_poly], transcript)?;
+        let mask_comm = Pcs::batch_commit_and_write_masked(&pp.pcs, [&mask_poly], None, transcript)?;
 
         // witness 列承诺=掩蔽世界 ṽ=v+λ_i·m；明文列仅入 sumcheck，不入任何开口。
+        // A2（组合 A，2026-10-06）：ṽ 只在承诺编码/开口求值两点即时取值
+        //（ṽ(r)=v(r)+λ·m(r)）——整份物化取消（AUTH 13,057 列×105KB≈1.35GB
+        // 驻留归零）。语义红线：承诺值/转录/证明字节与物化路径逐位同。
         let mut witness_polys = Vec::with_capacity(pp.num_witness_polys.iter().sum());
-        let mut witness_masked_polys = Vec::with_capacity(witness_polys.len());
         let mut witness_comms = Vec::with_capacity(witness_polys.len());
+        // 掩蔽槽账本（开口序槽位, λ）——batch_open_masked/prove_zero_check 消费。
+        let mut mask_slots: Vec<(usize, F)> = Vec::with_capacity(pp.mask_layout.num_masked);
+        let mut open_slot = pp.num_instances.len() + pp.preprocess_polys.len();
         let mut challenges = Vec::with_capacity(pp.num_challenges.iter().sum::<usize>() + 4);
         let mut lambda_slot = 0;
         for (round, (num_witness_polys, num_challenges)) in pp
@@ -275,15 +280,20 @@ where
             assert_eq!(polys.len(), *num_witness_polys);
             end_timer(timer);
 
-            let masked = polys
-                .iter()
-                .zip(lambdas[lambda_slot..].iter())
-                .map(|(v, l)| v + &(&mask_poly * l))
-                .collect_vec();
-            lambda_slot += masked.len();
-            witness_comms.extend(Pcs::batch_commit_and_write(&pp.pcs, &masked, transcript)?);
+            let n = polys.len();
+            // A2：掩蔽即时承诺（λ 与列逐位平行；物化 masked 全集取消）。
+            witness_comms.extend(Pcs::batch_commit_and_write_masked(
+                &pp.pcs,
+                &polys,
+                Some((&mask_poly, &lambdas[lambda_slot..lambda_slot + n])),
+                transcript,
+            )?);
+            for (i, l) in lambdas[lambda_slot..lambda_slot + n].iter().enumerate() {
+                mask_slots.push((open_slot + i, *l));
+            }
+            lambda_slot += n;
+            open_slot += n;
             witness_polys.extend(polys);
-            witness_masked_polys.extend(masked);
             challenges.extend(transcript.squeeze_challenges(*num_challenges));
         }
         let polys = iter::empty()
@@ -308,14 +318,21 @@ where
         let lookup_m_polys = lookup_m_polys(&lookup_compressed_polys)?;
         end_timer(timer);
 
-        // D18 Phase 3：lookup m 列同为 witness 派生 ⟹ 掩蔽承诺。
-        let lookup_m_masked = lookup_m_polys
-            .iter()
-            .zip(lambdas[lambda_slot..].iter())
-            .map(|(v, l)| v + &(&mask_poly * l))
-            .collect_vec();
-        lambda_slot += lookup_m_masked.len();
-        let lookup_m_comms = Pcs::batch_commit_and_write(&pp.pcs, &lookup_m_masked, transcript)?;
+        // D18 Phase 3：lookup m 列同为 witness 派生 ⟹ 掩蔽承诺（A2：即时算）。
+        let n_lm = lookup_m_polys.len();
+        let lookup_m_comms = Pcs::batch_commit_and_write_masked(
+            &pp.pcs,
+            &lookup_m_polys,
+            Some((&mask_poly, &lambdas[lambda_slot..lambda_slot + n_lm])),
+            transcript,
+        )?;
+        // lookup_m 段槽位基址=置换列之后（open_polys 链序）。
+        let lm_base = open_slot + pp.permutation_polys.len();
+        for (i, l) in lambdas[lambda_slot..lambda_slot + n_lm].iter().enumerate() {
+            mask_slots.push((lm_base + i, *l));
+        }
+        lambda_slot += n_lm;
+        open_slot = lm_base + n_lm;
 
         // Round n+1
 
@@ -341,16 +358,20 @@ where
             .chain(lookup_h_polys.iter())
             .chain(permutation_z_polys.iter())
             .collect_vec();
-        let lookup_h_permutation_z_masked = lookup_h_polys
-            .iter()
-            .chain(permutation_z_polys.iter())
-            .zip(lambdas[lambda_slot..].iter())
-            .map(|(v, l)| v + &(&mask_poly * l))
-            .collect_vec();
-        lambda_slot += lookup_h_permutation_z_masked.len();
+        // A2：h/z 列掩蔽即时承诺（λ 与链序逐位平行）。
+        let n_lhz = lookup_h_permutation_z_polys.len();
+        let lookup_h_permutation_z_comms = Pcs::batch_commit_and_write_masked(
+            &pp.pcs,
+            lookup_h_permutation_z_polys.iter().copied(),
+            Some((&mask_poly, &lambdas[lambda_slot..lambda_slot + n_lhz])),
+            transcript,
+        )?;
+        for (i, l) in lambdas[lambda_slot..lambda_slot + n_lhz].iter().enumerate() {
+            mask_slots.push((open_slot + i, *l));
+        }
+        lambda_slot += n_lhz;
+        open_slot += n_lhz;
         assert_eq!(lambda_slot, pp.mask_layout.num_masked);
-        let lookup_h_permutation_z_comms =
-            Pcs::batch_commit_and_write(&pp.pcs, &lookup_h_permutation_z_masked, transcript)?;
 
         // Round n+2
 
@@ -361,18 +382,21 @@ where
             .chain(polys)
             .chain(pp.permutation_polys.iter().map(|(_, poly)| poly))
             .chain(lookup_m_polys.iter())
-            .chain(lookup_h_permutation_z_polys)
+            .chain(lookup_h_permutation_z_polys.iter().copied())
             .chain([&mask_poly])
             .collect_vec();
+        // A2：开口列全集=明文（掩蔽槽位上是明文 v）+槽位 λ 账本+共享 m——
+        // ṽ 在 prove_zero_check 求值点与 batch_open 组合点即时算，不物化。
         let open_polys = iter::empty()
             .chain(instance_polys.iter())
             .chain(pp.preprocess_polys.iter())
-            .chain(witness_masked_polys.iter())
+            .chain(witness_polys.iter())
             .chain(pp.permutation_polys.iter().map(|(_, poly)| poly))
-            .chain(lookup_m_masked.iter())
-            .chain(lookup_h_permutation_z_masked.iter())
+            .chain(lookup_m_polys.iter())
+            .chain(lookup_h_permutation_z_polys.iter().copied())
             .chain([&mask_poly])
             .collect_vec();
+        debug_assert_eq!(open_slot + 1, open_polys.len(), "掩蔽槽账本与开口列序对齐");
         challenges.extend([beta, gamma, alpha]);
 	let sumcheck_time = Instant::now();
 
@@ -393,6 +417,7 @@ where
             y,
             m_y,
             pp.mask_layout.mask_poly,
+            Some((&mask_poly, &mask_slots)),
             transcript,
         )?;
 
@@ -410,7 +435,15 @@ where
             .collect_vec();
         let timer = start_timer(|| format!("pcs_batch_open-{}", evals.len()));
 	let now = Instant::now();
-        Pcs::batch_open(&pp.pcs, open_polys, comms, &points, &evals, transcript)?;
+        Pcs::batch_open_masked(
+            &pp.pcs,
+            open_polys,
+            comms,
+            &points,
+            &evals,
+            Some((&mask_poly, &mask_slots)),
+            transcript,
+        )?;
 
         end_timer(timer);
 
@@ -724,6 +757,7 @@ mod test {
                 y.clone(),
                 m_y,
                 3,
+                None,
                 &mut tr,
             )
             .unwrap();

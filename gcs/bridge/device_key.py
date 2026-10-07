@@ -19,9 +19,17 @@ from app.telemetry.checkpoint import checkpoint_message, verify_checkpoint
 __all__ = [
     "checkpoint_message",
     "device_keypair",
+    "device_serial",
     "sign_checkpoint",
     "verify_checkpoint",
 ]
+
+
+def device_serial() -> str:
+    """本机序列号单源（SN 绑定换代 2026-10-06）：env FZ_DEVICE_SERIAL 优先，
+    缺省演示锚 FZ-SN-DEV-01——与 device_keypair 的钥派生同一读数源（桥第 6
+    查 SM3(本机 SN)==token.sn_hash 与设备钥同源）。"""
+    return os.environ.get("FZ_DEVICE_SERIAL", "FZ-SN-DEV-01")
 
 
 def _derive_priv(label: bytes) -> str:

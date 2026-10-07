@@ -12,7 +12,8 @@ import { useRouter } from "vue-router";
 import { api, bridge, ApiError, randHex } from "../lib/api";
 import { initialFlightPlan, planCommitment, newPlanSalt, storePlan, validatePlan, type FlightPlan } from "../lib/plan";
 import { sm2 } from "sm-crypto";
-import { getSubSk, subMatchesMaterial, identityTag } from "../lib/material";
+import { getSubSk, identityTag, logbookAppend, subMatchesMaterial } from "../lib/material";
+import { DEVICE_SERIAL_UNAVAILABLE, getDeviceSerial } from "../lib/device";
 import { classLabel } from "../lib/policy";
 import HashText from "../components/HashText.vue";
 import DenyBox from "../components/DenyBox.vue";
@@ -31,6 +32,9 @@ const planCommitted = ref(localStorage.getItem("fzLastPlanCommit") || "");
 const busy = ref(false);
 const deny = ref<{ code: string; message: string } | null>(null);
 const stage = ref(""); // binding / assembling / proving / applying / receipt / ready
+// 失败终态（丙-2 M5）：deny 且 stage 未到 ready 时刻度轨切「定格」——停止呼吸、
+// 当前段灰红尾、连线不点亮（轨与错误盒说同一句话，不再自相矛盾）
+const failed = ref(false);
 const receiptCode = ref(localStorage.getItem("fzLastReceipt") || "");
 const copied = ref(false);
 // 机型类=登记时绑定进承诺 C（B4/A4）——申请页只读展示，不可改（2026-09-25
@@ -44,6 +48,13 @@ const registeredClassId = ((): number => {
   return 1;
 })();
 const classId = ref(registeredClassId);
+// 授权包配额（2026-10-06 多架次拍板）：本申请覆盖架次数 1~5，缺省 1=与
+// 令牌一次性历史语义逐字等价。多架次授权=一次出证多次起降（每架次仍独立
+// 闸门序+独立消费回报）；配额随授权登记上链（FlightAuthRegistry.remaining）。
+const sortieCount = ref(Number(localStorage.getItem("fzSorties") || 1) || 1);
+watch(sortieCount, (v) => {
+  localStorage.setItem("fzSorties", String(v >= 1 && v <= 5 ? v : 1));
+});
 const router = useRouter();
 const policyAltMax = ref<number | null>(null); // 政策高度上限（绑定面实时返回）
 
@@ -64,6 +75,14 @@ const form = (() => {
   try { return JSON.parse(localStorage.getItem("fzForm") || "{}"); } catch { return {}; }
 })();
 const hasMaterial = computed(() => !!(cred && sub));
+
+// ---- SN 单源（SN 绑定根治 2026-10-07）----
+// 出证 sn 唯一读数源=桥 /engine_pub（与桥第 6 查、注册表单同一台设备）。
+// 老账户（自由 SN 时代登记）：登记 SN≠本机 SN ⟹ 出证/令牌必 sn_mismatch——
+// 申请页就地给出人话指引并阻断，不再让用户撞上密码学报错。
+const deviceSn = ref("");
+const snMismatch = ref(false);
+const registeredSn = String(form.sn ?? "").trim();
 
 // ---- 计划时刻（datetime-local ⟷ Unix 秒内部口径） ----
 const startLocal = ref("");
@@ -153,6 +172,7 @@ type FlowState = {
   plan_hash_hex?: string;
   session_pk?: string;
   receipt_code?: string;
+  sorties?: number; // 架次配额（跨切页恢复提交——申请体与档案行同源）
   stage_at?: Record<string, number>; // 各阶段起始时刻（秒表跨切页连续）
 };
 const FLOW_KEY = "fzApplyFlow";
@@ -203,7 +223,10 @@ async function pollTask(taskId: string): Promise<void> {
     const status = t?.status ?? "";
     if (status === "proving") setStage("proving");
     if (status === "done") return;
-    if (status === "failed") throw new ApiError("prove_failed", t?.error ?? "出证失败", 0);
+    // B3 人话化：桥透传后端信封业务码（error_code）——被吊销等专属判词按码
+    // 分流；旧桥无此字段回落 prove_failed（通用提示，兼容不破）
+    if (status === "failed")
+      throw new ApiError(t?.error_code || "prove_failed", t?.error ?? "出证失败", 0);
     await new Promise((r) => setTimeout(r, 2000));
   }
 }
@@ -215,7 +238,14 @@ async function pollReceipt(code: string): Promise<void> {
       "验证进度",
     );
     if (r.status === "ready") return;
-    if (r.status === "failed") throw new ApiError("verify_rejected", "授权服务验证拒绝该证明", 0);
+    // B3 人话化：failed 态回执携带 reject_reason/reject_code（worker 判词）——
+    // rev_root_moved（验证窗内吊销生效）等不再显示为裸「验证拒绝」
+    if (r.status === "failed")
+      throw new ApiError(
+        r.reject_code || "verify_rejected",
+        r.reject_reason || "授权服务验证拒绝该证明",
+        0,
+      );
     await new Promise((r2) => setTimeout(r2, 2000));
   }
 }
@@ -226,6 +256,10 @@ async function applyAndFetch(f: FlowState): Promise<void> {
   f.stage = "applying";
   saveFlow(f);
   const rev = await api<Record<string, any>>("/ra/revocation/snapshot");
+  // 授权窗实交值（t_start=出证绑定面时间锚；t_end=计划结束时刻 clamp 到
+  // [时间锚+1h, 时间锚+4h]）——请求体与档案骨架行共用同一计算，不出现两套口径
+  const tAnchor = f.binding?.t_epoch ?? 0;
+  const winEnd = Math.min(Math.max(planForm.end_ts, tAnchor + 3600), tAnchor + 4 * 3600);
   const out = await api<Record<string, any>>("/authz/apply", {
     method: "POST",
     body: JSON.stringify({
@@ -235,20 +269,30 @@ async function applyAndFetch(f: FlowState): Promise<void> {
       sub_cred_hash_hex: sub.sub_cred_hash_hex,
       nonce_hex: f.nonce_hex, plan_hash_hex: f.plan_hash_hex, class_id: classId.value,
       case_id: f.case_id,
+      // 授权包配额制：架次数 1~5（缺省 1——恢复路径/旧快照无此字段同值）
+      sorties: f.sorties ?? 1,
       rev_root_hex: rev.root_hex,
       // 绑定单源纪律：t_start 必须用桥接出证所用的 t_epoch（实例 21 同源）
       t_start: f.binding?.t_epoch,
       // R3-1 收尾（评审 P2-2）：授权窗取计划结束时刻（计划已被承诺——不再装饰）
       // clamp：下限 1h（受理排队余量）/上限 4h（预授权窗政策口径）
-      t_end: Math.min(
-        Math.max(planForm.end_ts, (f.binding?.t_epoch ?? 0) + 3600),
-        (f.binding?.t_epoch ?? 0) + 4 * 3600,
-      ),
+      t_end: winEnd,
     }),
   });
   f.receipt_code = out.receipt_code;
   receiptCode.value = out.receipt_code;
   localStorage.setItem("fzLastReceipt", out.receipt_code);
+  // 档案骨架行（档案积累批）：受理成功即入档——authId 此时未知留空（回执码
+  // 只承诺进度），取件成功后由「令牌与飞行」回填；恢复路径重交=按案卷号/
+  // 回执码合并幂等，不产生重复行
+  logbookAppend({
+    caseId: f.case_id ?? "",
+    receiptCode: String(out.receipt_code ?? ""),
+    tStart: typeof f.binding?.t_epoch === "number" ? f.binding.t_epoch : null,
+    tEnd: winEnd,
+    classId: classId.value,
+    altMax: policyAltMax.value,
+  });
   f.stage = "receipt";
   saveFlow(f);
   setStage("receipt");
@@ -310,8 +354,18 @@ function commitPlan(): string | null {
 
 async function apply(): Promise<void> {
   busy.value = true; deny.value = null; stage.value = ""; stageAt.value = {};
+  failed.value = false; // 新一次提交——刻度轨解除定格回到进行时形态
   try {
     if (!hasMaterial.value) throw new ApiError("no_material", "先在「我的记录」签发一次性子凭证", 0);
+    // SN 单源门（2026-10-07）：桥读数不可达=不猜；登记 SN≠本机 SN=老账户阻断
+    // （两态都给人话指引——首次 ARM 必 sn_mismatch 的路径就此封死）
+    if (!deviceSn.value) throw new ApiError("device_serial_unavailable", DEVICE_SERIAL_UNAVAILABLE, 0);
+    if (snMismatch.value)
+      throw new ApiError(
+        "sn_mismatch",
+        `该账户登记的设备序列号与本机不符（登记 ${registeredSn} ≠ 本机 ${deviceSn.value}）——请重新登记账户`,
+        0,
+      );
     if (!subMatchesMaterial())
       throw new ApiError("stale_sub_cred", "一次性子凭证与当前登记/密钥不配套（可能重新登记过）——请到「我的记录」点「重新签发一次性子凭证」后再申请", 0);
     if (classId.value !== registeredClassId)
@@ -342,7 +396,10 @@ async function apply(): Promise<void> {
       method: "POST",
       body: JSON.stringify({
         plan_hash_hex, nonce_hex, class_id: classId.value,
-        id_number: form.id_number, cert_level: form.cert_level, sn: form.sn,
+        id_number: form.id_number, cert_level: form.cert_level,
+        // SN 单源取用（2026-10-07）：sn=桥本机读数（上方单源门保证与登记 SN
+        // 同值——ZK 私入/子凭证绑定/令牌 sn_hash/桥第 6 查四处一台设备）
+        sn: deviceSn.value,
         salt_hex: cred.salt_hex,
         id_prime_hex: sub.id_prime_hex, sig_hex: sub.sig_hex,
         expires_at: sub.expires_at,
@@ -356,6 +413,7 @@ async function apply(): Promise<void> {
       stage: "assembling", task_id: st.task_id, case_id: st.case_id,
       binding: st.binding, nonce_hex, plan_hash_hex,
       session_pk: kp.publicKey.replace(/^04/, ""),
+      sorties: sortieCount.value >= 1 && sortieCount.value <= 5 ? sortieCount.value : 1,
     };
     saveFlow(f);
     await pollTask(st.task_id);
@@ -369,6 +427,8 @@ async function apply(): Promise<void> {
 
 function fail(code: string, message: string): void {
   deny.value = { code, message };
+  // 出证失败且未到 ready——刻度轨定格（轨不再声称「进行中」）
+  if (stage.value !== "ready") failed.value = true;
   busy.value = false;
 }
 
@@ -377,6 +437,9 @@ onMounted(async () => {
   loadDraft();
   nowTick.value = Date.now();
   ticker = window.setInterval(() => (nowTick.value = Date.now()), 1000);
+  // SN 单源：读桥本机序列号+老账户失配判定（读数失败=空串，提交面 fail-closed）
+  deviceSn.value = await getDeviceSerial();
+  snMismatch.value = !!deviceSn.value && !!registeredSn && registeredSn !== deviceSn.value;
   // C-P1-5：政策上限提交前即知（公开公示面，登记机型——无需绑定参数）
   try {
     const d = await api<Record<string, any>>(`/authz/policy/class/${registeredClassId}`);
@@ -397,13 +460,16 @@ function goPickup(): void {
   router.push("/flight");
 }
 
+// 阶段文案（视觉 S 批 S4 进度信号收敛：圈号①~⑥退役——六段刻度轨的数字是
+// 唯一编号源，StatusTag 只说阶段事实不再复读序号；文案其余逐字保留。
+// e2e 冻结面核对：e2e_browser_ui 对本屏只断言「政策/上限」公示文案，无圈号断言）
 const stageLabel: Record<string, string> = {
-  binding: "① 获取申请绑定面（服务端公示挑战/政策）…",
-  assembling: "② 见证组装（约 5~10 秒——读取撤销见证、组装本机材料）…",
-  proving: "③ 生成零知识证明（本机约 2 分钟，计算不出设备）…",
-  applying: "④ 提交授权服务实例核对…",
-  receipt: "⑤ 授权服务验证中（数秒至半分钟，含排队）…",
-  ready: "⑥ ✓ 申请通过——令牌已加密返回",
+  binding: "获取申请绑定面（服务端公示挑战/政策）…",
+  assembling: "见证组装（约 5~10 秒——读取撤销见证、组装本机材料）…",
+  proving: "生成零知识证明（本机约 2 分钟，计算不出设备）…",
+  applying: "提交授权服务实例核对…",
+  receipt: "授权服务验证中（数秒至半分钟，含排队）…",
+  ready: "✓ 申请通过——令牌已加密返回",
 };
 
 // 刻度轨段序（视觉深化批 D）
@@ -414,9 +480,30 @@ function stageIndex(s: string): number {
 
 // 密码学报错 → 人话指引（deny 面向飞手）。🔴 真实原因必须保留可见（2026-09-25
 // 队长实测教训：hint 覆盖真实报错 ⟹ 排障盲飞）——hint 作第二行提示追加。
+// B3 吊销类专属判词：被吊销飞手不再被误导去「重签重试」（必再失败）——
+// 判词指向「我的记录」自查与救济面。
 const DENY_HINT: Record<string, string> = {
   prove_failed:
     "常见原因：登记材料与子凭证不配套（重新登记后未重签）或机型类与登记不一致——请到「我的记录」重签一次性子凭证后重试。",
+  revoked:
+    "你已被列入撤销名单——原因与救济见「我的记录」自查。重试或重签子凭证都不会成功（出证将被数学拒绝）。",
+  holder_revoked:
+    "你的凭证已被列入撤销名单——原因与救济见「我的记录」自查。重签一次性子凭证也无法解除吊销。",
+  cred_revoked:
+    "你的主凭证已吊销——请在「我的记录」确认吊销原因，按救济流程重新登记后再申请。",
+  stale_rev_root:
+    "你的子凭证已被一次性消费且凭证已吊销，请重新登记。刷新或反复重试不会成功。",
+  rev_root_moved:
+    "授权服务在验证窗内检出你已被列入撤销名单（吊销已生效）——该次申请已终局拒绝。原因与救济见「我的记录」自查。",
+  sub_cred_used:
+    "该一次性子凭证已被使用——请到「我的记录」重新签发一张后再申请。",
+  nonce_conflict:
+    "申请随机数已被消耗（多为重复提交）——请发起新申请重新出证。",
+  // SN 单源（2026-10-07）：两态专属判词（真实原因保留在首行——hint 只补指引）
+  sn_mismatch:
+    "本机地面站与该账户登记的设备不是同一台——请在本机重新登记账户（或回到登记时所用的地面站操作）。",
+  device_serial_unavailable:
+    "注册与申请都依赖本机地面站桥读数——请确认地面站桥接已启动后重试。",
 };
 function denyMessage(code: string, message: string): string {
   const hint = DENY_HINT[code];
@@ -434,6 +521,12 @@ function denyMessage(code: string, message: string): string {
       <h2>起飞申请</h2>
       <p class="desc">提交后系统在本机生成零知识证明并自动核验飞行资质与合规性，全程不透露您的身份。</p>
       <div v-if="!hasMaterial" class="deny"><span class="code">缺材料</span>请先在「我的记录」签发一次性子凭证。</div>
+      <!-- SN 单源（2026-10-07）：老账户失配就地指引（登记 SN≠本机 SN——
+           不阻断页面浏览，但提交面 fail-closed；人话指向重登记） -->
+      <div v-if="snMismatch" class="deny">
+        <span class="code">设备不符</span>
+        该账户登记的设备序列号与本机不符（登记 {{ registeredSn }} ≠ 本机 {{ deviceSn }}）——请重新登记账户。
+      </div>
       <div class="grid2">
         <div>
           <label>作业区域</label><input v-model="planForm.region" placeholder="例：科技园北侧作业区" />
@@ -450,6 +543,13 @@ function denyMessage(code: string, message: string): string {
           <input v-model.number="planForm.alt_m" type="number" min="1" :max="policyAltMax ?? 500" />
           <p v-if="policyAltMax && planForm.alt_m > policyAltMax" class="step-err">超过政策上限 {{ policyAltMax }} m——闸门将拒绝</p>
           <label>机型类（登记时绑定，不可更改——{{ classLabel(classId) }}）</label><input v-model.number="classId" type="number" min="0" max="255" readonly class="mono" title="机型在登记时已绑定进资质承诺——申请须与登记一致" />
+          <label>设备序列号（地面站桥读数——出证与飞行解锁同一台设备，不可更改）</label>
+          <input :value="deviceSn" class="mono" readonly title="序列号单源=本机地面站桥——用户不可修改" />
+          <p v-if="!deviceSn" class="step-err">{{ DEVICE_SERIAL_UNAVAILABLE }}</p>
+          <label>架次数（授权包配额——一次出证可飞行次数）</label>
+          <select v-model.number="sortieCount" :disabled="busy" title="多架次授权：一次出证覆盖多次起降；每次起降仍需独立解锁与消费回报，配额用尽须重新出证">
+            <option v-for="n in 5" :key="n" :value="n">{{ n }} 架次{{ n === 1 ? "（单次，缺省）" : "" }}</option>
+          </select>
           <p v-if="planErr" class="step-err">{{ PLAN_ERR_TEXT[planErr] ?? planErr }}</p>
           <p v-if="planCommitted" class="note mono">对外承诺值：{{ planCommitted.slice(0, 16) }}…（计划全文与盐不出本机）</p>
           <div style="margin-top:14px">
@@ -485,18 +585,20 @@ function denyMessage(code: string, message: string): string {
                   class="fz-track-seg"
                   :class="{
                     done: stageIndex(s) < stageIndex(stage),
-                    now: s === stage && stage !== 'ready',
+                    now: s === stage && stage !== 'ready' && !failed,
+                    halt: failed && s === stage && stage !== 'ready',
                     ok: s === 'ready' && stage === 'ready',
                   }"
                 >{{ s === 'ready' ? '✓' : i + 1 }}</span>
                 <span
                   v-if="i < 5"
                   class="fz-track-line"
-                  :class="{ lit: stageIndex(s) < stageIndex(stage) }"
+                  :class="{ lit: !failed && stageIndex(s) < stageIndex(stage) }"
                 />
               </template>
             </div>
-            <div class="progress"><div class="bar" :class="{ run: busy && stage !== 'ready' }" /></div>
+            <!-- 条纹 bar 退役（视觉 S 批 S4：与刻度轨双进度信号冗余且常动——
+                 进度语义由六段刻度轨单源承载，秒表承担「还活着」信号） -->
             <div v-if="stage === 'ready'" class="fz-enter" style="margin-top:8px; display:flex; gap:10px; align-items:center">
               <button class="btn" @click="goPickup">前往领取令牌 →</button>
               <span class="note">令牌已加密返回，领取后即可解锁飞行。</span>
@@ -531,6 +633,23 @@ function denyMessage(code: string, message: string): string {
 .fz-track-seg.ok {
   background: var(--ok); border-color: var(--ok); color: #fff;
 }
+/* 失败终态定格（丙-2 M5）：当前段灰红尾——呼吸停止、连线退回暗轨；
+   灰红=既有 --bad 色相 × 透明度分层（--bad-soft 底+红描边+尾点），零新色相 */
+.fz-track-seg.halt {
+  border-color: var(--bad); color: var(--bad);
+  background: var(--bad-soft);
+  animation: none;
+  position: relative;
+}
+.fz-track-seg.halt::after {
+  content: "";
+  position: absolute;
+  right: -2px; bottom: -2px;
+  width: 7px; height: 7px;
+  border-radius: 50%;
+  background: var(--bad);
+  border: 1.5px solid var(--panel);
+}
 .fz-track-line {
   flex: 1; height: 2px; min-width: 14px;
   background: var(--line); border-radius: 1px;
@@ -538,12 +657,6 @@ function denyMessage(code: string, message: string): string {
 }
 .fz-track-line.lit { background: var(--accent); }
 
-.progress { margin-top: 10px; height: 6px; border-radius: 3px; background: var(--panel-2); border: var(--hairline); overflow: hidden; }
-.bar { height: 100%; width: 100%; background: var(--accent-soft); }
-.bar.run {
-  background-image: repeating-linear-gradient(45deg, var(--accent) 0 10px, #5b8df2 10px 20px);
-  background-size: 28px 28px; animation: fz-stripes 0.9s linear infinite;
-}
 .receipt-box { display: flex; align-items: center; gap: 8px; }
 .receipt-code {
   font-family: ui-monospace, monospace; font-size: 15px; font-weight: 700;

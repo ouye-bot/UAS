@@ -1,20 +1,22 @@
 """RA 服务层测试：注册/子凭证正例+负例三连（B2 验收门）+吊销纪元根+快照。
 
 链上副作用经 fake anchor 断言（B2-d6）；真链端到端=scripts/smoke_ra_chain.py。
+2026-10-04 撤销业务线硬化（B1/B4/B6/B7）：revoke 升格为签名仪式——本文件
+撤销调用点全部更新为签名体（语义更新只增不减）；新增面见 test_revoke_hardening.py。
 """
 
 import datetime as dt
 import secrets
 
 import pytest
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker
 
-from app.crypto.sm2 import generate_keypair
+from app.crypto.sm2 import generate_keypair, sign
 from app.crypto.sm3 import sm3_bytes
 from app.ra.credential import verify_credential
 from app.ra.models import Base
-from app.ra.service import ChainAnchor, RaDeps, RaError, RaService
+from app.ra.service import ChainAnchor, RaDeps, RaError, RaService, revoke_msg
 
 
 class FakeAnchor:
@@ -23,6 +25,42 @@ class FakeAnchor:
 
     def __call__(self, fn: str, args: list) -> None:
         self.calls.append((fn, args))
+
+
+# B1 撤销签名仪式（服务层直调亦须签名——零绕过）：测试面管理员钥
+_ADMIN_SK, _ADMIN_PUB = generate_keypair()
+_ADMIN = "admin-svc"
+
+
+def _epoch_of(s) -> int:
+    from app.ra.models import Revocation
+
+    return max((r.epoch for r in s._s.scalars(select(Revocation))), default=0) + 1  # noqa: SLF001
+
+
+def _revoke(s, handle: str, reason: str = "违规飞行"):
+    """签名体按凭证撤销（B1 契约——epoch 由本地镜像推导）。"""
+    ep = _epoch_of(s)
+    return s.revoke(
+        master_cred_hash_hex=handle,
+        reason=reason,
+        admin_username=_ADMIN,
+        admin_pub_hex=_ADMIN_PUB,
+        admin_sig_hex=sign(_ADMIN_SK, revoke_msg([handle], reason, ep).encode()),
+        epoch=ep,
+    )
+
+
+def _revoke_username(s, username: str, handles: list[str], reason: str = "按人级联测试"):
+    ep = _epoch_of(s)
+    return s.revoke_by_username(
+        username=username,
+        reason=reason,
+        admin_username=_ADMIN,
+        admin_pub_hex=_ADMIN_PUB,
+        admin_sig_hex=sign(_ADMIN_SK, revoke_msg(handles, reason, ep).encode()),
+        epoch=ep,
+    )
 
 
 @pytest.fixture()
@@ -184,7 +222,7 @@ def test_negative_revoked(svc):
     """负例③：吊销主凭证拒新签发（D14 即时语义——RA 侧第一道）。"""
     s, anchor = svc
     reg = _register(s, "pilot-rev")
-    s.revoke(master_cred_hash_hex=reg["master_cred_hash_hex"], reason="违规飞行")
+    _revoke(s, reg["master_cred_hash_hex"])
     # 链上双调用：setStatus(2)+setRevocationRoot(epoch=1)
     fns = [c[0] for c in anchor.calls]
     assert fns == ["register_commitment", "set_status", "set_revocation_root"]
@@ -206,8 +244,8 @@ def test_snapshot_matches_smt_and_chain(svc):
     s, anchor = svc
     reg1 = _register(s, "p1")
     reg2 = _register(s, "p2")
-    s.revoke(master_cred_hash_hex=reg1["master_cred_hash_hex"], reason="r1")
-    s.revoke(master_cred_hash_hex=reg2["master_cred_hash_hex"], reason="r2")
+    _revoke(s, reg1["master_cred_hash_hex"], "理由一号")
+    _revoke(s, reg2["master_cred_hash_hex"], "理由二号")
     snap = s.snapshot()
     # 纪元=2（两次吊销各进一纪元）；根=SMT(两个句柄)
     from app.ra.smt import smt_root
@@ -245,7 +283,7 @@ def test_revocation_propagates_unconsumed_holder_pk(session, svc):
         sn="UAS-SN-2026-0001",
         holder_pub_hex=holder_pub,
     )
-    out = s.revoke(master_cred_hash_hex=reg["master_cred_hash_hex"], reason="违规飞行")
+    out = _revoke(s, reg["master_cred_hash_hex"])
     root = bytes.fromhex(out["root_hex"])
     pk_x = bytes.fromhex(holder_pub.lower()[:64])
     handles = [bytes.fromhex(r.handle_hex) for r in session.scalars(select(Revocation)).all()]
@@ -272,7 +310,7 @@ def test_revocation_witness_endpoint_refuses_member(session, svc):
         sn="UAS-SN-2026-0001",
         holder_pub_hex=holder_pub,
     )
-    s.revoke(master_cred_hash_hex=reg["master_cred_hash_hex"], reason="违规飞行")
+    _revoke(s, reg["master_cred_hash_hex"])
     resp = revocation_witness(holder_pk_hex=holder_pub.lower(), session=session)
     assert resp.status_code == 403, f"成员键 witness 未拒（状态 {resp.status_code}）"
     assert b"revoked" in resp.body
@@ -302,11 +340,12 @@ def test_issue_sub_credential_holder_revoked_precheck(session, svc):
         "holder_pub_hex": holder_pub,
     }
     s.issue_sub_credential(**_issue_kwargs)  # 基线：吊销前可签发
-    s.revoke(master_cred_hash_hex=reg_a["master_cred_hash_hex"], reason="撤销键域传染场景")
-    # 同一出示钥绑定新主凭证（恢复码找回旧钥重新登记形态）→ 签发面预检拒绝
+    _revoke(s, reg_a["master_cred_hash_hex"], "撤销键域传染场景")
+    # 同一出示钥绑定新主凭证（换证件号登记——B7 黑名单只禁同证件号重登记，
+    # 不同证件号新登记本身放行）→ 签发面 pk′.x 预检仍拒绝（键域传染独立于证件号）
     reg_b = s.register(
         username="pilot-holder2-" + secrets.token_hex(2),
-        id_number="11010119900307999X",
+        id_number="11010119900307888X",
         cert_level=3,
         sn="UAS-SN-B",
         user_pub_hex=holder_pub,
@@ -315,7 +354,7 @@ def test_issue_sub_credential_holder_revoked_precheck(session, svc):
         s.issue_sub_credential(
             master_cred_hash_hex=reg_b["master_cred_hash_hex"],
             salt_hex=reg_b["salt_hex"],
-            id_number="11010119900307999X",
+            id_number="11010119900307888X",
             cert_level=3,
             sn="UAS-SN-B",
             holder_pub_hex=holder_pub,
@@ -356,7 +395,9 @@ def test_revoke_by_username_cascade(session, svc):
         sn="UAS-SN-C1",
         holder_pub_hex=holder1,
     )
-    out = s.revoke_by_username(username=username, reason="按人级联测试")
+    out = _revoke_username(
+        s, username, [reg1["master_cred_hash_hex"], reg2["master_cred_hash_hex"]]
+    )
     assert out["revoked_credentials"] == 2 and out["revoked_sub_keys"] == 1
     # 两凭证均终态（级联后该用户无 status=1 残留）
     assert all(c.status != 1 for c in session.scalars(select(Credential)).all())
@@ -369,12 +410,27 @@ def test_revoke_by_username_cascade(session, svc):
     # 链面：两笔 setStatus + 一笔 set_revocation_root
     fns = [c[0] for c in anchor.calls]
     assert fns.count("set_status") == 2 and fns.count("set_revocation_root") == 1
-    # 空集负例：再级联=bad_input（无有效凭证）
+    # 空集负例：再级联=bad_input（无有效凭证——目标校验先于签名校验，语义不变）
+    _dummy = sign(_ADMIN_SK, revoke_msg([], "按人级联测试", 1).encode())
     with pytest.raises(RaError) as ei2:
-        s.revoke_by_username(username=username)
+        s.revoke_by_username(
+            username=username,
+            reason="按人级联测试",
+            admin_username=_ADMIN,
+            admin_pub_hex=_ADMIN_PUB,
+            admin_sig_hex=_dummy,
+            epoch=1,
+        )
     assert ei2.value.code == "bad_input"
     with pytest.raises(RaError) as ei3:
-        s.revoke_by_username(username="ghost-" + secrets.token_hex(2))
+        s.revoke_by_username(
+            username="ghost-" + secrets.token_hex(2),
+            reason="按人级联测试",
+            admin_username=_ADMIN,
+            admin_pub_hex=_ADMIN_PUB,
+            admin_sig_hex=_dummy,
+            epoch=1,
+        )
     assert ei3.value.code == "not_found"
 
 
@@ -391,7 +447,16 @@ def test_revoke_epoch_chain_authoritative(session):
     )
     s = RaService(session, deps)
     reg = _register(s)
-    out = s.revoke(master_cred_hash_hex=reg["master_cred_hash_hex"])
+    out = s.revoke(
+        master_cred_hash_hex=reg["master_cred_hash_hex"],
+        reason="违规飞行",
+        admin_username=_ADMIN,
+        admin_pub_hex=_ADMIN_PUB,
+        admin_sig_hex=sign(
+            _ADMIN_SK, revoke_msg([reg["master_cred_hash_hex"]], "违规飞行", 44).encode()
+        ),
+        epoch=44,
+    )
     assert out["epoch"] == 44
     roots = [c for c in fake.calls if c[0] == "set_revocation_root"]
     assert roots and roots[-1][1][0] == 44

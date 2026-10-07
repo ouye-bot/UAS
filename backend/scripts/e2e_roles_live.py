@@ -100,11 +100,14 @@ def main() -> int:
 
     pilot_user = "roles-" + secrets.token_hex(3)
     sk_u, pk_u = _gen_keypair()
+    # 证件号逐轮随机（18 字）：B7 重注册禁入（0019 批）——F.1 按人吊销后该证件
+    # 号入黑名单，固定证件号的第二次运行必 409 id_revoked_before（非契约错误）
+    pilot_id = "11010119900101" + secrets.token_hex(2)
     # 吊销传播句柄=出示公钥 pk′.x（前 64 hex）——播种必须用真随机公钥：
     # 占位 "00"*128 会让每次运行派生同一撤销句柄（UNIQUE 撞行，二次运行必挂
     # ——2026-09-30 评审 P0 定谳）
     rc, reg = _post("/ra/register", {
-        "username": pilot_user, "id_number": "110101199001018888",
+        "username": pilot_user, "id_number": pilot_id,
         "cert_level": 3, "sn": "FZ-ROLES-01", "user_pub_hex": pk_u, "class_id": 1})
     expect(rc == 200 and reg.get("code") == "ok", "G.1 凭证播种：HTTP /ra/register（当前纪元封装）", f"rc={rc} {str(reg)[:120]}")
     auth_id = _seed_auth_chain(reg["data"]["master_cred_hash_hex"], pilot_user, pk_u)
@@ -198,10 +201,18 @@ def main() -> int:
 
     # ---- D. 结案闭环 ----
     print("== [D] 结案闭环 ==")
-    rc = aud.post(API + f"/audit/collab-requests/{req_id}/close", timeout=15).status_code
-    expect(rc == 200, "D.1 审计员结案 → closed", f"rc={rc}")
-    rc = aud.post(API + f"/audit/collab-requests/{req_id}/close", timeout=15).status_code
-    expect(rc == 409, "D.2 负例：重复结案 → 409", f"rc={rc}")
+    # 0018 升格：结案 body={conclusion, conclusion_text(verified 必填), sig_hex}，
+    # 签名消息=FZ-COLLAB-CLOSE|v1|{req_hash}|{conclusion}|{conclusion_text}
+    #（req_hash 从请求视图取；审计员钥=复用 B.5 发函同钥签路径）
+    req_hash_hex = final["req_hash_hex"]
+    conclusion_text = "属实：令状目标授权在案，解锁链上留痕与当事人实名一致（roles 实弹）"
+    close_body = {
+        "conclusion": "verified", "conclusion_text": conclusion_text,
+        "sig_hex": _sign(aud.sk, f"FZ-COLLAB-CLOSE|v1|{req_hash_hex}|verified|{conclusion_text}")}
+    rc = _post_sess(aud, API, f"/audit/collab-requests/{req_id}/close", close_body, timeout=15)[0]
+    expect(rc == 200, "D.1 审计员结案（verified+说明+审计员钥签名）→ closed", f"rc={rc}")
+    rc = _post_sess(aud, API, f"/audit/collab-requests/{req_id}/close", close_body, timeout=15)[0]
+    expect(rc == 409, "D.2 负例：重复结案（签名仍真，状态仲裁拒）→ 409", f"rc={rc}")
     rc, re_ap = _post_sess(adm, API, f"/admin/collab-requests/{req_id}/approve",
                            {"sig_hex": _sign(adm.sk, req_hash_msg)})
     expect(rc == 409, "D.3 负例：已结案再批准 → 409", f"rc={rc} {str(re_ap)[:80]}")
@@ -235,12 +246,12 @@ def main() -> int:
     if not args.skip_revoke:
         print("== [F] 吊销职责 ==")
         root0 = _getj(anon, API, "/ra/revocation/snapshot")[1]["data"]["root_hex"]
-        rc, rv = _post_sess(adm, API, "/ra/revoke/by-username", {
-            "username": pilot_user, "reason": "roles 全职责实弹吊销"})
-        if rc == 409 and "already" in str(rv).lower():
-            ok("F.1 按人级联吊销（admin）——本用户已于先前轮次吊销（幂等通过）")
+        rc, rv = _revoke_by_username_signed(adm, API, pilot_user, "roles 全职责实弹吊销")
+        if rv.get("code") == "preview_no_cred":
+            ok("F.1 按人级联吊销（admin）——本用户已无有效凭证（先前轮次吊销，幂等通过）")
         else:
-            expect(rc == 200 and rv.get("code") == "ok", "F.1 按人级联吊销（admin）", f"rc={rc} {str(rv)[:100]}")
+            expect(rc == 200 and rv.get("code") == "ok",
+                   "F.1 按人级联吊销（admin 会话+preview 句柄集签名+纪元绑定）", f"rc={rc} {str(rv)[:100]}")
         root1 = _getj(anon, API, "/ra/revocation/snapshot")[1]["data"]["root_hex"]
         expect(root1 != root0, "F.2 纪元根更迭（即时生效）", f"{root0[:12]}→{root1[:12]}")
         rc, wchk = _getj(aud, API, f"/ra/revocation/witness?holder_pk_hex={pk_u}")
@@ -299,6 +310,21 @@ def _seed_auth_chain(master_cred_hash_hex: str, pilot_user: str, holder_pub_hex:
         return auth_id
     finally:
         s.close()
+
+
+def _revoke_by_username_signed(adm, api: str, username: str, reason: str):
+    """按人级联吊销（B1 升格两步式）：①GET preview（admin 会话）取该用户全部
+    有效凭证句柄+目标纪元（公示纪元+1）；②本地拼 FZ-REVOKE|v1|{handles 排序
+    "|".join}|{reason}|{epoch} 用 admin 钥签名；③POST 新契约 body。preview
+    不可达（用户已无有效凭证）返回 {"code": "preview_no_cred"} 交调用方走幂等支。"""
+    rc, pv = _getj(adm, api, f"/ra/revoke/by-username/preview?username={username}")
+    if rc != 200 or not pv.get("data"):
+        return rc, {"code": "preview_no_cred", "message": str(pv)[:120]}
+    handles = pv["data"]["handles"]
+    epoch = pv["data"]["epoch"]
+    msg = "FZ-REVOKE|v1|" + "|".join(sorted(h.lower() for h in handles)) + f"|{reason}|{epoch}"
+    return _post_sess(adm, api, "/ra/revoke/by-username", {
+        "username": username, "reason": reason, "sig_hex": _sign(adm.sk, msg), "epoch": epoch})
 
 
 def _getj(sess, api: str, path: str, timeout: float = 30):

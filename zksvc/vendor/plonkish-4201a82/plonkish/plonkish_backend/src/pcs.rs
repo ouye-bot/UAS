@@ -99,6 +99,30 @@ pub trait PolynomialCommitmentScheme<F: Field>: Clone + Debug {
         Ok(comms)
     }
 
+    /// A2 掩蔽列惰性化（组合 A，2026-10-06）：见证批次的掩蔽承诺入口——
+    /// 证明侧以「明文列全集 + 共享 m + 逐列 λ」描述 ṽ=v+λ·m，**不整份物化**
+    /// 掩蔽列；PCS 在编码消费点逐列即时取值。语义红线（拍板纪律）：与物化
+    /// ṽ 后走 `batch_commit_and_write` 逐位同——承诺/转录字节零变化（域算术
+    /// 精确等值：ṽ_i = v_i + λ_i·m_i 逐元素）。
+    /// λ 表与 polys 逐位平行（长度相等）；mask=None 即纯明文（等价既有路径）。
+    /// 默认实现（非掩蔽感知 PCS）：mask=None 等价既有路径；mask=Some 显式
+    /// fail-loud 拒绝——绝不静默退化为明文承诺（掩蔽语义红线）。
+    fn batch_commit_and_write_masked<'a>(
+        pp: &Self::ProverParam,
+        polys: impl IntoIterator<Item = &'a Self::Polynomial>,
+        mask: Option<(&'a Self::Polynomial, &'a [F])>,
+        transcript: &mut impl TranscriptWrite<Self::CommitmentChunk, F>,
+    ) -> Result<Vec<Self::Commitment>, Error>
+    where
+        Self::Polynomial: 'a,
+    {
+        assert!(
+            mask.is_none(),
+            "该 PCS 未实现 A2 掩蔽惰性承诺（拒绝静默退化明文）"
+        );
+        Self::batch_commit_and_write(pp, polys, transcript)
+    }
+
     fn open(
         pp: &Self::ProverParam,
         poly: &Self::Polynomial,
@@ -119,6 +143,32 @@ pub trait PolynomialCommitmentScheme<F: Field>: Clone + Debug {
     where
         Self::Polynomial: 'a,
         Self::Commitment: 'a;
+
+    /// A2 掩蔽列惰性化（组合 A，2026-10-06）：开口批的掩蔽入口——polys 为
+    /// **明文**全集（掩蔽槽位上=明文 v），`masked` 标出 (槽位, λ) 与共享 m。
+    /// PCS 在 g_prime 组合/求值消费点按线性性即时折叠：c·ṽ = c·v + (c·λ)·m，
+    /// 不物化任何整份 ṽ。语义红线：组合多项式/内层 sumcheck/证明字节与
+    /// 「物化 ṽ 后走 batch_open」逐位同（域算术精确：Σcᵢ·ṽᵢ = Σcᵢ·vᵢ +
+    /// (Σcᵢ·λᵢ)·m 作为多项式函数恒等 ⟹ 转录序列逐位一致）。
+    fn batch_open_masked<'a>(
+        pp: &Self::ProverParam,
+        polys: impl IntoIterator<Item = &'a Self::Polynomial>,
+        comms: impl IntoIterator<Item = &'a Self::Commitment>,
+        points: &[Point<F, Self::Polynomial>],
+        evals: &[Evaluation<F>],
+        masked: Option<(&'a Self::Polynomial, &'a [(usize, F)])>,
+        transcript: &mut impl TranscriptWrite<Self::CommitmentChunk, F>,
+    ) -> Result<(), Error>
+    where
+        Self::Polynomial: 'a,
+        Self::Commitment: 'a,
+    {
+        assert!(
+            masked.is_none(),
+            "该 PCS 未实现 A2 掩蔽惰性开口（拒绝静默退化明文）"
+        );
+        Self::batch_open(pp, polys, comms, points, evals, transcript)
+    }
 
     fn read_commitment(
         vp: &Self::VerifierParam,

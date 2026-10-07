@@ -36,6 +36,46 @@ def _sha256(path: Path) -> str:
     return h.hexdigest()
 
 
+def _pin_block() -> dict:
+    """电路指纹公示对拍（活数据——与受理门控同一事实源）。
+
+    2026-10-04 复查根修：分发页此前的指纹/合约名/tx 为硬编码，电路换代后
+    漂移成旧值（17a90dc1 旧代 vs 当值 632071fa）且误写 FlightAuthRegistry。
+    本地侧=vendor MANIFEST 公式（与 authz/service.py pin_fingerprint、
+    scripts/publish_pin.py local_pin_digest 同构）；链侧=PolicyRegistry.circuitPin
+    回读（与 authz/router.py _chain_pin 同源）。任一侧不可得=如实 None，
+    match=None（未知）——不装一致。
+    """
+    import json as _json
+    import os
+
+    local_str = local_hex = None
+    root = os.environ.get("FZ_ZKSVC_DIR")
+    if root:
+        try:
+            with open(f"{root}/vendor/MANIFEST.json", encoding="utf-8") as f:
+                man = _json.load(f)
+            from app.crypto.sm3 import sm3_bytes
+
+            local_str = f"SM3({man['pin_commit']}|{man['aggregate_sm3']})"
+            local_hex = sm3_bytes(local_str.encode()).hex()
+        except (OSError, KeyError):
+            pass
+    chain_hex = None
+    try:
+        from app.authz.router import _chain_pin
+
+        cp = _chain_pin()
+        if cp is not None:
+            chain_hex = cp.hex()
+    except Exception:
+        pass
+    match = (local_hex == chain_hex) if (local_hex and chain_hex) else None
+    return {"local_str": local_str, "local_digest_hex": local_hex,
+            "chain_digest_hex": chain_hex, "chain_contract": "PolicyRegistry.circuitPin",
+            "match": match}
+
+
 @router.get("/verify/api/checks")
 def checks() -> JSONResponse:
     """产物校验值（实时计算）。未生成的产物如实标 missing——不硬编码，
@@ -47,7 +87,7 @@ def checks() -> JSONResponse:
             items.append({"name": name, "bytes": p.stat().st_size, "sha256": _sha256(p)})
         else:
             items.append({"name": name, "sha256": None})
-    return JSONResponse({"code": "ok", "data": {"artifacts": items}})
+    return JSONResponse({"code": "ok", "data": {"artifacts": items, "pin": _pin_block()}})
 
 
 @router.get("/verify/dist/trail_canonical_spec.json")

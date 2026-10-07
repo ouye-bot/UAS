@@ -7,18 +7,21 @@
 
 | 文件 | sha256 |
 |---|---|
-| FlightAuthRegistry.abi | 51bce970034bc82a59499770acbc0f0e124f4225ba7a10e4824fa8061d71bba6 |
-| FlightAuthRegistry.bin | 90fff6ca8a2e2f9c03c0f489c0d24a9249559354450d4db79d8e66d7783e5cde |
-| FlightAuthRegistry.runtime.bin | 208c0642361a41a073df796c85cfb363f4fbc069070f155455ba2ff83416aa62 |
-| IdentityRegistry.abi | 90c4987a60de8f51b3ebcd4cc60e012846f702f3b97ed629b5222756716ca913 |
-| IdentityRegistry.bin | 069f79ced5c7416ab5d7d0b95b43709de7603729fee9ac55bda325321ea19cf1 |
-| IdentityRegistry.runtime.bin | ccbbf47b4111fa23a896da3f55da575a37fe53f658ac28df00c3bf18cdd75f71 |
-| PolicyRegistry.abi | 3a55b5d6a7c10806b1e5f117ac8e1a34984265241e7e212d4d89f0bef12911a2 |
-| PolicyRegistry.bin | 1d79c5cb438ed868436b4f019429488719a5361042b7658d10f96f3ad09b3ce8 |
-| PolicyRegistry.runtime.bin | 967d2978263c7b1553bc57027c69dbe426f586e51f4a925c14e495b4735a9f8d |
-| TelemetryAnchor.abi | f75e1670e0b49368bfcbc4f6a89f0464d75ceb96ae4cc743fb09b90430f8109a |
-| TelemetryAnchor.bin | f68343201490e2be4a9c3f10c4a29689722fe72dd676577ecd4e52ce0776a8f6 |
-| TelemetryAnchor.runtime.bin | e0dfd9f295e9851905ba73a5b374833cfa899411cd3de2b2c0d0a91682fa6230 |
+| AdminGovernor.abi | 7cbf44776297f960d42b3cc3104d26b88f187589946861d5f1b2e99b952f567a |
+| AdminGovernor.bin | 72002def3b8e015f3a3e994bfbee16e5088d9a0c1812f924356f0d89ed7bbd83 |
+| AdminGovernor.runtime.bin | 47afa7a2b998f80d59095dbcca0a4299db913147152cf7b2af7130e07b1e68e6 |
+| FlightAuthRegistry.abi | f551f2c10e6c2f89bf78b60ef9e8a5a7a26912a96f78228dcf4a7138245ded24 |
+| FlightAuthRegistry.bin | 5a52acbd709859cf3c3cd80b9c889499825ba94cdb553eb9759c744ecced1561 |
+| FlightAuthRegistry.runtime.bin | 0cfbe9ab98ddef3bc9c2504b37fd88942402a434842c7684a069bb6fd44a93a5 |
+| IdentityRegistry.abi | 09d442ddf94cc4332076957a9c26e04b1d73eb7de876eb452a39a0d51c7a5011 |
+| IdentityRegistry.bin | e15fd211700ad33152e52aefcd0ecbe39bc8d3711dade6461dd7344fc5f21a66 |
+| IdentityRegistry.runtime.bin | 662fa5fe4f313ddedcda3ebef3a715bd413b4690483505554f8c4d1131b6ced6 |
+| PolicyRegistry.abi | 584850b8fafe917ffccc26879556d43824818854db16d02ae2a1e179fd50d371 |
+| PolicyRegistry.bin | 21d75cfa7b60c35d2660194d8a1720f97fcd59903648bbd93cea4b3054ccd451 |
+| PolicyRegistry.runtime.bin | e3692723fc180da78c13975897e8957da01e5ecfc1436138837bc67ceb647057 |
+| TelemetryAnchor.abi | 46894173414c018863cca5f72afc0d6902d4854ae3766a76834894bda8ccffc5 |
+| TelemetryAnchor.bin | 54abc736e66ec61a5b4f8b8e5960d2cbf08aea43c9fbef5dc351f779447f0c7f |
+| TelemetryAnchor.runtime.bin | 1921b270483ab972a34ba244bd2d25c46a6d7545d39fef8785d0d45a34f28e29 |
 
 ## 部署对账（chain_smoke --deploy 回填）
 

@@ -48,7 +48,7 @@ const icons: Record<string, string> = {
   send: "M3 11 21 4l-7 17-3-7z M11 14 21 4",
   craft: "M12 3c2.5 0 4.5 2 4.5 4.5V11l3.5 3v2l-4-1.2V18l1.5 1.5V21L12 19.8 6.5 21v-1.5L8 18v-3.2L4 16v-2l3.5-3V7.5C7.5 5 9.5 3 12 3z",
   trail: "M5 19c3 0 3-4 6-4s3 4 6 4 M5 12c3 0 3-4 6-4s3 4 6 4 M5 5c3 0 3-2 6-2",
-  ticket: "M4 7h16v4a2 2 0 0 0 0 2v4H4v-4a2 2 0 0 0 0-2z M12 7v10", chain: 'M4 7h6v4H4zM14 7h6v4h-6zM9 16h6v4H9z M7 9h8M11 15v-2',
+  chain: 'M4 7h6v4H4zM14 7h6v4h-6zM9 16h6v4H9z M7 9h8M11 15v-2',
   shield: "M12 3l7 3v5c0 5-3 8.5-7 10-4-1.5-7-5-7-10V6z M9 12l2 2 4-4",
   gov: "M4 21h16 M5 21V10l7-6 7 6v11 M9 21v-6h6v6 M9 12h.01M12 12h.01M15 12h.01"};
 
@@ -155,8 +155,7 @@ async function logout(): Promise<void> {
 .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--line-strong); }
 .dot.ok { background: var(--ok); animation: fz-pulse 2.4s infinite; }
 .dot.bad { background: var(--bad); }
-.audit-link { font-size: 12.5px; color: var(--teal); text-decoration: none; border-bottom: 1px dashed #bfe0e8; }
-.audit-link:hover { color: var(--accent-ink); }
+/* （丙-2 M1）.audit-link 死样式已删除——模板零引用 */
 .whoami { font-size: 12.5px; color: var(--ink-2); background: var(--panel); border: var(--hairline); border-radius: 999px; padding: 4px 12px; }
 .exit {
   border: 1px solid var(--line-strong); background: var(--panel); color: var(--ink-2);

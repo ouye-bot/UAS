@@ -1,0 +1,150 @@
+{
+ "schema": 1,
+ "source_run_id": "e8e95ee7c58e",
+ "created": "2026-10-03T03:46:22",
+ "concurrency": 1,
+ "budget": {
+  "used": 4,
+  "cap": 6
+ },
+ "runs_planned": 4,
+ "runs": [
+  {
+   "run": 0,
+   "warmup": false,
+   "user": "perf_p1_e8e95ee7c58e_0",
+   "register_ms": 725.2298999810591,
+   "sub_cred_ms": 46.97129991836846,
+   "binding_ms": 5.814900039695203,
+   "submit_ms": 56.99119996279478,
+   "gate_wait_s": 0.05699449998792261,
+   "submit_retries": 0,
+   "t_epoch": 1790969999,
+   "gate_probe_code": 429,
+   "gate_probe_ms": 51.13349994644523,
+   "polls": 49,
+   "prove_e2e_ms": 99812.2078999877,
+   "gate_wait_ms": 56.99449998792261,
+   "assemble_ms": 2133.3951998967677,
+   "prove_ms": 97678.81270009093,
+   "apply_ms": 286.2284000730142,
+   "worker_ms": 5035.952199948952,
+   "fetch_ms": 25.358500075526536,
+   "auth_id": 230,
+   "arm_ms": 4069.6101000066847,
+   "wall_ms": 110121.35889998171
+  },
+  {
+   "run": 1,
+   "warmup": false,
+   "user": "perf_p1_e8e95ee7c58e_1",
+   "register_ms": 336.8602000409737,
+   "sub_cred_ms": 55.55780010763556,
+   "binding_ms": 24.946599965915084,
+   "submit_ms": 56.66669993661344,
+   "gate_wait_s": 0.056670399964787066,
+   "submit_retries": 0,
+   "t_epoch": 1790970108,
+   "gate_probe_code": 429,
+   "gate_probe_ms": 55.08640001062304,
+   "polls": 41,
+   "prove_e2e_ms": 83877.89479992352,
+   "gate_wait_ms": 56.670399964787066,
+   "assemble_ms": 2132.229799986817,
+   "prove_ms": 81745.66499993671,
+   "apply_ms": 374.6111000655219,
+   "worker_ms": 3048.5480999341235,
+   "fetch_ms": 20.874900044873357,
+   "auth_id": 231,
+   "arm_ms": 4052.495100069791,
+   "wall_ms": 91905.12570005376
+  },
+  {
+   "run": 2,
+   "warmup": false,
+   "user": "perf_p1_e8e95ee7c58e_2",
+   "register_ms": 597.2143999533728,
+   "sub_cred_ms": 38.410999928601086,
+   "binding_ms": 4.448499996215105,
+   "submit_ms": 53.024500026367605,
+   "gate_wait_s": 0.05302670004311949,
+   "submit_retries": 0,
+   "t_epoch": 1790970200,
+   "gate_probe_code": 429,
+   "gate_probe_ms": 45.936400070786476,
+   "polls": 41,
+   "prove_e2e_ms": 83847.54380001687,
+   "gate_wait_ms": 53.02670004311949,
+   "assemble_ms": 2224.5895999949425,
+   "prove_ms": 81622.95420002192,
+   "apply_ms": 321.5248000342399,
+   "worker_ms": 3037.312800064683,
+   "fetch_ms": 25.075100013054907,
+   "auth_id": 232,
+   "arm_ms": 4036.6967000300065,
+   "wall_ms": 92014.27830010653
+  },
+  {
+   "run": 3,
+   "warmup": false,
+   "user": "perf_p1_e8e95ee7c58e_3",
+   "register_ms": 639.3400999950245,
+   "sub_cred_ms": 47.76830004993826,
+   "binding_ms": 5.939099937677383,
+   "submit_ms": 36.843599984422326,
+   "gate_wait_s": 0.036846800008788705,
+   "submit_retries": 0,
+   "t_epoch": 1790970292,
+   "gate_probe_code": 429,
+   "gate_probe_ms": 36.4546999335289,
+   "polls": 40,
+   "prove_e2e_ms": 81092.6869000541,
+   "gate_wait_ms": 36.846800008788705,
+   "assemble_ms": 2093.8668000744656,
+   "prove_ms": 78998.82009997964,
+   "apply_ms": 284.7536000190303,
+   "worker_ms": 4143.807400017977,
+   "fetch_ms": 22.205500048585236,
+   "auth_id": 233,
+   "arm_ms": 3931.710199918598,
+   "wall_ms": 90241.90150003415
+  }
+ ],
+ "gate": [
+  {
+   "run": 0,
+   "code": 429,
+   "ms": 51.1
+  },
+  {
+   "run": 1,
+   "code": 429,
+   "ms": 55.1
+  },
+  {
+   "run": 2,
+   "code": 429,
+   "ms": 45.9
+  },
+  {
+   "run": 3,
+   "code": 429,
+   "ms": 36.5
+  }
+ ],
+ "curve": {
+  "samples": 220,
+  "peak_rss_mb": 217.7,
+  "avg_rss_mb": 91.6,
+  "win_peak_rss_mb": 152.5,
+  "wsl_peak_rss_mb": 68.4,
+  "topology": {
+   "backend_pid_8000": 22540,
+   "worker": "Windows app.zk.worker 全实例",
+   "bridge_zkc": "WSL（server:app + zkc，/proc 4s 粒度）",
+   "note": "拓扑自适应扩展：底盘 ProcessSampler 模式面在 WSL 桥形态下不可见桥/zkc——Windows 面（backend+worker）与 WSL 面（桥+zkc）聚合曲线"
+  }
+ },
+ "throughput_per_min": 0.62,
+ "precision": "；吞吐墙钟=桥 journal（03:39:59 首提交→03:46:26 末 ARM=387s/4 流）"
+}

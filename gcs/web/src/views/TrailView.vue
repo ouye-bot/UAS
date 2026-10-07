@@ -5,12 +5,15 @@
  * （TRAIL n=128 服务器 prove 14.77s/verify 0.20s，性能档案 B6）产品化：
  * 出证完成渲染「TRAIL 合规证书卡」（verdict+SM3 摘要+耗时+第三方复验命令）。 */
 import { computed, onBeforeUnmount, onMounted, ref } from "vue";
+import { useRouter } from "vue-router";
 import { bridge, bridgeBase, apiBase, ApiError } from "../lib/api";
+import { logbookFindByAuthId, logbookUpdate } from "../lib/material";
 import { runWasmVerify, type WasmVerifyResult } from "../lib/wasmVerify";
 import HashText from "../components/HashText.vue";
 import DenyBox from "../components/DenyBox.vue";
 import StatusTag from "../components/StatusTag.vue";
 
+const router = useRouter();
 const authId = ref(localStorage.getItem("fzTrailAuthId") || "");
 const deny = ref<{ code: string; message: string } | null>(null);
 
@@ -52,6 +55,7 @@ onMounted(() => {
   genesisHex.value = localStorage.getItem("fzTrailGenesis") || "";
   loadPersisted();
   loadAltMax();
+  refreshLogbookHit(); // 持久化证书回显形态也如实标注档案命中（非仅新出证）
   void resumeJobs();
 });
 
@@ -191,6 +195,17 @@ async function fetchVerdict(): Promise<void> {
       verify_s: Math.round((vj.verify_s ?? 0) * 10) / 10,
       sm3: vj.proof_sm3 ?? "",
     };
+    // 档案回写（档案积累批）：判决入档——tripCaseIds/trailVerdicts 按窗口键
+    // 累积到该授权的档案行（按授权编号合并：出证晚于 newFlight 时仍挂到
+    // 已入档的统计行上；无行=no-op 不虚增）
+    const aid = Number(authId.value);
+    if (Number.isFinite(aid) && aid > 0) {
+      logbookUpdate(aid, {
+        tripCaseIds: { [w]: caseIds.value[w] },
+        trailVerdicts: { [w]: { verdict: String(vj.verdict ?? ""), sm3: String(vj.proof_sm3 ?? "") } },
+      });
+    }
+    refreshLogbookHit();
     deny.value = null;
   } catch (e: any) {
     deny.value = { code: e?.code ?? "verdict_unavailable", message: e?.message ?? String(e) };
@@ -247,6 +262,17 @@ async function startTrailProve(): Promise<void> {
 
 function dlUrl(kind: string): string {
   return `${bridgeBase()}/prove/case/${caseId.value}/${kind}`;
+}
+
+// ---- 档案命中（档案积累批）：本判决是否已挂进「我的合规档案」——显式 ref
+// 而非 computed（依赖 localStorage 非响应式域，fetchVerdict 回写后现查现刷） ----
+const inLogbook = ref(false);
+function refreshLogbookHit(): void {
+  const aid = Number(authId.value);
+  inLogbook.value = Number.isFinite(aid) && aid > 0 && !!logbookFindByAuthId(aid);
+}
+function goLogbook(): void {
+  router.push("/chain");
 }
 
 // ---- 浏览器内验证（wasm 集成批）：zkc.wasm 经 WASI shim 在 Worker 内跑
@@ -334,7 +360,7 @@ onBeforeUnmount(() => {
       <div v-if="stage === 'proving'" class="fz-enter" style="margin-top:14px; border-top: var(--hairline); padding-top: 14px">
         <div style="display:flex; gap:10px; align-items:center">
           <span class="spin" />
-          <StatusTag tone="accent" :label="`TRAIL 出证中（窗口 {{ windowSel }} · 128 样本，本机约 1 分钟）…`" />
+          <StatusTag tone="accent" :label="`TRAIL 出证中（窗口 ${windowSel} · 128 样本，本机约 1 分钟）…`" />
           <span class="note mono">已用时 {{ elapsed }}s</span>
         </div>
       </div>
@@ -365,6 +391,7 @@ onBeforeUnmount(() => {
           <dd>
             <span class="mono note">① expected.json 即上方下载件（已含本窗口链头），无需编辑</span><br />
             <span class="mono note">② zkc verify-instances --instances instances.json --proof proof.bin --vp verifier_param.bin --expected expected.json</span>
+            <span class="note" style="display:block; font-size:11px; margin-top:2px">验证器校验的电路指纹与链上公示一致</span>
           </dd>
           <dt>浏览器内验证（零安装）</dt>
           <dd>
@@ -378,6 +405,9 @@ onBeforeUnmount(() => {
             </template>
           </dd>
         </div>
+        <p v-if="inLogbook" class="note fz-to-logbook" style="margin:10px 0 0">
+          <a href="#/chain" @click.prevent="goLogbook">已入档案 →</a>
+        </p>
       </div>
     </div>
 
@@ -410,6 +440,9 @@ onBeforeUnmount(() => {
 /* 证书「盖章」金环（视觉深化批 E：verdict 卡出现时一次 600ms 金环扩散——
    仪式感单发不循环） */
 .fz-cert-card { position: relative; }
+/* 档案链接（档案积累批）：小字导航行——打印形态退场（纸面只留证据本体） */
+.fz-to-logbook a { color: var(--accent-ink); text-decoration: none; }
+.fz-to-logbook a:hover { text-decoration: underline; }
 .fz-cert-card::before {
   content: "";
   position: absolute;
@@ -425,5 +458,16 @@ onBeforeUnmount(() => {
   0% { transform: scale(1.8); opacity: 0; }
   35% { opacity: 0.5; }
   100% { transform: scale(1); opacity: 0.28; }
+}
+
+/* 证书卡打印形态（视觉 X 批 X3）：入纸只留证据本体——金环装饰与
+   「盖章」动画退场，区块边线充当纸面分隔 */
+@media print {
+  .fz-cert-card { border-top: 1px solid #bbb; }
+  .fz-cert-card::before { display: none; }
+  .fz-to-logbook { display: none; }
+  .fz-enter { animation: none; }
+  .tbl th { color: #555; }
+  .tbl td { border-bottom-color: #ddd; }
 }
 </style>

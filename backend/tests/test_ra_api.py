@@ -27,12 +27,21 @@ def client(tmp_path, monkeypatch):
     db_mod.SessionLocal = db_mod.sessionmaker(bind=engine, expire_on_commit=False)
     Base.metadata.create_all(engine)
     ra_router._reset_deps_cache()
+    global _ADMIN_SK  # noqa: PLW0603  B1 契约：撤销签名钥（测试面）
     with TestClient(create_app()) as c:
         from tests.accounting import register_and_login
 
-        register_and_login(c, "admin_ra", "admin", "Admin-Pass-1")
+        _ADMIN_SK = register_and_login(c, "admin_ra", "admin", "Admin-Pass-1")
         yield c
     ra_router._reset_deps_cache()
+
+
+_ADMIN_SK = ""
+
+
+def _revoke_epoch(client) -> int:
+    """目标纪元=公示镜像当前纪元+1（B1 签名绑定纪元口径）。"""
+    return client.get("/ra/revocation/snapshot").json()["data"]["epoch"] + 1
 
 
 def _pub() -> str:
@@ -87,11 +96,17 @@ def test_sub_credentials_positive(client):
 
 def test_sub_credentials_negative_revoked(client):
     reg = _register(client, "api-rev")
+    from tests.accounting import sign_revoke_body
+
     assert (
         client.post(
             "/ra/revoke",
-            
-            json={"master_cred_hash_hex": reg["master_cred_hash_hex"], "reason": "违规"},
+            json={
+                "master_cred_hash_hex": reg["master_cred_hash_hex"],
+                **sign_revoke_body(
+                    _ADMIN_SK, [reg["master_cred_hash_hex"]], "违规飞行测试", _revoke_epoch(client)
+                ),
+            },
         ).status_code
         == 200
     )
@@ -129,13 +144,24 @@ def test_sub_credentials_negative_bad_preimage(client):
 
 def test_snapshot_public(client):
     reg = _register(client, "api-snap")
-    client.post(
+    from tests.accounting import sign_revoke_body
+
+    rv = client.post(
         "/ra/revoke",
-        json={"master_cred_hash_hex": reg["master_cred_hash_hex"]},
-        
+        json={
+            "master_cred_hash_hex": reg["master_cred_hash_hex"],
+            **sign_revoke_body(
+                _ADMIN_SK, [reg["master_cred_hash_hex"]], "快照公示测试", _revoke_epoch(client)
+            ),
+        },
     )
+    assert rv.status_code == 200, rv.text
     r = client.get("/ra/revocation/snapshot")
     assert r.status_code == 200
     data = r.json()["data"]
     assert data["epoch"] == 1 and len(data["root_hex"]) == 64
     assert reg["master_cred_hash_hex"] in data["revoked_handles_hex"]
+    # B1 升格：公示叶携带理由/时点/执行者（理由本为公示而写）
+    leaf = next(x for x in data["revoked"] if x["handle_hex"] == reg["master_cred_hash_hex"])
+    assert leaf["reason"] == "快照公示测试" and leaf["revoked_by"] == "admin_ra"
+    assert leaf["revoked_at"] and leaf["epoch"] == 1

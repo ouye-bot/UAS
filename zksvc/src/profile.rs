@@ -4,9 +4,22 @@
 //! （165B M_A 电路口径）+ 承诺原像（54B：salt‖cert‖id‖sn_h）+ 资质范围门
 //! cert ≥ required_level + 有效期 exp_u ≥ t_epoch + 申请绑定（ctx_tag/pred_id
 //! 实例钉；plan_hash/nonce/policy_version 服务层复合折算——安全论证 T6）。
-//! 结构锚 104,543 约束 / 11,448 advice / lookups 536 [实测 2026-09-23 R2 换代：
-//! B4-T7 104,287 + 256 SMT 查表门（撤销空洞封堵）− 体B 死列 1,609（advice
-//! 13,057→11,448）+ lookup 24→536]；proof 归服务器窗。
+//! 结构锚 **19,434 约束 / 8,410 advice / lookups 195 / 实例 26 / 2^12 行**
+//! [实测 2026-10-06 ⑦代，服务路径 canonical spec 装配产出——
+//! `assemble::auth_assemble_honest_structure` 三值 `assert_eq!` 钉定
+//! （AUTH_CONSTRAINTS_PIN/AUTH_ADVICE_PIN/AUTH_INSTANCES_PIN），漂移即红]。
+//! 演进链：B4-T7 104,287 → R2 换代 104,543（+256 SMT 查表门，撤销空洞封堵；
+//! advice 13,057→11,448；lookup 24→536）→ SM3 查表化全量收口 44,383 →
+//! 体B 死列清偿等电路手术 ~38.2K → 20,102 → 19,578（advice 11,448→
+//! 10,283）→ ⑥代 2026-10-06 SN 绑定+内存优化：19,608 / 10,534 / 556 / 26
+//!（第 5 组 SN 单块查表门 digest(sn_witness)==实例 25 sn_hash；组合 A
+//! bh 歼灭+掩蔽列惰性化+mimalloc——prove 峰值窗内存换代）→ **⑦代
+//! 2026-10-06 SM3 组列共享+查表通道合并：19,434 / 8,410 / 195 / 26**
+//!（69 组 34 列独占→lane band 列池 799 列+552 通道→191+msg-limb 桥列
+//! packing 704→128+门 276→102；TRAIL 同代 681/4,611/1,024→353/1,743/
+//! 357。SPLIT3 2,688 行/组 > 4095/2 ⟹ 每带恰 1 组——通道合并下界由列
+//! 角色对齐约束物理钉定，非工程折衷）。proof 归服务器窗（prove 类测试
+//! 禁在本机跑）。
 //!
 //! 🔴 注册表语义：reps/log_rate 是**校验字段而非自由参数**——后端实例类型级
 //! 钉定（reps=16/rate=1，论文基线口径），错配 = [`AssembleError::UnsupportedParams`]。
@@ -27,6 +40,16 @@ pub const ENV_ALLOW_AUTH: &str = "FZ_ZK_ALLOW_AUTH";
 
 /// TRAIL 档准入门禁环境旗标（值必须恰为 "1"——大电路档防误触发，与 AUTH 同法）。
 pub const ENV_ALLOW_TRAIL: &str = "FZ_ZK_ALLOW_TRAIL";
+
+/// spec 明文私钥回落禁用旗标（批 4-6，SP-20 R-4②收口）：置 "1" 时装配入口
+/// 拒绝「出示私钥经 spec 明文携带」的回落档（磁盘明文窗口），人话指路 env
+/// 注入。桥/worker 生产拼装缺省置 1；缺省（未置）保留回落——CLI/探针/既有
+/// 测试构型兼容不变。
+pub const ENV_FORBID_SPEC_KEY: &str = "FZ_ZK_FORBID_SPEC_KEY";
+
+/// 出示私钥 env 注入通道（批 4-6 主路径）：spec 的 holder_sk_hex 为空时自此
+/// 取值——私钥字节不落盘（env 主路径零私钥文件）。
+pub const ENV_HOLDER_SK: &str = "FZ_ZK_HOLDER_SK_HEX";
 
 /// TRAIL 档钉定样本数（B6-d1：n=128=64 秒段@2Hz；n=16 为电路测试档不入服务）。
 pub const TRAIL_N: usize = 128;
@@ -79,7 +102,10 @@ pub enum ProfileInput {
         cert_level: u8,
         /// 无人机序列号（UTF-8；sn_h=SM3(serial)[0..16]）。
         serial_hex: String,
-        /// 持有者出示密钥对（sk′ 64hex 端侧生成；pk′ 128hex）。
+        /// 持有者出示密钥对（sk′ 64hex 端侧生成；pk′ 128hex）。批 4-6 起
+        /// 可缺省（env FZ_ZK_HOLDER_SK_HEX 注入通道——桥生产拼装空此字段，
+        /// 私钥字节不落盘；空值+env 亦空=装配面人话拒绝）。
+        #[serde(default)]
         holder_sk_hex: String,
         holder_pk_hex: String,
         exp_u: u32,
@@ -95,9 +121,11 @@ pub enum ProfileInput {
     },
     /// TRAIL 轨迹合规证明（B6，框架 §5.2/A5 收窄语义）：
     /// 见证=n 组样本 (t BE4, alt BE2, lat BE4, lon BE4)——「已锚定记录中的
-    /// 全部高度样本满足上限」；公开面=chain_head 实例（锚定头）。
-    /// 检查点设备签名在**装配面 fail-closed 验签**（B6-d7/d8'：msg/sig/设备
-    /// 公钥皆链上公开数据，电路内重验=零密码学收益；坏签名/换头=拒）。
+    /// 全部高度样本满足上限 ∧ 全部位置样本落在矩形围栏内 ∧ 采样周期严格
+    /// 连续」；公开面=chain_head‖alt_max‖t_start‖周期‖围栏 4 界（实例 0..7，
+    /// 2026-10 二批换代）。检查点设备签名在**装配面 fail-closed 验签**
+    /// （B6-d7/d8'：msg/sig/设备公钥皆链上公开数据，电路内重验=零密码学
+    /// 收益；坏签名/换头=拒）。
     Trail {
         /// 样本序列（14B×n：t‖alt‖lat‖lon BE 拼接 hex——n=TRAIL_N 钉定）。
         rows_hex: String,
@@ -105,25 +133,39 @@ pub enum ProfileInput {
         alt_max_cm: u32,
         /// 声明起始时间（首样本 t——电路 t_start 钉）。
         t_start: u32,
+        /// 采样周期 ms（二批换代改动2：时间门 Δt 实例 3 钉——1Hz=1000/
+        /// 2Hz=500/4Hz=250；Δt 语义由电路逐对强制，周期声明被公开面钉定）。
+        sample_period_ms: u32,
         /// 锚定链头（32B/64hex——链上 TelemetryAnchor 公示，实例源）。
         chain_head_hex: String,
         /// 授权号（检查点报文绑定）。
         auth_id: u64,
         /// 设备公钥（128hex x‖y——检查点验签锚）。
         device_pk_hex: String,
+        /// 矩形围栏 4 界（i32×1e7——负值=南/西半球合法域；二批改动1：
+        /// 电路 4 半平面门，实例 4..7 偏置编码）。
+        min_lat: i32,
+        max_lat: i32,
+        min_lon: i32,
+        max_lon: i32,
         /// 检查点列表（seq+fence_state(8hex)+sig(128hex r‖s)；1..=4 个）。
         checkpoints: Vec<CheckpointInput>,
-        /// 引擎签名轨迹绑定（R4 复验 P0-1 根修）：高度上限不再由证明者自报
-        /// ——引擎钥对 (auth_id‖alt_max_cm‖chain_head) 出具 SM2 签名，装配面
-        /// fail-closed 验签；第三方可经 /authz/engine/pub 离线复核。
+        /// 引擎签名轨迹绑定（R4 复验 P0-1 根修 + 二批改动3 扩域）：高度上限/
+        /// 围栏 4 界不再由证明者自报——引擎钥对 (auth_id‖alt_max_cm‖chain_head
+        /// ‖围栏 4 界) 出具 SM2 签名，装配面 fail-closed 验签；第三方可经
+        /// /authz/engine/pub 离线复核。
         binding: TrailBindingInput,
     },
 }
 
-/// TRAIL 引擎绑定载荷（R4 复验 P0-1）：绑定报文=
-/// `FZ-TRAIL-BIND|{auth_id}|{alt_max_cm}|{chain_head_hex 小写}`，
-/// SM2 裸摘要签名（fold_be_integer 口径——与检查点验签同族），引擎钥
-/// （/authz/engine/pub 公示）在证明者域外 ⟹ 上限不可自报。
+/// TRAIL 引擎绑定载荷（R4 复验 P0-1 + 二批改动3 扩域）：绑定报文=
+/// `FZ-TRAIL-BIND2|{auth_id}|{alt_max_cm}|{chain_head_hex 小写}|{min_lat}|
+/// {max_lat}|{min_lon}|{max_lon}`，SM2 裸摘要签名（fold_be_integer 口径——
+/// 与检查点验签同族），引擎钥（/authz/engine/pub 公示）在证明者域外 ⟹
+/// 上限与围栏 4 界不可自报。BIND2 域分隔=旧格式签名（FZ-TRAIL-BIND）在
+/// 新验证面结构性失效（报文域扩容即版本换代）。采样周期不入绑定签名：
+/// 周期由电路 Δt 逐对强制自证（声明与记录不符即电路拒绝），无外部权威
+/// 语义可签。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TrailBindingInput {
     /// 授权高度上限（cm）——与外层 alt_max_cm 一致性受检。
@@ -132,6 +174,11 @@ pub struct TrailBindingInput {
     pub auth_id: u64,
     /// 锚定链头（小写 64hex）——与外层 chain_head_hex 一致性受检。
     pub chain_head_hex: String,
+    /// 矩形围栏 4 界（i32×1e7）——与外层 4 字段逐位一致性受检（二批改动3）。
+    pub min_lat: i32,
+    pub max_lat: i32,
+    pub min_lon: i32,
+    pub max_lon: i32,
     /// 引擎公钥（128hex x‖y——验签基准，第三方经 /authz/engine/pub 比对）。
     pub engine_pub_hex: String,
     /// 引擎签名（128hex r‖s，裸摘要口径）。
@@ -257,6 +304,9 @@ pub enum AssembleError {
     BadBytes { name: &'static str, reason: &'static str },
     /// TRAIL 检查点设备验签失败（坏签名/换头报文/错钥——B6 验收门负例④）。
     BadCheckpoint { index: usize, reason: &'static str },
+    /// spec 明文私钥回落被禁（批 4-6）：FZ_ZK_FORBID_SPEC_KEY=1 时装配入口
+    /// 拒绝「出示私钥经 spec 明文携带」的磁盘明文窗口档——人话指路 env 注入。
+    SpecKeyForbidden,
 }
 
 impl std::fmt::Display for AssembleError {
@@ -296,6 +346,10 @@ impl std::fmt::Display for AssembleError {
             AssembleError::BadCheckpoint { index, reason } => write!(
                 f,
                 "检查点 #{index} 设备验签失败：{reason}（坏签名/换头报文/错钥——fail-closed）"
+            ),
+            AssembleError::SpecKeyForbidden => write!(
+                f,
+                "出示私钥禁止经 spec 明文携带（{ENV_FORBID_SPEC_KEY}=1 已禁用回落档——spec 明文=磁盘明文窗口）：请从 spec 中移除 holder_sk_hex，改经环境变量 {ENV_HOLDER_SK} 注入后重试（env 主路径私钥字节不落盘）"
             ),
         }
     }

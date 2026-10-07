@@ -1,0 +1,1183 @@
+{
+ "schema_version": 1,
+ "run_id": "ca82277a3fa5",
+ "suite": "crypto",
+ "env": {
+  "timestamp": "2026-10-07T02:49:41",
+  "git_commit": "27a03b4",
+  "platform": "Windows-11-10.0.26200-SP0",
+  "python": "3.13.12",
+  "hostname": "蜡笔小新",
+  "cores": 16,
+  "ram_gb": 19.8,
+  "circuit": {
+   "name": "AUTH@2026-10 换代",
+   "constraints": 19578,
+   "proof_bytes": 22675632
+  },
+  "prove_max_concurrent": "1",
+  "chain_mode": "real"
+ },
+ "summary": {
+  "total": 88,
+  "passed": 82,
+  "failed": 6,
+  "xfail": 0,
+  "environment_error": 0,
+  "pass_rate": 0.9318,
+  "duration_s": 35.0,
+  "verdict": "failed",
+  "aborted": false,
+  "abort_reason": "",
+  "attack_success": []
+ },
+ "modules": {
+  "C1_vectors": {
+   "display": "C1 向量对拍（共享 JSON 事实源 × Python 实现）",
+   "passed": 31,
+   "failed": 0,
+   "xfail": 0,
+   "total": 31,
+   "items": [
+    {
+     "name": "C1-SM3 A.1 abc",
+     "verdict": "pass",
+     "expected": "",
+     "actual": "",
+     "defense_ref": "app/crypto/sm3.py",
+     "attack_success": false,
+     "latency_ms": null,
+     "detail": {}
+    },
+    {
+     "name": "C1-SM3 A.2 abcd×16 (512bit)",
+     "verdict": "pass",
+     "expected": "",
+     "actual": "",
+     "defense_ref": "app/crypto/sm3.py",
+     "attack_success": false,
+     "latency_ms": null,
+     "detail": {}
+    },
+    {
+     "name": "C1-SM3 空消息（Botan/BouncyCastle 收录，非附录 A，跨引擎一致性用）",
+     "verdict": "pass",
+     "expected": "",
+     "actual": "",
+     "defense_ref": "app/crypto/sm3.py",
+     "attack_success": false,
+     "latency_ms": null,
+     "detail": {}
+    },
+    {
+     "name": "C1-SM2 M2a 五元组（pub,e,sig） 正验",
+     "verdict": "pass",
+     "expected": "",
+     "actual": "",
+     "defense_ref": "app/crypto/sm2.py:verify_digest",
+     "attack_success": false,
+     "latency_ms": null,
+     "detail": {}
+    },
+    {
+     "name": "C1-SM2 M2a 五元组（pub,e,sig） 篡改拒",
+     "verdict": "pass",
+     "expected": "",
+     "actual": "",
+     "defense_ref": "app/crypto/sm2.py:verify_digest",
+     "attack_success": false,
+     "latency_ms": null,
+     "detail": {}
+    },
+    {
+     "name": "C1-SM2 ts_parity 前端对拍（正验+邻字节拒）",
+     "verdict": "pass",
+     "expected": "",
+     "actual": "",
+     "defense_ref": "app/crypto/sm2.py:verify",
+     "attack_success": false,
+     "latency_ms": null,
+     "detail": {}
+    },
+    {
+     "name": "C1-SM2 活体签验回环（generate→sign→verify）",
+     "verdict": "pass",
+     "expected": "",
+     "actual": "",
+     "defense_ref": "app/crypto/sm2.py",
+     "attack_success": false,
+     "latency_ms": 15.68,
+     "detail": {}
+    },
+    {
+     "name": "C1-SM4-GCM RFC 8998 A.1 [当前引擎]",
+     "verdict": "pass",
+     "expected": "",
+     "actual": "",
+     "defense_ref": "app/crypto/sm4.py",
+     "attack_success": false,
+     "latency_ms": 0.26,
+     "detail": {}
+    },
+    {
+     "name": "C1-SM4-GCM GB/T 36624 C.5 例1（空明文/空AAD） [当前引擎]",
+     "verdict": "pass",
+     "expected": "",
+     "actual": "",
+     "defense_ref": "app/crypto/sm4.py",
+     "attack_success": false,
+     "latency_ms": 0.04,
+     "detail": {}
+    },
+    {
+     "name": "C1-SM4-GCM GB/T 36624 C.5 例2（16B 零明文） [当前引擎]",
+     "verdict": "pass",
+     "expected": "",
+     "actual": "",
+     "defense_ref": "app/crypto/sm4.py",
+     "attack_success": false,
+     "latency_ms": 0.05,
+     "detail": {}
+    },
+    {
+     "name": "C1-SM4-GCM RFC 8998 A.1 [Pure 参考引擎]",
+     "verdict": "pass",
+     "expected": "",
+     "actual": "",
+     "defense_ref": "app/crypto/sm4.py",
+     "attack_success": false,
+     "latency_ms": 1.18,
+     "detail": {}
+    },
+    {
+     "name": "C1-SM4-GCM GB/T 36624 C.5 例1（空明文/空AAD） [Pure 参考引擎]",
+     "verdict": "pass",
+     "expected": "",
+     "actual": "",
+     "defense_ref": "app/crypto/sm4.py",
+     "attack_success": false,
+     "latency_ms": 0.36,
+     "detail": {}
+    },
+    {
+     "name": "C1-SM4-GCM GB/T 36624 C.5 例2（16B 零明文） [Pure 参考引擎]",
+     "verdict": "pass",
+     "expected": "",
+     "actual": "",
+     "defense_ref": "app/crypto/sm4.py",
+     "attack_success": false,
+     "latency_ms": 0.58,
+     "detail": {}
+    },
+    {
+     "name": "C1-SM4-ECB GB/T 32907 A 裸块（Pure 引擎）",
+     "verdict": "pass",
+     "expected": "",
+     "actual": "",
+     "defense_ref": "app/crypto/sm4.py:PureSM4GCM._raw_block",
+     "attack_success": false,
+     "latency_ms": null,
+     "detail": {}
+    },
+    {
+     "name": "C1-HMAC-SM3 tc1 空消息",
+     "verdict": "pass",
+     "expected": "",
+     "actual": "",
+     "defense_ref": "app/crypto/hmac_sm3.py",
+     "attack_success": false,
+     "latency_ms": null,
+     "detail": {}
+    },
+    {
+     "name": "C1-HMAC-SM3 tc2 单字节",
+     "verdict": "pass",
+     "expected": "",
+     "actual": "",
+     "defense_ref": "app/crypto/hmac_sm3.py",
+     "attack_success": false,
+     "latency_ms": null,
+     "detail": {}
+    },
+    {
+     "name": "C1-HMAC-SM3 tc17 16B 消息",
+     "verdict": "pass",
+     "expected": "",
+     "actual": "",
+     "defense_ref": "app/crypto/hmac_sm3.py",
+     "attack_success": false,
+     "latency_ms": null,
+     "detail": {}
+    },
+    {
+     "name": "C1-HMAC-SM3 tc21 长消息 48B",
+     "verdict": "pass",
+     "expected": "",
+     "actual": "",
+     "defense_ref": "app/crypto/hmac_sm3.py",
+     "attack_success": false,
+     "latency_ms": null,
+     "detail": {}
+    },
+    {
+     "name": "C1-HMAC-SM3 tc163 短钥 16B",
+     "verdict": "pass",
+     "expected": "",
+     "actual": "",
+     "defense_ref": "app/crypto/hmac_sm3.py",
+     "attack_success": false,
+     "latency_ms": null,
+     "detail": {}
+    },
+    {
+     "name": "C1-HMAC-SM3 tc169 长钥 72B（触发 key 哈希路径）",
+     "verdict": "pass",
+     "expected": "",
+     "actual": "",
+     "defense_ref": "app/crypto/hmac_sm3.py",
+     "attack_success": false,
+     "latency_ms": null,
+     "detail": {}
+    },
+    {
+     "name": "C1-PBKDF2-SM3 RFC 7914 #1",
+     "verdict": "pass",
+     "expected": "",
+     "actual": "",
+     "defense_ref": "app/crypto/kdf.py:pbkdf2_hmac_sm3",
+     "attack_success": false,
+     "latency_ms": 1.1,
+     "detail": {}
+    },
+    {
+     "name": "C1-PBKDF2-SM3 RFC 7914 #2（慢例）",
+     "verdict": "pass",
+     "expected": "",
+     "actual": "",
+     "defense_ref": "app/crypto/kdf.py:pbkdf2_hmac_sm3",
+     "attack_success": false,
+     "latency_ms": 109.1,
+     "detail": {}
+    },
+    {
+     "name": "C1-PBKDF2-SM3 伪随机 #3",
+     "verdict": "pass",
+     "expected": "",
+     "actual": "",
+     "defense_ref": "app/crypto/kdf.py:pbkdf2_hmac_sm3",
+     "attack_success": false,
+     "latency_ms": 2.6,
+     "detail": {}
+    },
+    {
+     "name": "C1-PBKDF2-SM3 空口令 #51",
+     "verdict": "pass",
+     "expected": "",
+     "actual": "",
+     "defense_ref": "app/crypto/kdf.py:pbkdf2_hmac_sm3",
+     "attack_success": false,
+     "latency_ms": 2.9,
+     "detail": {}
+    },
+    {
+     "name": "C1-PBKDF2-SM3 Utf8 #27",
+     "verdict": "pass",
+     "expected": "",
+     "actual": "",
+     "defense_ref": "app/crypto/kdf.py:pbkdf2_hmac_sm3",
+     "attack_success": false,
+     "latency_ms": 2.5,
+     "detail": {}
+    },
+    {
+     "name": "C1-PBKDF2-SM3 全零口令 #60（special case：65B 长钥）",
+     "verdict": "pass",
+     "expected": "",
+     "actual": "",
+     "defense_ref": "app/crypto/kdf.py:pbkdf2_hmac_sm3",
+     "attack_success": false,
+     "latency_ms": 2.6,
+     "detail": {}
+    },
+    {
+     "name": "C1-KEK v4 JS 对拍锚（8 轮）",
+     "verdict": "pass",
+     "expected": "",
+     "actual": "",
+     "defense_ref": "app/accounts/kdf.py:derive_kek（PBKDF2-HMAC-SM3）",
+     "attack_success": false,
+     "latency_ms": null,
+     "detail": {}
+    },
+    {
+     "name": "C1-KEK v4 JS 对拍锚（21000 轮）",
+     "verdict": "pass",
+     "expected": "",
+     "actual": "",
+     "defense_ref": "app/accounts/kdf.py:derive_kek（PBKDF2-HMAC-SM3）",
+     "attack_success": false,
+     "latency_ms": 14.2,
+     "detail": {}
+    },
+    {
+     "name": "C1-KEK v3 legacy 对拍锚（8 轮）",
+     "verdict": "pass",
+     "expected": "",
+     "actual": "",
+     "defense_ref": "app/accounts/kdf.py:_legacy_v3",
+     "attack_success": false,
+     "latency_ms": null,
+     "detail": {}
+    },
+    {
+     "name": "C1-KEK v3 legacy 对拍锚（21000 轮）",
+     "verdict": "pass",
+     "expected": "",
+     "actual": "",
+     "defense_ref": "app/accounts/kdf.py:_legacy_v3",
+     "attack_success": false,
+     "latency_ms": null,
+     "detail": {}
+    },
+    {
+     "name": "C1-99 全量 MATCH 率汇总",
+     "verdict": "pass",
+     "expected": "",
+     "actual": "",
+     "defense_ref": "app/crypto/ + app/accounts/kdf.py",
+     "attack_success": false,
+     "latency_ms": null,
+     "detail": {
+      "vectors": 30,
+      "matched": 30,
+      "match_rate": 1.0
+     }
+    }
+   ]
+  },
+  "C2_envelope": {
+   "display": "C2 KEK 信封版本矩阵（v4 现行+v3 legacy 回环/篡改/旧版显式拒绝）",
+   "passed": 12,
+   "failed": 0,
+   "xfail": 0,
+   "total": 12,
+   "items": [
+    {
+     "name": "C2-01 v4 正回环（seal→unseal 逐字节 + 结构门放行）",
+     "verdict": "pass",
+     "expected": "",
+     "actual": "",
+     "defense_ref": "app/crypto/sm4.py:SM4GCM + app/accounts/envelope.py + app/accounts/service.py:_validate_sealed_blob",
+     "attack_success": false,
+     "latency_ms": 2.5,
+     "detail": {}
+    },
+    {
+     "name": "C2-01b v3 legacy 正回环（版本分派仍可解+结构门放行）",
+     "verdict": "pass",
+     "expected": "",
+     "actual": "",
+     "defense_ref": "app/accounts/envelope.py:unseal_envelope（v3→_legacy_v3）",
+     "attack_success": false,
+     "latency_ms": null,
+     "detail": {}
+    },
+    {
+     "name": "C2-01c 惰性重封（v3→v4 同口令升级回环）",
+     "verdict": "pass",
+     "expected": "",
+     "actual": "",
+     "defense_ref": "app/accounts/envelope.py:reseal_v4",
+     "attack_success": false,
+     "latency_ms": null,
+     "detail": {}
+    },
+    {
+     "name": "C2-02 错口令解封",
+     "verdict": "pass",
+     "expected": "",
+     "actual": "",
+     "defense_ref": "app/crypto/sm4.py:SM4GCM.decrypt（GCM 认证）",
+     "attack_success": false,
+     "latency_ms": null,
+     "detail": {
+      "口令": "与密封口令不同（形态等长）",
+      "rejected_by": "SM4GCMError"
+     }
+    },
+    {
+     "name": "C2-03 盐改 1 字节",
+     "verdict": "pass",
+     "expected": "",
+     "actual": "",
+     "defense_ref": "app/crypto/sm4.py:SM4GCM.decrypt",
+     "attack_success": false,
+     "latency_ms": null,
+     "detail": {
+      "篡改轴": "KDF 盐（KEK 派生输入）",
+      "rejected_by": "SM4GCMError"
+     }
+    },
+    {
+     "name": "C2-04 nonce 改 1 字节",
+     "verdict": "pass",
+     "expected": "",
+     "actual": "",
+     "defense_ref": "app/crypto/sm4.py:SM4GCM.decrypt",
+     "attack_success": false,
+     "latency_ms": null,
+     "detail": {
+      "篡改轴": "GCM IV",
+      "rejected_by": "SM4GCMError"
+     }
+    },
+    {
+     "name": "C2-05 tag 改 1 字节",
+     "verdict": "pass",
+     "expected": "",
+     "actual": "",
+     "defense_ref": "app/crypto/sm4.py:SM4GCM.decrypt",
+     "attack_success": false,
+     "latency_ms": null,
+     "detail": {
+      "篡改轴": "GCM 认证标签",
+      "rejected_by": "SM4GCMError"
+     }
+    },
+    {
+     "name": "C2-06 ct 改 1 字节",
+     "verdict": "pass",
+     "expected": "",
+     "actual": "",
+     "defense_ref": "app/crypto/sm4.py:SM4GCM.decrypt",
+     "attack_success": false,
+     "latency_ms": null,
+     "detail": {
+      "篡改轴": "GCM 密文",
+      "rejected_by": "SM4GCMError"
+     }
+    },
+    {
+     "name": "C2-07 跨盐解封（他账户盐 KEK 套本信封）",
+     "verdict": "pass",
+     "expected": "",
+     "actual": "",
+     "defense_ref": "app/accounts/kdf.py:derive_kek（盐域分离）",
+     "attack_success": false,
+     "latency_ms": null,
+     "detail": {
+      "机制": "不同盐→不同 KEK→GCM 认证失败",
+      "rejected_by": "SM4GCMError"
+     }
+    },
+    {
+     "name": "C2-08 v1 旧格式显式拒绝",
+     "verdict": "pass",
+     "expected": "",
+     "actual": "",
+     "defense_ref": "app/accounts/service.py:_validate_sealed_blob",
+     "attack_success": false,
+     "latency_ms": null,
+     "detail": {
+      "机制": "信封版本字段 v=1 非当前代——注册/激活面拒收（不许静默兼容）"
+     }
+    },
+    {
+     "name": "C2-09 v2 旧格式显式拒绝（真实双槽形态 enc+rec）",
+     "verdict": "pass",
+     "expected": "",
+     "actual": "",
+     "defense_ref": "app/accounts/service.py:_validate_sealed_blob",
+     "attack_success": false,
+     "latency_ms": null,
+     "detail": {
+      "机制": "v2 双因子信封不入 v3 单因子面（AAD 分域不可互解+版本门）"
+     }
+    },
+    {
+     "name": "C2-10 信封 pk 与登记公钥错配（跨账户隔离）",
+     "verdict": "pass",
+     "expected": "",
+     "actual": "",
+     "defense_ref": "app/accounts/service.py:_validate_sealed_blob",
+     "attack_success": false,
+     "latency_ms": null,
+     "detail": {
+      "机制": "密封件绑定账户公钥——错配即拒，不带病入库"
+     }
+    }
+   ]
+  },
+  "C3_gate_matrix": {
+   "display": "C3 电路边界×受理门控矩阵（函数级）+ pin 对照 + zkc 期望门",
+   "passed": 11,
+   "failed": 6,
+   "xfail": 0,
+   "total": 17,
+   "items": [
+    {
+     "name": "C3-01 正例对照：诚实申请受理（pending+128bit 回执）",
+     "verdict": "fail",
+     "expected": "pending",
+     "actual": "AuthzError: ('instance_mismatch', '实例 25（sn_hash）与申请绑定不一致——拒绝', 409)",
+     "defense_ref": "app/authz/service.py:admission_gate",
+     "attack_success": false,
+     "latency_ms": null,
+     "detail": {}
+    },
+    {
+     "name": "C3-02 高度类边界·开放类放行（微型 50m/轻型 120m）",
+     "verdict": "fail",
+     "expected": "两开放类均 pending",
+     "actual": "AuthzError: ('instance_mismatch', '实例 25（sn_hash）与申请绑定不一致——拒绝', 409)",
+     "defense_ref": "app/authz/policy.py:get_rule",
+     "attack_success": false,
+     "latency_ms": null,
+     "detail": {}
+    },
+    {
+     "name": "C3-03 高度类边界·未开放类拒（超政策表上限类）",
+     "verdict": "pass",
+     "expected": "",
+     "actual": "",
+     "defense_ref": "app/authz/policy.py:get_rule（fail-closed 未开放类）",
+     "attack_success": false,
+     "latency_ms": null,
+     "detail": {
+      "reject_code": "unsupported_class"
+     }
+    },
+    {
+     "name": "C3-04 授权窗恰好等于上限 21600s（不误拒）",
+     "verdict": "fail",
+     "expected": "pending",
+     "actual": "AuthzError: ('instance_mismatch', '实例 25（sn_hash）与申请绑定不一致——拒绝', 409)",
+     "defense_ref": "app/authz/service.py:admission_gate",
+     "attack_success": false,
+     "latency_ms": null,
+     "detail": {}
+    },
+    {
+     "name": "C3-05 授权窗超上限 1s（21601s）",
+     "verdict": "fail",
+     "expected": "window_too_long",
+     "actual": "instance_mismatch",
+     "defense_ref": "app/authz/service.py:admission_gate（S5 窗上限门）",
+     "attack_success": false,
+     "latency_ms": null,
+     "detail": {
+      "message": "实例 25（sn_hash）与申请绑定不一致——拒绝"
+     }
+    },
+    {
+     "name": "C3-06 rev_root 与链上纪元不一致（过期）",
+     "verdict": "pass",
+     "expected": "",
+     "actual": "",
+     "defense_ref": "app/authz/service.py:admission_gate（④ rev_root 核对）",
+     "attack_success": false,
+     "latency_ms": null,
+     "detail": {
+      "reject_code": "stale_rev_root"
+     }
+    },
+    {
+     "name": "C3-07 ctx_tag 不符（实例 19 篡改）",
+     "verdict": "pass",
+     "expected": "",
+     "actual": "",
+     "defense_ref": "app/authz/service.py:admission_gate._expect（实例 19）",
+     "attack_success": false,
+     "latency_ms": null,
+     "detail": {
+      "reject_code": "instance_mismatch"
+     }
+    },
+    {
+     "name": "C3-08 pred_id 不符（实例 20 篡改）",
+     "verdict": "pass",
+     "expected": "",
+     "actual": "",
+     "defense_ref": "app/authz/service.py:admission_gate._expect（实例 20）",
+     "attack_success": false,
+     "latency_ms": null,
+     "detail": {
+      "reject_code": "instance_mismatch"
+     }
+    },
+    {
+     "name": "C3-09 class_id 实例不符（实例 24 自报套高类）",
+     "verdict": "pass",
+     "expected": "",
+     "actual": "",
+     "defense_ref": "app/authz/service.py:admission_gate._expect（实例 24）",
+     "attack_success": false,
+     "latency_ms": null,
+     "detail": {
+      "reject_code": "instance_mismatch"
+     }
+    },
+    {
+     "name": "C3-10 nonce 链上已用（重放）",
+     "verdict": "pass",
+     "expected": "",
+     "actual": "",
+     "defense_ref": "app/authz/service.py:admission_gate（③ nonce 查重）",
+     "attack_success": false,
+     "latency_ms": null,
+     "detail": {
+      "reject_code": "nonce_used"
+     }
+    },
+    {
+     "name": "C3-11 子凭证一次性（重放拒）",
+     "verdict": "fail",
+     "expected": "首受理成功",
+     "actual": "AuthzError: ('instance_mismatch', '实例 25（sn_hash）与申请绑定不一致——拒绝', 409)",
+     "defense_ref": "app/authz/service.py:admission_gate",
+     "attack_success": false,
+     "latency_ms": null,
+     "detail": {}
+    },
+    {
+     "name": "C3-11 子凭证一次性（重放拒）",
+     "verdict": "fail",
+     "expected": "sub_cred_used",
+     "actual": "instance_mismatch",
+     "defense_ref": "app/authz/service.py:admission_gate（库级查重）",
+     "attack_success": false,
+     "latency_ms": null,
+     "detail": {
+      "message": "实例 25（sn_hash）与申请绑定不一致——拒绝"
+     }
+    },
+    {
+     "name": "C3-12 会话公钥不在 SM2 曲线上",
+     "verdict": "pass",
+     "expected": "",
+     "actual": "",
+     "defense_ref": "app/authz/service.py:admission_gate（① assert_pub——S5 毒丸修复）",
+     "attack_success": false,
+     "latency_ms": null,
+     "detail": {
+      "reject_code": "bad_session_key"
+     }
+    },
+    {
+     "name": "C3-13 子凭证签名验证失败（非 RA 签发）",
+     "verdict": "pass",
+     "expected": "",
+     "actual": "",
+     "defense_ref": "app/authz/service.py:admission_gate（② SM2 验签）",
+     "attack_success": false,
+     "latency_ms": null,
+     "detail": {
+      "reject_code": "bad_sub_signature"
+     }
+    },
+    {
+     "name": "C3-14 子凭证哈希与报文不符（服务器重算对拍）",
+     "verdict": "pass",
+     "expected": "",
+     "actual": "",
+     "defense_ref": "app/authz/service.py:admission_gate（②' 重算对拍——A-P1-1 根修）",
+     "attack_success": false,
+     "latency_ms": null,
+     "detail": {
+      "reject_code": "sub_cred_hash_mismatch"
+     }
+    },
+    {
+     "name": "C3-15 电路 pin 指纹=链上公示（正对照）",
+     "verdict": "pass",
+     "expected": "",
+     "actual": "",
+     "defense_ref": "app/authz/service.py:AuthzDeps.pin_fingerprint + docs/性能档案.md 换代仪式",
+     "attack_success": false,
+     "latency_ms": null,
+     "detail": {
+      "local_pin": "SM3(4201a82|e6481fb56957dd8520acd94236f9880a93264e04ee48b00f9a1ebcdb974a86e8)",
+      "chain_digest": "5bc38e56230f35ce927fe8ef6858521ab6e691a364c2b7acd00d875094eb8374",
+      "tx": "0xfa162fbb"
+     }
+    },
+    {
+     "name": "C3-16 zkc 期望门垃圾证明 fail-closed",
+     "verdict": "pass",
+     "expected": "",
+     "actual": "",
+     "defense_ref": "app/zk/worker.py:zkc_verify（verify-instances 期望门）",
+     "attack_success": false,
+     "latency_ms": 6554.0,
+     "detail": {
+      "zkc": "C:\\Users\\联想\\Desktop\\Meeting\\uas\\zksvc\\target\\release\\zkc.exe",
+      "local_pin": "SM3(4201a82|e6481fb56957dd8520acd94236f9880a93264e04ee48b00f9a1ebcdb974a86e8)",
+      "chain_digest": "5bc38e56230f35ce927fe8ef6858521ab6e691a364c2b7acd00d875094eb8374",
+      "exit": 2,
+      "log_tail": " + 1 组合；净额 +33——pad 锚词 0 拆除 −1 发生在窗外②段）\nzkc verify-instances: FAIL 验证参数反序列化失败: io error: unexpected end of file\n[info-cache] 未命中 387892737d89cea5（装配 6.1s，落盘缓存）\n"
+     }
+    }
+   ]
+  },
+  "C4_graft": {
+   "display": "C4 嫁接拒绝（换期望/换 spec/换 vkey 必拒——期望门层实弹）",
+   "passed": 5,
+   "failed": 0,
+   "xfail": 0,
+   "total": 5,
+   "items": [
+    {
+     "name": "C4-01 AUTH 语句×AUTH 期望（垃圾证明基线）",
+     "verdict": "pass",
+     "expected": "",
+     "actual": "",
+     "defense_ref": "app/zk/worker.py:zkc_verify + zkc verify-instances 期望门",
+     "attack_success": false,
+     "latency_ms": 224.0,
+     "detail": {
+      "zkc": "C:\\Users\\联想\\Desktop\\Meeting\\uas\\zksvc\\target\\release\\zkc.exe",
+      "local_pin": "SM3(4201a82|e6481fb56957dd8520acd94236f9880a93264e04ee48b00f9a1ebcdb974a86e8)",
+      "chain_digest": "5bc38e56230f35ce927fe8ef6858521ab6e691a364c2b7acd00d875094eb8374",
+      "exit": 2,
+      "log_tail": "zkc verify-instances: FAIL 验证参数反序列化失败: io error: unexpected end of file\n"
+     }
+    },
+    {
+     "name": "C4-02 AUTH 语句×TRAIL 形态期望（跨电路嫁接）",
+     "verdict": "pass",
+     "expected": "",
+     "actual": "",
+     "defense_ref": "app/zk/worker.py:zkc_verify + zkc verify-instances 期望门",
+     "attack_success": false,
+     "latency_ms": 49.0,
+     "detail": {
+      "zkc": "C:\\Users\\联想\\Desktop\\Meeting\\uas\\zksvc\\target\\release\\zkc.exe",
+      "local_pin": "SM3(4201a82|e6481fb56957dd8520acd94236f9880a93264e04ee48b00f9a1ebcdb974a86e8)",
+      "chain_digest": "5bc38e56230f35ce927fe8ef6858521ab6e691a364c2b7acd00d875094eb8374",
+      "exit": 2,
+      "log_tail": "zkc verify-instances: FAIL canonical spec 档位与验证形态不符（TRAIL 判据=chain_head_hex）——拒绝\n"
+     }
+    },
+    {
+     "name": "C4-03 TRAIL 形态×AUTH 形态期望（反向嫁接）",
+     "verdict": "pass",
+     "expected": "",
+     "actual": "",
+     "defense_ref": "app/zk/worker.py:zkc_verify + zkc verify-instances 期望门",
+     "attack_success": false,
+     "latency_ms": 51.0,
+     "detail": {
+      "zkc": "C:\\Users\\联想\\Desktop\\Meeting\\uas\\zksvc\\target\\release\\zkc.exe",
+      "local_pin": "SM3(4201a82|e6481fb56957dd8520acd94236f9880a93264e04ee48b00f9a1ebcdb974a86e8)",
+      "chain_digest": "5bc38e56230f35ce927fe8ef6858521ab6e691a364c2b7acd00d875094eb8374",
+      "exit": 2,
+      "log_tail": "zkc verify-instances: FAIL canonical spec 档位与验证形态不符（TRAIL 判据=chain_head_hex）——拒绝\n"
+     }
+    },
+    {
+     "name": "C4-04 错误电路 spec（AUTH 面挂 TRAIL canonical spec）",
+     "verdict": "pass",
+     "expected": "",
+     "actual": "",
+     "defense_ref": "app/zk/worker.py:zkc_verify + zkc verify-instances 期望门",
+     "attack_success": false,
+     "latency_ms": 46.0,
+     "detail": {
+      "zkc": "C:\\Users\\联想\\Desktop\\Meeting\\uas\\zksvc\\target\\release\\zkc.exe",
+      "local_pin": "SM3(4201a82|e6481fb56957dd8520acd94236f9880a93264e04ee48b00f9a1ebcdb974a86e8)",
+      "chain_digest": "5bc38e56230f35ce927fe8ef6858521ab6e691a364c2b7acd00d875094eb8374",
+      "exit": 2,
+      "log_tail": "zkc verify-instances: FAIL canonical spec 档位与验证形态不符（TRAIL 判据=chain_head_hex）——拒绝\n"
+     }
+    },
+    {
+     "name": "C4-05 换 vkey 面（verifier_param≠装配产物）",
+     "verdict": "pass",
+     "expected": "",
+     "actual": "",
+     "defense_ref": "app/zk/worker.py:zkc_verify + zkc verify-instances 期望门",
+     "attack_success": false,
+     "latency_ms": 73.0,
+     "detail": {
+      "zkc": "C:\\Users\\联想\\Desktop\\Meeting\\uas\\zksvc\\target\\release\\zkc.exe",
+      "local_pin": "SM3(4201a82|e6481fb56957dd8520acd94236f9880a93264e04ee48b00f9a1ebcdb974a86e8)",
+      "chain_digest": "5bc38e56230f35ce927fe8ef6858521ab6e691a364c2b7acd00d875094eb8374",
+      "exit": 2,
+      "log_tail": "zkc verify-instances: FAIL 实例 19（ctx_tag）与申请绑定不一致——拒绝（T6 服务侧强制）\n"
+     }
+    }
+   ]
+  },
+  "C5_lifecycle": {
+   "display": "C5 密钥生命周期（出示钥/会话/吊销传播）",
+   "passed": 9,
+   "failed": 0,
+   "xfail": 0,
+   "total": 9,
+   "items": [
+    {
+     "name": "C5-01 登记承诺正例（对照）",
+     "verdict": "pass",
+     "expected": "",
+     "actual": "",
+     "defense_ref": "app/ra/service.py:RaService.register",
+     "attack_success": false,
+     "latency_ms": null,
+     "detail": {
+      "master_cred_hash_hex": "7fada9f051749c4b…"
+     }
+    },
+    {
+     "name": "C5-02 签发#1：字段齐 + M_A′ pk′ 段=新出示钥逐位（e2e 2.1b 收拢）",
+     "verdict": "pass",
+     "expected": "",
+     "actual": "",
+     "defense_ref": "app/ra/service.py:issue_sub_credential + app/ra/credential.py:build_message",
+     "attack_success": false,
+     "latency_ms": null,
+     "detail": {
+      "pk_offset": "hex[192:320]=holder x‖y"
+     }
+    },
+    {
+     "name": "C5-03 签发#2：新出示钥（两次 pk′ 互异——跨申请不可链接，e2e 2.4 收拢）",
+     "verdict": "pass",
+     "expected": "",
+     "actual": "",
+     "defense_ref": "app/ra/service.py:issue_sub_credential（fresh id′+一次性出示钥）",
+     "attack_success": false,
+     "latency_ms": null,
+     "detail": {}
+    },
+    {
+     "name": "C5-04 登出会话焚毁（WebSession 删除+token 失效）",
+     "verdict": "pass",
+     "expected": "",
+     "actual": "",
+     "defense_ref": "app/accounts/service.py:logout/session_of",
+     "attack_success": false,
+     "latency_ms": null,
+     "detail": {}
+    },
+    {
+     "name": "C5-05 服务端零出示钥私钥存储（SubCredential 列集合断言）",
+     "verdict": "pass",
+     "expected": "",
+     "actual": "",
+     "defense_ref": "app/ra/models.py:SubCredential",
+     "attack_success": false,
+     "latency_ms": null,
+     "detail": {
+      "columns": [
+       "consumed",
+       "created_at",
+       "credential_id",
+       "expires_at",
+       "holder_pub_hex",
+       "id",
+       "message_hex",
+       "sig_hex",
+       "sub_cred_hash_hex"
+      ]
+     }
+    },
+    {
+     "name": "C5-06pre 缺管理员签名撤销 → bad_sig（fail-closed）",
+     "verdict": "pass",
+     "expected": "",
+     "actual": "",
+     "defense_ref": "app/ra/service.py:_verify_admin_sig",
+     "attack_success": false,
+     "latency_ms": null,
+     "detail": {}
+    },
+    {
+     "name": "C5-06 吊销传播（未消费子凭证 pk′.x 并入撤销集+根更迭）",
+     "verdict": "pass",
+     "expected": "",
+     "actual": "",
+     "defense_ref": "app/ra/service.py:_revoke_credentials（R3-0.3 传播）",
+     "attack_success": false,
+     "latency_ms": null,
+     "detail": {
+      "epoch": 1,
+      "handles": 3,
+      "root_hex": "346b4c1d429f9f7e…"
+     }
+    },
+    {
+     "name": "C5-07 已吊销凭证重签拒绝（cred_revoked 预检）",
+     "verdict": "pass",
+     "expected": "",
+     "actual": "",
+     "defense_ref": "app/ra/service.py:issue_sub_credential（本凭证状态优先报）",
+     "attack_success": false,
+     "latency_ms": null,
+     "detail": {}
+    },
+    {
+     "name": "C5-08 吊销传播后旧出示钥重签拒绝（holder_revoked 预检）",
+     "verdict": "pass",
+     "expected": "",
+     "actual": "",
+     "defense_ref": "app/ra/service.py:issue_sub_credential（B-P2-5 签发面撤销预检）",
+     "attack_success": false,
+     "latency_ms": null,
+     "detail": {
+      "机制": "新凭证+被传播旧 pk′——跨凭证传染形态"
+     }
+    }
+   ]
+  },
+  "C6_dual_control": {
+   "display": "C6 双控签名链（缺一拒/坏签拒/篡改拒/双签过+复验）",
+   "passed": 8,
+   "failed": 0,
+   "xfail": 0,
+   "total": 8,
+   "items": [
+    {
+     "name": "C6-01 缺审计签拒（空签名）",
+     "verdict": "pass",
+     "expected": "",
+     "actual": "",
+     "defense_ref": "app/accounts/collab.py:_verify_action_sig（SM2 验签门）",
+     "attack_success": false,
+     "latency_ms": null,
+     "detail": {
+      "rejected_by": "CollabError"
+     }
+    },
+    {
+     "name": "C6-02 坏审计签拒（随机签名）",
+     "verdict": "pass",
+     "expected": "",
+     "actual": "",
+     "defense_ref": "app/accounts/collab.py:_verify_action_sig",
+     "attack_success": false,
+     "latency_ms": null,
+     "detail": {
+      "rejected_by": "CollabError"
+     }
+    },
+    {
+     "name": "C6-03 正例发函（对照，pending 在途）",
+     "verdict": "pass",
+     "expected": "",
+     "actual": "",
+     "defense_ref": "app/accounts/collab.py:create_request",
+     "attack_success": false,
+     "latency_ms": null,
+     "detail": {}
+    },
+    {
+     "name": "C6-04 缺管理员签拒（空签名批准）",
+     "verdict": "pass",
+     "expected": "",
+     "actual": "",
+     "defense_ref": "app/accounts/collab.py:approve_and_execute（批准即绑定内容）",
+     "attack_success": false,
+     "latency_ms": null,
+     "detail": {
+      "rejected_by": "CollabError"
+     }
+    },
+    {
+     "name": "C6-05 坏管理员签拒",
+     "verdict": "pass",
+     "expected": "",
+     "actual": "",
+     "defense_ref": "app/accounts/collab.py:approve_and_execute",
+     "attack_success": false,
+     "latency_ms": null,
+     "detail": {
+      "rejected_by": "CollabError"
+     }
+    },
+    {
+     "name": "C6-06 篡改 note 拒（批准签名绑定请求原文）",
+     "verdict": "pass",
+     "expected": "",
+     "actual": "",
+     "defense_ref": "app/accounts/collab.py:approve_and_execute（REQ_MSG_PREFIX+wh|note 原文绑定）",
+     "attack_success": false,
+     "latency_ms": null,
+     "detail": {
+      "rejected_by": "CollabError"
+     }
+    },
+    {
+     "name": "C6-07 双签全过（批准落定+自动执行受理）",
+     "verdict": "pass",
+     "expected": "",
+     "actual": "",
+     "defense_ref": "app/accounts/collab.py:approve_and_execute",
+     "attack_success": false,
+     "latency_ms": null,
+     "detail": {
+      "status": "execute_failed",
+      "admin_fp_set": true
+     }
+    },
+    {
+     "name": "C6-08 历史双签按签名时点公钥复验通过（不可抵赖）",
+     "verdict": "pass",
+     "expected": "",
+     "actual": "",
+     "defense_ref": "app/accounts/collab.py:verify_request_sigs",
+     "attack_success": false,
+     "latency_ms": null,
+     "detail": {
+      "auditor_epoch": 1,
+      "admin_epoch": 1
+     }
+    }
+   ]
+  },
+  "C7_constant_time": {
+   "display": "C7 恒时性护栏（对/错输入时延全分布 p1/p50/p99，gc 隔离+预热 50 轮，n=3000/侧，阈值 ×1.3）",
+   "passed": 2,
+   "failed": 0,
+   "xfail": 0,
+   "total": 2,
+   "items": [
+    {
+     "name": "C7-01 KEK derive（正确 vs 错误口令各 3000 次）",
+     "verdict": "pass",
+     "expected": "",
+     "actual": "",
+     "defense_ref": "app/accounts/kdf.py:derive_kek（PBKDF2-HMAC-SM3——无早退分支）",
+     "attack_success": false,
+     "latency_ms": null,
+     "detail": {
+      "correct": {
+       "n": 3000,
+       "p1_ms": 2.333,
+       "p50_ms": 2.511,
+       "p99_ms": 3.882,
+       "mean_ms": 2.645,
+       "stdev_ms": 0.36
+      },
+      "wrong_input": {
+       "n": 3000,
+       "p1_ms": 2.333,
+       "p50_ms": 2.496,
+       "p99_ms": 4.004,
+       "mean_ms": 2.639,
+       "stdev_ms": 0.366
+      },
+      "ratio_wrong_over_correct": 0.994,
+      "sampling": {
+       "warmup_rounds": 50,
+       "gc_isolated": true,
+       "n_per_side": 3000
+      },
+      "rule": "fail: 错误 p50 > 正确 p50 ×1.3；xfail: 1.1~1.3；pass: ≤1.1（阈值不放松）",
+      "note": "全组耗时 16.1s；同盐等长口令唯口令域差异；A/B 交错采样+gc 隔离+预热 50 轮；测量档 4096 轮（恒时性质与迭代数无关——生产档 600000 轮由 C1/C2 锚定）"
+     }
+    },
+    {
+     "name": "C7-02 SM2 验签（对/错签名各 3000 次）",
+     "verdict": "pass",
+     "expected": "",
+     "actual": "",
+     "defense_ref": "app/crypto/sm2.py:verify（EVP 主径/纯实现差分双引擎）",
+     "attack_success": false,
+     "latency_ms": null,
+     "detail": {
+      "correct": {
+       "n": 3000,
+       "p1_ms": 0.293,
+       "p50_ms": 0.321,
+       "p99_ms": 0.639,
+       "mean_ms": 0.356,
+       "stdev_ms": 0.086
+      },
+      "wrong_input": {
+       "n": 3000,
+       "p1_ms": 0.297,
+       "p50_ms": 0.329,
+       "p99_ms": 0.641,
+       "mean_ms": 0.363,
+       "stdev_ms": 0.078
+      },
+      "ratio_wrong_over_correct": 1.025,
+      "sampling": {
+       "warmup_rounds": 50,
+       "gc_isolated": true,
+       "n_per_side": 3000
+      },
+      "rule": "fail: 错误 p50 > 正确 p50 ×1.3；xfail: 1.1~1.3；pass: ≤1.1（阈值不放松）",
+      "note": "全组耗时 2.2s；错误输入=随机字节翻转（恒拒绝）；A/B 交错采样+gc 隔离+预热 50 轮"
+     }
+    }
+   ]
+  },
+  "C8_fuzz": {
+   "display": "C8 模糊注入护栏（解封+SM2 验签畸形输入，子进程隔离）",
+   "passed": 4,
+   "failed": 0,
+   "xfail": 0,
+   "total": 4,
+   "items": [
+    {
+     "name": "C8-01 解封函数 600 轮畸形输入全拒",
+     "verdict": "pass",
+     "expected": "",
+     "actual": "",
+     "defense_ref": "app/crypto/sm4.py:SM4GCM.decrypt + keystore.ts unseal 镜像",
+     "attack_success": false,
+     "latency_ms": null,
+     "detail": {
+      "rounds": 600,
+      "rejected": 600,
+      "accepted": 0,
+      "captured": 600,
+      "unexpected_types": {}
+     }
+    },
+    {
+     "name": "C8-02 SM2 验签 600 轮畸形输入全拒",
+     "verdict": "pass",
+     "expected": "",
+     "actual": "",
+     "defense_ref": "app/crypto/sm2.py:verify",
+     "attack_success": false,
+     "latency_ms": null,
+     "detail": {
+      "rounds": 600,
+      "rejected": 600,
+      "accepted": 0,
+      "captured": 50,
+      "unexpected_types": {}
+     }
+    },
+    {
+     "name": "C8-03 模糊子进程存活（进程不崩溃）",
+     "verdict": "pass",
+     "expected": "",
+     "actual": "",
+     "defense_ref": "app/crypto/sm4.py + app/crypto/sm2.py（异常面收敛）",
+     "attack_success": false,
+     "latency_ms": null,
+     "detail": {
+      "returncode": 0,
+      "注记": "子进程内全部输入经 try/except 捕获——exit 0 即无逃逸"
+     }
+    },
+    {
+     "name": "C8-04 无未捕获异常逃逸（捕获计数入报告）",
+     "verdict": "pass",
+     "expected": "",
+     "actual": "",
+     "defense_ref": "app/crypto/sm4.py + app/crypto/sm2.py",
+     "attack_success": false,
+     "latency_ms": null,
+     "detail": {
+      "captured": 650
+     }
+    }
+   ]
+  }
+ }
+}

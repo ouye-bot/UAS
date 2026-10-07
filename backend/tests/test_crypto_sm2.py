@@ -64,6 +64,39 @@ class TestKeypair:
             priv, _ = generate_keypair()
             assert 1 <= int(priv, 16) < n
 
+    def test_priv_keygen_domain_10000_statistical(self):
+        """信任根收口件5：Keygen 合法域=[1, n-2]（d=n-1 使 (1+d)^-1 不存在——
+        签名恒不过验证的静默废件面）。10000 次真实采样循环统计断言全在域内
+        （边界点重采样拒绝——旧实现声称 [1,n-1] 与 _assert_priv [1,n-2] 自相
+        矛盾，边界点撞上即 SM2Error）。采样循环为纯标量抽样（微秒级/次）；
+        全量钥生成另抽 5 次核格式与公钥推导一致性（点乘热路径不进统计环）。"""
+        import app.crypto.sm2 as sm2mod
+
+        n = int(default_ecc_table["n"], 16)  # 曲线常量只从库引用，禁手抄
+        lo_hits = hi_hits = 0
+        for _ in range(10000):
+            d = int(sm2mod._gen_priv_in_domain(), 16)
+            assert 1 <= d <= n - 2, f"私钥越 Keygen 合法域: {d}"
+            if d == 1:
+                lo_hits += 1
+            if d == n - 2:
+                hi_hits += 1
+        # 采样循环域边界的可达性自证（1 与 n-2 都是合法取值——旧 randbelow+1
+        # 形态两端皆可达，重采样只剔除 n-1）：下界命中期望 ~10000/(n-2)≈0，
+        # 不做计数断言（概率事件），仅记录防呆
+        assert lo_hits >= 0 and hi_hits >= 0
+
+    def test_generate_keypair_full_function_domain_spot(self):
+        """全量函数抽检：generate_keypair 产物域内+公钥推导一致（8.6ms/次
+        点乘热路径——统计面走 _gen_priv_in_domain，本测只钉装配面不回退）。"""
+        n = int(default_ecc_table["n"], 16)
+        for _ in range(5):
+            priv, pub = generate_keypair()
+            d = int(priv, 16)
+            assert 1 <= d <= n - 2
+            assert len(priv) == 64 and len(pub) == 128
+            assert pubkey_from_priv(priv) == pub
+
 
 class TestSignVerify:
     def test_roundtrip_and_cross_verify(self):

@@ -6,7 +6,7 @@
  *   ②补资料（实名+无人机→RA 签发上链，"上链注册"发生时刻）。
  * 密码=密封体系唯一人肉防线：8 位起步+字母+数字+弱密码黑名单（队长拍板）。
  */
-import { computed, reactive, ref } from "vue";
+import { computed, nextTick, onMounted, reactive, ref } from "vue";
 import { useRouter } from "vue-router";
 import { ApiError } from "../lib/api";
 import DenyBox from "../components/DenyBox.vue";
@@ -22,6 +22,7 @@ import {
   type PendingRegistration,
 } from "../lib/auth";
 import { checkPasswordRules, type PasswordCheck } from "../lib/enroll";
+import { DEVICE_SERIAL_UNAVAILABLE, getDeviceSerial } from "../lib/device";
 import { classLabel } from "../lib/policy";
 
 const router = useRouter();
@@ -72,11 +73,20 @@ const pending = ref<PendingRegistration | null>(pendingRegistration());
 // 资料（第二步——实名+无人机；签发上链在此发生）
 const form = reactive({ id_number: "", cert_level: 3, sn: "", class_id: 1 });
 const formErr = ref("");
+// SN 单源（SN 绑定根治 2026-10-07）：序列号唯一读数源=桥 /engine_pub——
+// 只读预填（用户看得到注册的是哪台设备；登记后 SN 与凭证绑定，换绑须重新
+// 登记）。读数失败=空串+人话指引（不回落自由文本——自由 SN 首次 ARM 必
+// sn_mismatch）。挂载即取（登录页注册径前置读取——进第二步时缓存已就绪）。
+const snReady = ref(false);
+onMounted(async () => {
+  const sn = await getDeviceSerial();
+  if (sn) form.sn = sn;
+  snReady.value = true;
+});
 
 function fillSample(): void {
   form.id_number = "110101199001011234";
   form.cert_level = 3;
-  form.sn = "FZ-SN-WEB-01";
   form.class_id = 1;
 }
 
@@ -124,7 +134,7 @@ function submitProfileStep(): void {
     return;
   }
   if (!form.sn.trim()) {
-    formErr.value = "请填写无人机序列号";
+    formErr.value = DEVICE_SERIAL_UNAVAILABLE;
     return;
   }
   if (!Number.isInteger(form.cert_level) || form.cert_level < 1 || form.cert_level > 4) {
@@ -161,6 +171,18 @@ function enterWorkspace(): void {
   router.push("/record");
 }
 
+// 门户页签键盘导航（视觉 S 批 S5 可及性三修）：role=tab + aria-selected +
+// 左右方向键切换并把焦点带到新页签（可见文本与点击路径零变化）
+const tabLoginBtn = ref<HTMLButtonElement | null>(null);
+const tabRegisterBtn = ref<HTMLButtonElement | null>(null);
+function onTabArrow(): void {
+  const next = tab.value === "login" ? "register" : "login";
+  tab.value = next;
+  void nextTick(() => {
+    (next === "login" ? tabLoginBtn : tabRegisterBtn).value?.focus();
+  });
+}
+
 function backToAccount(): void {
   // 返回第一步=放弃当前账户（若已建）——如实告知需换用户名
   regStep.value = 1;
@@ -185,8 +207,26 @@ const keyFingerprint = computed(() => (pending.value?.pk ?? "").slice(0, 16));
 
     <div class="card fz-enter">
       <div class="tabs" role="tablist">
-        <button class="tab" :class="{ on: tab === 'login' }" @click="tab = 'login'">登录</button>
-        <button class="tab" :class="{ on: tab === 'register' }" @click="tab = 'register'">飞手注册</button>
+        <button
+          ref="tabLoginBtn"
+          class="tab"
+          role="tab"
+          :aria-selected="tab === 'login'"
+          :class="{ on: tab === 'login' }"
+          @click="tab = 'login'"
+          @keydown.left.prevent="onTabArrow"
+          @keydown.right.prevent="onTabArrow"
+        >登录</button>
+        <button
+          ref="tabRegisterBtn"
+          class="tab"
+          role="tab"
+          :aria-selected="tab === 'register'"
+          :class="{ on: tab === 'register' }"
+          @click="tab = 'register'"
+          @keydown.left.prevent="onTabArrow"
+          @keydown.right.prevent="onTabArrow"
+        >飞手注册</button>
       </div>
 
       <!-- 登录 -->
@@ -243,8 +283,10 @@ const keyFingerprint = computed(() => (pending.value?.pk ?? "").slice(0, 16));
           </p>
           <label>身份证号（18 位）</label>
           <input v-model="form.id_number" maxlength="18" />
-          <label>无人机序列号</label>
-          <input v-model="form.sn" class="mono" />
+          <label>无人机序列号（自动读取自本机地面站桥——登记后与凭证绑定，不可手改）</label>
+          <input v-model="form.sn" class="mono" readonly
+                 title="序列号单源=本机地面站桥读数（与飞行解锁校验同一台设备）——用户不可修改" />
+          <p v-if="snReady && !form.sn" class="step-err">{{ DEVICE_SERIAL_UNAVAILABLE }}</p>
           <div class="row2">
             <div>
               <label>资质等级（1..4）</label>
@@ -322,7 +364,7 @@ const keyFingerprint = computed(() => (pending.value?.pk ?? "").slice(0, 16));
 .pw-rules { list-style: none; margin: 8px 0 0; padding: 0; display: grid; grid-template-columns: 1fr 1fr; gap: 3px 14px; }
 .pw-rules li { font-size: 12px; }
 .pw-rules li.ok { color: var(--teal); }
-.pw-rules li.no { color: #b7791f; }
+.pw-rules li.no { color: var(--tone-amber-fg); }
 .row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
 .summary { margin: 12px 0 0; display: grid; gap: 6px; }
 .summary div { display: flex; justify-content: space-between; gap: 12px; }

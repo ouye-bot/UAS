@@ -4,7 +4,6 @@ import RecordView from "./views/RecordView.vue";
 import ApplyView from "./views/ApplyView.vue";
 import FlightView from "./views/FlightView.vue";
 import TrailView from "./views/TrailView.vue";
-import ReceiptView from "./views/ReceiptView.vue";
 import ChainView from "./views/ChainView.vue";
 import AuditView from "./views/AuditView.vue";
 import AdminView from "./views/AdminView.vue";
@@ -20,7 +19,8 @@ export const router = createRouter({
     { path: "/apply", component: ApplyView, meta: { title: "起飞申请", icon: "send", nav: true, role: "pilot" } },
     { path: "/flight", component: FlightView, meta: { title: "令牌与飞行", icon: "craft", nav: true, role: "pilot" } },
     { path: "/trail", component: TrailView, meta: { title: "留痕与合规证明", icon: "trail", nav: true, role: "pilot" } },
-    { path: "/receipt", component: ReceiptView, meta: { title: "回执查询", icon: "ticket", nav: true } },  // 零身份查询（D19）：回执码即凭据，跨设备无登录直达
+    // 回执查询页已删除（2026-10-04 队长指令）——回执码消费主路径=FlightView
+    // 取件；GET /authz/receipt/{code} 零身份公开端点保留（能力不删，删的是页面）
     { path: "/chain", component: ChainView, meta: { title: "链上留痕", icon: "chain", nav: true } },
     // 审计员 / 机构管理员工作台（2026-09-29 账户批 B3：飞手端同风格 Vue 重做）
     { path: "/audit", component: AuditView, meta: { title: "审计台", icon: "shield", nav: true, role: "auditor" } },

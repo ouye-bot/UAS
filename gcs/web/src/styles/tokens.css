@@ -22,12 +22,36 @@
   --teal: #0e7490;
   --gold: #a8862d;
   --gold-soft: #f7f1df;
+  /* 金色合流脉冲（丙-2 M3 双控批准瞬间——既有 --gold 色相 × 透明度分层） */
+  --gold-pulse: rgba(168, 134, 45, 0.4);
   --ok: #2e9e6b;
   --ok-soft: #e8f6ef;
   --bad: #d64545;
   --bad-soft: #fdeeee;
   --warn: #c07f1f;
   --warn-soft: #fdf3e2;
+
+  /* 徽章六色令牌（视觉 S 批 S3）：fz-badge/fz-pill/fz-kpi 的单一事实源——
+     每色 fg/bg/line 三件。取值=原硬编码逐字节搬运（视觉零变化重构）。
+     视图内同值硬编码一并换引（仅精确等值替换，非等值处保持原样）。 */
+  --tone-amber-fg: #b7791f;
+  --tone-amber-bg: #faf3e3;
+  --tone-amber-line: #ecd9ae;
+  --tone-blue-fg: #3b6ea5;
+  --tone-blue-bg: #ecf3fb;
+  --tone-blue-line: #c9dbf3;
+  --tone-teal-fg: #2e8577;
+  --tone-teal-bg: #e8f4f1;
+  --tone-teal-line: #bfe0d9;
+  --tone-gold-fg: #8a6d2f;
+  --tone-gold-bg: #f7f1e2;
+  --tone-gold-line: #e3d4ae;
+  --tone-red-fg: #a33;
+  --tone-red-bg: #faeaea;
+  --tone-red-line: #f2caca;
+  --tone-gray-fg: var(--ink-3);
+  --tone-gray-bg: var(--panel);
+  --tone-gray-line: var(--line);
 
   /* 表面阶梯（视觉深化批 A：分层玻璃质感——每级=底色+顶部内高光）。
      --glass-hi 用于面板 ::before 顶部 1px 高光线（ rgba 白 0.6 级）。 */

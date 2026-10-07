@@ -47,8 +47,12 @@ class FakeDeps(service.AuthzDeps):
         self.pin_fingerprint = lambda: "SM3(test|pin)"  # 本地指纹替身
 
 
-def _honest_sub_credential(session_pk_hex: str = "11" * 64):
-    """诚实子凭证材料（黄金向量同构——确定性钥）。"""
+def _honest_sub_credential(session_pk_hex: str = "11" * 64, exp_u: int = 1900000000):
+    """诚实子凭证材料（黄金向量同构——确定性钥）。
+
+    exp_u 形参（S6 闭环）：缺省 1900000000（2030 远期——既有正例/负例不受扰），
+    覆盖率负例传短效期（exp_u<t_end）构造「合法签名+短命凭证」攻击形态。
+    """
     _sk, ra_pub = ra_signing_keypair()
     msg = build_message(
         ra_pub,
@@ -58,7 +62,7 @@ def _honest_sub_credential(session_pk_hex: str = "11" * 64):
         3,
         b"FZ-SN-AUTHZ-TEST",
         session_pk_hex,
-        1900000000,
+        exp_u,
     )
     _priv, _pub = ra_signing_keypair()
     sig = sign_credential(_priv, msg)
@@ -88,8 +92,47 @@ def test_policy_params_hash_stable():
 # ---- T2 门控序 ----
 
 
-def _apply_kwargs(session_pk_hex=_VALID_PK, **over):
-    _ra_pub, msg, sig = _honest_sub_credential(session_pk_hex)
+def _seed_sn_chain(session, msg: bytes):
+    """SN 绑定换代（2026-10-06）测试播种：sub_cred_hash→SubCredential→
+    Credential.serial_hex 的服务端溯源链（诚实流=RA 签发落库；门控测试直插行）。"""
+    import datetime as _dt
+
+    from app.ra.models import Credential, SubCredential, User
+
+    from app.crypto.sm3 import sm3_bytes as _sm3b
+
+    user = User(username="gate-sn-" + secrets.token_hex(6), pub_key_hex="11" * 64)
+    session.add(user)
+    session.flush()
+    cred = Credential(
+        user_id=user.id,
+        commitment_hex=secrets.token_bytes(32).hex(),
+        master_cred_hash_hex=secrets.token_bytes(32).hex(),
+        sn_hash_hex="00" * 16,
+        serial_hex=b"FZ-SN-AUTHZ-TEST".hex(),
+        id_cipher=b"",
+        cert_level=3,
+        expires_at=_dt.datetime.utcfromtimestamp(1900000000),
+    )
+    session.add(cred)
+    session.flush()
+    session.add(
+        SubCredential(
+            credential_id=cred.id,
+            sub_cred_hash_hex=_sm3b(msg).hex(),
+            message_hex=msg.hex(),
+            sig_hex="00" * 64,
+            holder_pub_hex="11" * 64,
+            expires_at=_dt.datetime.utcfromtimestamp(1900000000),
+        )
+    )
+    session.commit()
+
+
+def _apply_kwargs(session, session_pk_hex=_VALID_PK, exp_u: int = 1900000000, **over):
+    _ra_pub, msg, sig = _honest_sub_credential(session_pk_hex, exp_u=exp_u)
+    if session is not None:
+        _seed_sn_chain(session, msg)
     plan_hash_hex = secrets.token_bytes(32).hex()
     nonce_hex = secrets.token_bytes(16).hex()
     # 子凭证哈希=服务器签发面同式 sm3(M_A′)（ra/service.py:247）——2026-09-28
@@ -115,18 +158,98 @@ def _apply_kwargs(session_pk_hex=_VALID_PK, **over):
 
 
 def test_gate_honest_application_enqueued(session):
-    kw = _apply_kwargs()
+    kw = _apply_kwargs(session)
     row = service.admission_gate(session, FakeDeps(), **kw)
     assert row.status == "pending"
     r = session.get(Receipt, row.receipt_id)
     assert len(r.code_hex) == 32  # 128bit 回执码
 
 
+# ---- T2 SN 绑定换代（2026-10-06）：实例 26 门控+服务端权威 sn_hash ----
+
+
+def test_gate_sn_hash_low_instance_count_rejected(session):
+    """受理门控实例数下限 26：25 项（旧代产物）= instances_malformed 拒绝。"""
+    kw = _apply_kwargs(session)
+    import json as _json
+
+    doc = _json.load(open(kw["spec_path"], encoding="utf-8"))
+    doc["instances"] = doc["instances"][:25]
+    _json.dump(doc, open(kw["spec_path"], "w", encoding="utf-8"))
+    with pytest.raises(service.AuthzError) as ei:
+        service.admission_gate(session, FakeDeps(), **kw)
+    assert ei.value.code == "instances_malformed"
+
+
+def test_gate_sn_hash_instance_mismatch_rejected(session):
+    """实例 25 与服务端自算 SM3(serial) 不符（客户端自报/换机形态）=拒绝。"""
+    kw = _apply_kwargs(session)
+    import json as _json
+
+    doc = _json.load(open(kw["spec_path"], encoding="utf-8"))
+    doc["instances"][25] = "11" * 32
+    _json.dump(doc, open(kw["spec_path"], "w", encoding="utf-8"))
+    with pytest.raises(service.AuthzError) as ei:
+        service.admission_gate(session, FakeDeps(), **kw)
+    assert ei.value.code == "instance_mismatch"
+
+
+def test_server_sn_hash_authoritative_from_db(session):
+    """服务端权威 sn_hash：DB 溯源链（sub_cred_hash→sub_credentials→
+    credentials.serial_hex）自算 SM3 全 32B——零客户端自报；历史行缺
+    serial_hex=fail-closed 人话拒绝（sn_unresolved）。"""
+    from app.crypto.sm3 import sm3_bytes as _sm3b
+
+    kw = _apply_kwargs(session)
+    want = _sm3b(b"FZ-SN-AUTHZ-TEST").hex()
+    got = service.server_sn_hash_hex(session, kw["sub_cred_hash_hex"])
+    assert got == want, "DB 溯源自算 = SM3(serial) 全 32B"
+    # 未知子凭证：404 形态拒绝。
+    with pytest.raises(service.AuthzError) as ei:
+        service.server_sn_hash_hex(session, "ab" * 32)
+    assert ei.value.code == "sub_cred_unknown"
+    # 历史凭证无 serial 溯源：fail-closed。
+    from sqlalchemy import select as _sel
+
+    from app.ra.models import Credential
+
+    cred = session.scalar(_sel(Credential))
+    cred.serial_hex = None
+    session.commit()
+    with pytest.raises(service.AuthzError) as ei:
+        service.server_sn_hash_hex(session, kw["sub_cred_hash_hex"])
+    assert ei.value.code == "sn_unresolved"
+
+
+def test_build_token_carries_sn_hash_in_signed_body(session):
+    """令牌载荷增 sn_hash——入 body ⟹ engine 签名域覆盖（sign_token 对 body
+    原文签名；桥第 6 查消费同一字段）。"""
+    import json as _json
+
+    from app.authz.service import sign_token, token_hash
+
+    sn = service.server_sn_hash_hex(session, _apply_kwargs(session)["sub_cred_hash_hex"])
+    body = service.build_token(
+        auth_id=1,
+        plan_hash_hex="ab" * 32,
+        alt_max=120,
+        t_start=_NOW,
+        t_end=_NOW + 3600,
+        nonce_hex="ef" * 16,
+        policy_version="policy-2026-09-v1",
+        sn_hash_hex=sn,
+    )
+    tok = _json.loads(body)
+    assert tok["sn_hash"] == sn, "令牌载荷携带服务端权威 sn_hash"
+    sig = sign_token(body)
+    assert len(sig) == 128 and len(token_hash(body)) == 64
+
+
 def test_gate_sub_cred_hash_mismatch_rejected(session):
     """安全深检 A-P1-1 根修正例：同 (msg,sig) 配不同哈希=一张子凭证铸多授权的
     攻击面——门控服务器重算 sm3(M_A′) 对拍，不一致即拒（一次性查重键自此=
     服务器权威值）。"""
-    kw = _apply_kwargs(sub_cred_hash_hex=secrets.token_bytes(32).hex())
+    kw = _apply_kwargs(session, sub_cred_hash_hex=secrets.token_bytes(32).hex())
     with pytest.raises(service.AuthzError) as ei:
         service.admission_gate(session, FakeDeps(), **kw)
     assert ei.value.code == "sub_cred_hash_mismatch"
@@ -134,7 +257,7 @@ def test_gate_sub_cred_hash_mismatch_rejected(session):
 
 def test_gate_sub_cred_hash_case_insensitive(session):
     """大写 hex 哈希同样放行（对拍按字节语义归一）。"""
-    kw = _apply_kwargs()
+    kw = _apply_kwargs(session)
     kw["sub_cred_hash_hex"] = kw["sub_cred_hash_hex"].upper()
     row = service.admission_gate(session, FakeDeps(), **kw)
     assert row.status == "pending"
@@ -142,7 +265,7 @@ def test_gate_sub_cred_hash_case_insensitive(session):
 
 def test_gate_bad_session_key_rejected(session):
     # 凭证用合法钥构造，仅受理面的会话公钥坏（分离被测面）
-    kw = _apply_kwargs()
+    kw = _apply_kwargs(session)
     kw["session_pk_hex"] = "zz" * 64
     with pytest.raises(service.AuthzError) as ei:
         service.admission_gate(session, FakeDeps(), **kw)
@@ -152,7 +275,7 @@ def test_gate_bad_session_key_rejected(session):
 def test_gate_bad_sub_signature_rejected(session):
     _ra, msg, _sig = _honest_sub_credential()
     bad = "0" + secrets.token_hex(63)
-    kw = _apply_kwargs(sub_cred_message_hex=msg.hex(), sub_sig_hex=bad)
+    kw = _apply_kwargs(session, sub_cred_message_hex=msg.hex(), sub_sig_hex=bad)
     with pytest.raises(service.AuthzError) as ei:
         service.admission_gate(session, FakeDeps(), **kw)
     assert ei.value.code == "bad_sub_signature"
@@ -160,14 +283,14 @@ def test_gate_bad_sub_signature_rejected(session):
 
 def test_gate_burned_nonce_rejected(session):
     nonce = secrets.token_bytes(16)
-    kw = _apply_kwargs(nonce_hex=nonce.hex())
+    kw = _apply_kwargs(session, nonce_hex=nonce.hex())
     with pytest.raises(service.AuthzError) as ei:
         service.admission_gate(session, FakeDeps(nonce_used={nonce}), **kw)
     assert ei.value.code == "nonce_used"
 
 
 def test_gate_subcred_replay_rejected(session):
-    kw = _apply_kwargs()
+    kw = _apply_kwargs(session)
     service.admission_gate(session, FakeDeps(), **kw)
     with pytest.raises(service.AuthzError) as ei:
         service.admission_gate(session, FakeDeps(), **kw)
@@ -177,7 +300,7 @@ def test_gate_subcred_replay_rejected(session):
 def test_gate_stale_t_epoch_backdating_rejected(session):
     # R1 收口对抗自查增面：远古 t_start（证明语句 exp 检查空转+窗口洗白）——即使
     # 实例一致性门被绕过（instances 21 同值），时间锚新鲜度门独立拒绝。
-    kw = _apply_kwargs(t_start=_NOW - 10 * 365 * 86400, t_end=_NOW - 10 * 365 * 86400 + 3600)
+    kw = _apply_kwargs(session, t_start=_NOW - 10 * 365 * 86400, t_end=_NOW - 10 * 365 * 86400 + 3600)
     import json as _json
 
     from app.authz.service import _fe_be32_hex_from_u64
@@ -191,17 +314,44 @@ def test_gate_stale_t_epoch_backdating_rejected(session):
 
 
 def test_gate_stale_rev_root_rejected(session):
-    kw = _apply_kwargs(rev_root_hex="aa" * 32)
+    kw = _apply_kwargs(session, rev_root_hex="aa" * 32)
     with pytest.raises(service.AuthzError) as ei:
         service.admission_gate(session, FakeDeps(), **kw)
     assert ei.value.code == "stale_rev_root"
 
 
 def test_gate_unsupported_class_rejected(session):
-    kw = _apply_kwargs(class_id=2)
+    kw = _apply_kwargs(session, class_id=2)
     with pytest.raises(service.AuthzError) as ei:
         service.admission_gate(session, FakeDeps(), **kw)
     assert ei.value.code == "unsupported_class"
+
+
+# ---- S6 安全闭环：凭证有效期必须覆盖整个授权窗 ----
+
+
+def test_gate_cred_expired_window_rejected(session):
+    """S6 闭环负例①（2026-10-04）：exp_u < t_end → 409 cred_expired_window。
+
+    攻击形态：持 exp_u=now+1min 的合法子凭证（RA 签名为真）申请满 6h 授权窗
+    ——AUTH 电路只证 exp_u ≥ t_epoch（实例 21=t_start，出证时刻）⟹ 电路为真；
+    既有受理门核对窗口自洽与 t_epoch 新鲜度，全文无一处核对凭证有效期覆盖
+    授权窗 ⟹ 令牌覆盖凭证死后近 6 小时。宿主面补核对：exp_u ≥ t_end。
+    """
+    kw = _apply_kwargs(session, exp_u=_NOW + 60, t_end=_NOW + 3600)
+    with pytest.raises(service.AuthzError) as ei:
+        service.admission_gate(session, FakeDeps(), **kw)
+    assert ei.value.code == "cred_expired_window"
+    assert ei.value.status == 409
+
+
+def test_gate_cred_window_boundary_exp_equals_t_end_passes(session):
+    """S6 闭环负例②（边界）：exp_u == t_end 恰好覆盖 → 放行且 exp_u 落库
+    （判决件 expected.exp_u 的归档源——第三方可自行核对覆盖关系）。"""
+    kw = _apply_kwargs(session, exp_u=_NOW + 3600, t_end=_NOW + 3600)
+    row = service.admission_gate(session, FakeDeps(), **kw)
+    assert row.status == "pending"
+    assert row.exp_u == _NOW + 3600
 
 
 # ---- 匿名红线（B4 验收门）----
@@ -217,7 +367,7 @@ def test_tables_zero_identity_columns():
 
 
 def test_receipt_fetch_lifecycle(session):
-    kw = _apply_kwargs()
+    kw = _apply_kwargs(session)
     row = service.admission_gate(session, FakeDeps(), **kw)
     r = session.get(Receipt, row.receipt_id)
     out = service.receipt_of(session, r.code_hex)
@@ -228,7 +378,7 @@ def test_receipt_fetch_lifecycle(session):
 
 def test_gate_pin_mismatch_rejected(session):
     """门控④错 pin 负例（B4 验收门：错 pin 不进 ZK 队列）。"""
-    kw = _apply_kwargs()
+    kw = _apply_kwargs(session)
 
     class PinDeps(FakeDeps):
         def __init__(self):
@@ -259,7 +409,10 @@ def _make_case(plan_hash_hex, nonce_hex):
 
     d = _os.path.join(tempfile.mkdtemp(prefix="fzcase"), plan_hash_hex[:16])
     _os.makedirs(d, exist_ok=True)
-    inst = ["0" * 64] * 25
+    # SN 绑定换代（2026-10-06）：实例面 25→26——索引 25=sn_hash（SM3(serial)
+    # 全 32B BE 折叠；serial 与 _honest_sub_credential 的 build_message 同源）。
+    inst = ["0" * 64] * 26
+    inst[25] = _fe_be32_hex_from_bytes32(sm3_bytes(b"FZ-SN-AUTHZ-TEST"))  # 词折叠环同 SMT 根（prove 窗定谳）
     challenge = binding_challenge(plan_hash_hex, nonce_hex)
     inst[19] = _fe_be32_hex_from_digest(sm3_bytes(bytes.fromhex(challenge)))
     pred_str = plan_hash_hex + "|" + nonce_hex + "|" + POLICY_VERSION
@@ -322,7 +475,7 @@ def test_gate_policy_callable_false_fail_closed(session):
             super().__init__()
             self.chain_policy_published = lambda: False  # noqa: E731
 
-    kw = _apply_kwargs()
+    kw = _apply_kwargs(session)
     with pytest.raises(service.AuthzError) as ei:
         service.admission_gate(session, ProxyDeps(), **kw)
     assert ei.value.code == "policy_unpublished"
@@ -336,5 +489,5 @@ def test_gate_policy_callable_true_passes(session):
             super().__init__()
             self.chain_policy_published = lambda: True  # noqa: E731
 
-    row = service.admission_gate(session, ProxyDeps(), **_apply_kwargs())
+    row = service.admission_gate(session, ProxyDeps(), **_apply_kwargs(session))
     assert row.status == "pending"

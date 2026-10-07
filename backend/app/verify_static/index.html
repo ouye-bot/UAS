@@ -83,8 +83,8 @@ code { font-family:var(--mono); background:var(--acc-soft); border-radius:4px; p
   <table>
     <tbody>
       <tr><th style="width:220px">源码钉定</th><td>vendor 快照 <span class="mono">plonkish-4201a82</span>（148 文件，逐文件 SM3 清单+聚合摘要）</td></tr>
-      <tr><th>电路指纹（公示值）</th><td class="mono hash">SM3(4201a829…|a5714181…) = 17a90dc1b1518c1878d3cecb4236b37ed03ffeb0886418fb8390eeac02ac46e9</td></tr>
-      <tr><th>链上公示</th><td>FISCO BCOS FlightAuthRegistry.pinCircuit（tx <span class="mono">0x522a248d…</span>）——受理门控逐笔比对，漂移即拒</td></tr>
+      <tr><th>电路指纹（公示值）</th><td class="mono hash" id="pin-cell">读取中…</td></tr>
+      <tr><th>链上公示</th><td>FISCO BCOS <span class="mono">PolicyRegistry.circuitPin</span>——受理门控逐笔比对，漂移即拒（当值比对结果见上行）</td></tr>
       <tr><th>构建形态</th><td>zkc-linux-amd64：Ubuntu（WSL2）native 构建，构建源 vendor 树与官方钉定快照 <span class="mono">diff -rq</span> 逐位一致；<br>zkc.wasm：同源 wasm32-wasip1 编译（跨架构移植，GF(2^128) 双路实现+双路一致性测试）</td></tr>
       <tr><th>随发声明面</th><td><a class="dl" href="/verify/dist/zksvc-build-manifest.json">zksvc-build-manifest.json</a>（钉定 commit/聚合摘要——与上表公示指纹同源）</td></tr>
     </tbody>
@@ -129,6 +129,16 @@ fetch('/verify/api/checks').then(r => r.json()).then(j => {
     return `<tr><td><a class="dl" href="/verify/dist/${a.name}">${a.name}</a></td><td class="mono">${kb}</td><td class="mono hash">${a.sha256}</td></tr>`;
   }).join('');
   document.getElementById('files').innerHTML = rows;
+  const pin = j.data && j.data.pin, cell = document.getElementById('pin-cell');
+  if (cell) {
+    if (pin && pin.local_digest_hex) {
+      let v = `${pin.local_str} = ${pin.local_digest_hex}`;
+      if (pin.match === true) v += '  ✓ 与链上一致';
+      else if (pin.match === false) v += '  ✗ 与链上不一致（勿使用本工具）';
+      else v += '  （链上未回读）';
+      cell.textContent = v;
+    } else { cell.textContent = '本地指纹不可得（FZ_ZKSVC_DIR 未配置）'; }
+  }
 }).catch(() => { document.getElementById('status').textContent = '校验值读取失败'; });
 </script>
 </body>

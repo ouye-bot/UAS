@@ -175,7 +175,46 @@ class AuditService:
                     row.unlocked_master_cred_hash_hex, row.target_auth_id
                 )
         out["chain_fingerprint"] = self._d.anchor.chain_fingerprint()
+        out["closure"] = self._closure_view(row)
         return out
+
+    def _closure_view(self, w: Warrant) -> dict | None:
+        """结案完整面（0018 A6，前端渲染契约）：该令状最近一次结案的
+        结论/说明/双控签名+结案签名/实名哈希/案卷指纹——未结案=None
+        （诚实缺省）。台账行+请求行并读（台账=终局锚，请求行=双控面）。"""
+        from sqlalchemy import select as _sel
+
+        from app.accounts.models import CaseLedger, CollabRequest
+
+        row = self._s.scalar(
+            _sel(CaseLedger)
+            .where(CaseLedger.warrant_hash_hex == w.warrant_hash_hex)
+            .order_by(CaseLedger.id.desc())
+            .limit(1)
+        )
+        if row is None:
+            return None
+        req = self._s.scalar(
+            _sel(CollabRequest).where(CollabRequest.req_hash_hex == row.req_hash_hex)
+        )
+        return {
+            "req_id": req.id if req else None,
+            "req_hash_hex": row.req_hash_hex,
+            "case_no": row.case_no,
+            "action": row.action,
+            "conclusion": row.conclusion,
+            "conclusion_text": row.conclusion_text,
+            "auditor_username": req.auditor_username if req else row.operator,
+            "auditor_sig_hex": req.auditor_sig_hex if req else None,
+            "admin_username": req.admin_username if req else None,
+            "admin_sig_hex": req.admin_sig_hex if req else None,
+            "conclusion_sig_hex": row.sig_hex,
+            "fzc2_fingerprint_hex": req.fzc2_fingerprint_hex if req else None,
+            "closed_by": row.operator,
+            "identity_hash_hex": row.identity_hash_hex,
+            "case_archive_fp_hex": row.case_archive_fp_hex,
+            "closed_ts": row.closed_ts.isoformat() if row.closed_ts else None,
+        }
 
     def _device_check(self, master_cred_hash_hex: str, auth_id: int) -> dict:
         """核对检查点设备签名与登记 SN₁ 派生公钥（审计台时间线节点数据源）。"""

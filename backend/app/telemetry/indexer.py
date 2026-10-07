@@ -20,6 +20,13 @@ from sqlalchemy.orm import Session
 from app.telemetry.models import ChainEvent
 
 
+def _seen_back_blocks() -> int:
+    """seen 集合近窗宽（块数，缺省 10000）：游标只前进——更早的行永不重扫，
+    幂等键只需覆盖「乱序/回滚/对账重扫」的近窗。旧形态全表载入 ⟹ 内存随
+    chain_events 线性涨（长期运行慢性泄漏），近窗根治。"""
+    return int(os.environ.get("FZ_INDEXER_SEEN_BACK_BLOCKS", "10000"))
+
+
 def index_events(
     session: Session,
     *,
@@ -29,8 +36,12 @@ def index_events(
     end: int,
     anchor_address: str,
 ) -> int:
-    """扫描 [start, end] 块区间，落库锚定合约事件。返回新插入行数。"""
+    """扫描 [start, end] 块区间，落库锚定合约事件。返回新插入行数。
+
+    幂等 seen 集合=近窗载入（[start-窗宽, ∞) 的已索引行）——游标前更早的行
+    不参与去重（它们所在块不会被再次扫描）。"""
     inserted = 0
+    seen_floor = max(0, int(start) - _seen_back_blocks())
     seen_rows = session.execute(
         select(
             ChainEvent.tx_hash,
@@ -38,7 +49,7 @@ def index_events(
             ChainEvent.auth_id,
             ChainEvent.event_type,
             ChainEvent.event_hash_hex,
-        )
+        ).where(ChainEvent.block >= seen_floor)
     ).all()
     seen_keys = {(tx, int(block), int(aid), int(et), eh) for tx, block, aid, et, eh in seen_rows}
     for block in range(start, end + 1):

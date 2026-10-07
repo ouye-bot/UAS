@@ -9,11 +9,12 @@ FlightGlobe 键名错位三案同族）——逐屏驱动**构建产物**（vite
 桥 :8110（FakeLink——SITL 档属真飞流程，由 e2e_frontend_api/S1 覆盖）+
 vite preview :5199（gcs/web 构建产物）。浏览器经 localStorage 注入夹具地址。
 
-覆盖（2026-09-29 账户批改写）：⓪门户注册正例+弱密码负例+错密码登录负例 /
-①子凭证签发 / ②政策面 / ③飞行屏初始态+步进器 / ④TRAIL 窗口+证书卡持久化
-+分发页链接 / ⑤随机码 404 / ⑥面板渲染 / 审计台 Vue（审计员登录→步进器+收件
-箱）/ 机构台 Vue（管理员登录→待批+台账+吊销）/ 越权 401/403（API 实弹）/
-服务状态点双绿 / 全程零 pageerror（JS 崩溃即红）。
+覆盖（2026-09-29 账户批改写；2026-10-04 删回执查询页=⑤ 段随之退役）：
+⓪门户注册正例+弱密码负例+错密码登录负例 / ①子凭证签发 / ②政策面 /
+③飞行屏初始态+步进器 / ④TRAIL 窗口+证书卡持久化+分发页链接 /
+⑥面板渲染 / 审计台 Vue（审计员登录→步进器+收件箱）/ 机构台 Vue
+（管理员登录→待批+台账+吊销）/ 越权 401/403（API 实弹）/ 服务状态点
+双绿 / 全程零 pageerror（JS 崩溃即红）。
 
 用法：cd uas/backend && ./.venv/Scripts/python.exe scripts/e2e_browser_ui.py
 前置：playwright 已装 venv（chromium 用 %LOCALAPPDATA%\\ms-playwright 缓存）。
@@ -207,6 +208,15 @@ def run_tests(tmp: Path) -> None:
         page.click("button:has-text('生成密钥并建账户')")
         page.wait_for_selector("text=补全实名与无人机资料", timeout=30000)
         ok("⓪.4a 账户建立（密钥指纹展示——服务器只有密封件）")
+        # SN 单源换代（2026-10-07）：注册表单序列号=桥 /engine_pub 读数只读预填
+        # （用户看得到注册的是哪台设备、不可手改——自由 SN 首次 ARM 必 sn_mismatch
+        # 的产品缺口就此钉死）。夹具桥缺省锚=FZ-SN-DEV-01。
+        sn_input = page.locator("input[readonly][title*='序列号']")
+        expect(sn_input.count() >= 1 and sn_input.first.get_attribute("readonly") is not None,
+               "⓪.4a-2 SN 单源：注册序列号只读（桥读数预填——用户不可改）")
+        expect(sn_input.first.input_value() == "FZ-SN-DEV-01",
+               "⓪.4a-3 SN 单源：预填值=桥 device_serial（缺省锚 FZ-SN-DEV-01）",
+               f"got={sn_input.first.input_value()!r}")
         page.click("button:has-text('填入示例数据')")
         page.click("button:has-text('提交资料并签发上链')")
         page.wait_for_selector("text=进入飞证工作台", timeout=60000)
@@ -255,6 +265,14 @@ def run_tests(tmp: Path) -> None:
         page.wait_for_selector("text=政策", timeout=10000)
         expect(page.locator("text=政策").count() > 0 or page.locator("text=上限").count() > 0,
                "②.1 申请页渲染（政策上限公示）")
+        # SN 单源换代（2026-10-07）：申请页设备序列号=桥读数只读展示（出证与
+        # 解锁同一台设备；读数异步到齐——wait_for_function 钉值不断言盲等）
+        page.wait_for_function(
+            "() => (document.querySelector(\"input[title*='序列号']\")||{}).value === 'FZ-SN-DEV-01'",
+            timeout=15000)
+        ap_sn = page.locator("input[readonly][title*='序列号']")
+        expect(ap_sn.count() >= 1 and ap_sn.first.input_value() == "FZ-SN-DEV-01",
+               "②.2 SN 单源：申请页序列号=桥读数只读展示（用户不可改）")
 
         # ---- ③ 令牌与飞行（初始态+步进器） ----
         page.click("nav button:has-text('令牌与飞行')")
@@ -292,15 +310,9 @@ def run_tests(tmp: Path) -> None:
         expect(verify_link.count() > 0 and f":{API_PORT}/verify/" in verify_link.first.get_attribute("href"),
                "④.5 验证工具分发页链接（指向夹具 backend /verify/）")
 
-        # ---- ⑤ 回执查询（零身份直达+随机码 404） ----
-        page.click("nav button:has-text('回执查询')")
-        page.wait_for_url("**/#/receipt")
-        page.fill("input", secrets.token_hex(8))
-        page.click("button:has-text('查询回执')")
-        page.wait_for_selector(".deny", timeout=10000)
-        expect(page.locator("text=receipt_not_found").count() > 0
-               and page.locator("text=回执码不存在").count() > 0,
-               "⑤.1 随机回执码 → 404 真实拒绝呈现（receipt_not_found）")
+        # ---- ⑤ 回执查询段已删除（2026-10-04 队长指令：页删能力留——
+        # GET /authz/receipt/{code} 的 API 面负例由 e2e_frontend_api ⑤ 段覆盖，
+        # 取件主路径（FlightView 输码→领取令牌）在 ③ 段与 frontend_api 守护） ----
 
         # ---- ⑥ 链上留痕 ----
         page.click("nav button:has-text('链上留痕')")
@@ -377,6 +389,12 @@ def run_tests(tmp: Path) -> None:
                and (page.locator("text=zkc-linux-amd64").count() > 0
                     or page.locator("text=未生成").count() > 0),
                "④.6 分发页可达（产物行或诚实「未生成」）")
+        # 2026-10-04 复查根修守卫：指纹格必须被活数据填充（/verify/api/checks
+        # 实时算本地指纹+链上回读）——不许停留在占位「读取中…」（旧硬编码
+        # 指纹曾随电路换代漂移成旧值 17a90dc1 而无测试拦住）。
+        pin_txt = page.locator("#pin-cell").inner_text()
+        expect(not pin_txt.startswith("读取中"),
+               "④.7 分发页指纹=活数据（JS 已填充，非占位）")
 
         browser.close()
 

@@ -1,0 +1,482 @@
+{
+ "schema_version": 1,
+ "run_id": "0ba83b458da8",
+ "suite": "perf",
+ "env": {
+  "timestamp": "2026-10-03T11:15:55",
+  "git_commit": "cdaae61",
+  "platform": "Windows-11-10.0.26200-SP0",
+  "python": "3.13.12",
+  "hostname": "蜡笔小新",
+  "cores": 16,
+  "ram_gb": 19.8,
+  "circuit": {
+   "name": "AUTH@2026-10 换代",
+   "constraints": 19578,
+   "proof_bytes": 22675632
+  },
+  "prove_max_concurrent": "2",
+  "chain_mode": "",
+  "percentile": "nearest-rank",
+  "warmup": "每档预热 1 次丢弃",
+  "prove_budget": {
+   "used": 5,
+   "cap": 6,
+   "note": "本轮前有两跑各耗 1 张完整预热张（中止于报告面）——预热语义已由其在同栈上的完整出证周期承担"
+  }
+ },
+ "summary": {
+  "total": 22,
+  "passed": 21,
+  "failed": 0,
+  "xfail": 0,
+  "environment_error": 1,
+  "pass_rate": 0.9545,
+  "duration_s": 100.4,
+  "verdict": "failed",
+  "aborted": true,
+  "abort_reason": "P1_prove_pipeline/P1 arm run0: 环境错误——整套中止（{'detail': \"{'_raw': 'Internal Server Error'}\"}）",
+  "attack_success": []
+ },
+ "modules": {
+  "P0_precheck": {
+   "display": "前置探活",
+   "passed": 1,
+   "failed": 0,
+   "xfail": 0,
+   "total": 1,
+   "items": [
+    {
+     "name": "P0 backend:8000 + bridge:8100(SITL) 在线",
+     "verdict": "pass",
+     "expected": "",
+     "actual": "",
+     "defense_ref": "",
+     "attack_success": false,
+     "latency_ms": null,
+     "detail": {
+      "healthz": "ok",
+      "bridge_mode": "sitl"
+     }
+    }
+   ]
+  },
+  "P3_crypto_micro": {
+   "display": "P3 密码操作微基准（进程内梯度）",
+   "passed": 20,
+   "failed": 0,
+   "xfail": 0,
+   "total": 20,
+   "items": [
+    {
+     "name": "P3 sm3_hash@1KB",
+     "verdict": "pass",
+     "expected": "",
+     "actual": "",
+     "defense_ref": "app/crypto/sm3.py",
+     "attack_success": false,
+     "latency_ms": 0.0,
+     "detail": {
+      "op": "sm3_hash@1KB",
+      "size": 1024,
+      "n": 200,
+      "p50_ms": 0.0,
+      "p95_ms": 0.0,
+      "p99_ms": 0.01,
+      "mean_ms": 0.0,
+      "mbps_p50": 221.9,
+      "engine": "openssl"
+     }
+    },
+    {
+     "name": "P3 sm3_hash@10KB",
+     "verdict": "pass",
+     "expected": "",
+     "actual": "",
+     "defense_ref": "app/crypto/sm3.py",
+     "attack_success": false,
+     "latency_ms": 0.03,
+     "detail": {
+      "op": "sm3_hash@10KB",
+      "size": 10240,
+      "n": 200,
+      "p50_ms": 0.03,
+      "p95_ms": 0.03,
+      "p99_ms": 0.05,
+      "mean_ms": 0.03,
+      "mbps_p50": 307.1,
+      "engine": "openssl"
+     }
+    },
+    {
+     "name": "P3 sm3_hash@100KB",
+     "verdict": "pass",
+     "expected": "",
+     "actual": "",
+     "defense_ref": "app/crypto/sm3.py",
+     "attack_success": false,
+     "latency_ms": 0.32,
+     "detail": {
+      "op": "sm3_hash@100KB",
+      "size": 102400,
+      "n": 200,
+      "p50_ms": 0.32,
+      "p95_ms": 0.4,
+      "p99_ms": 0.48,
+      "mean_ms": 0.33,
+      "mbps_p50": 305.2,
+      "engine": "openssl"
+     }
+    },
+    {
+     "name": "P3 sm4gcm_encrypt@1KB",
+     "verdict": "pass",
+     "expected": "",
+     "actual": "",
+     "defense_ref": "app/crypto/sm4.py",
+     "attack_success": false,
+     "latency_ms": 0.01,
+     "detail": {
+      "op": "sm4gcm_encrypt@1KB",
+      "size": 1024,
+      "n": 200,
+      "p50_ms": 0.01,
+      "p95_ms": 0.03,
+      "p99_ms": 0.03,
+      "mean_ms": 0.02,
+      "mbps_p50": 69.8,
+      "engine": "openssl"
+     }
+    },
+    {
+     "name": "P3 sm4gcm_encrypt@10KB",
+     "verdict": "pass",
+     "expected": "",
+     "actual": "",
+     "defense_ref": "app/crypto/sm4.py",
+     "attack_success": false,
+     "latency_ms": 0.08,
+     "detail": {
+      "op": "sm4gcm_encrypt@10KB",
+      "size": 10240,
+      "n": 200,
+      "p50_ms": 0.08,
+      "p95_ms": 0.1,
+      "p99_ms": 0.12,
+      "mean_ms": 0.08,
+      "mbps_p50": 128.5,
+      "engine": "openssl"
+     }
+    },
+    {
+     "name": "P3 sm4gcm_encrypt@100KB",
+     "verdict": "pass",
+     "expected": "",
+     "actual": "",
+     "defense_ref": "app/crypto/sm4.py",
+     "attack_success": false,
+     "latency_ms": 0.71,
+     "detail": {
+      "op": "sm4gcm_encrypt@100KB",
+      "size": 102400,
+      "n": 200,
+      "p50_ms": 0.71,
+      "p95_ms": 0.77,
+      "p99_ms": 0.82,
+      "mean_ms": 0.72,
+      "mbps_p50": 137.9,
+      "engine": "openssl"
+     }
+    },
+    {
+     "name": "P3 sm4gcm_decrypt@1KB",
+     "verdict": "pass",
+     "expected": "",
+     "actual": "",
+     "defense_ref": "app/crypto/sm4.py",
+     "attack_success": false,
+     "latency_ms": 0.01,
+     "detail": {
+      "op": "sm4gcm_decrypt@1KB",
+      "size": 1024,
+      "n": 200,
+      "p50_ms": 0.01,
+      "p95_ms": 0.02,
+      "p99_ms": 0.03,
+      "mean_ms": 0.01,
+      "mbps_p50": 69.3,
+      "engine": "openssl"
+     }
+    },
+    {
+     "name": "P3 sm4gcm_decrypt@10KB",
+     "verdict": "pass",
+     "expected": "",
+     "actual": "",
+     "defense_ref": "app/crypto/sm4.py",
+     "attack_success": false,
+     "latency_ms": 0.08,
+     "detail": {
+      "op": "sm4gcm_decrypt@10KB",
+      "size": 10240,
+      "n": 200,
+      "p50_ms": 0.08,
+      "p95_ms": 0.1,
+      "p99_ms": 0.11,
+      "mean_ms": 0.08,
+      "mbps_p50": 126.3,
+      "engine": "openssl"
+     }
+    },
+    {
+     "name": "P3 sm4gcm_decrypt@100KB",
+     "verdict": "pass",
+     "expected": "",
+     "actual": "",
+     "defense_ref": "app/crypto/sm4.py",
+     "attack_success": false,
+     "latency_ms": 0.73,
+     "detail": {
+      "op": "sm4gcm_decrypt@100KB",
+      "size": 102400,
+      "n": 200,
+      "p50_ms": 0.73,
+      "p95_ms": 0.91,
+      "p99_ms": 1.27,
+      "mean_ms": 0.76,
+      "mbps_p50": 133.0,
+      "engine": "openssl"
+     }
+    },
+    {
+     "name": "P3 sm2_sign@1KB",
+     "verdict": "pass",
+     "expected": "",
+     "actual": "",
+     "defense_ref": "app/crypto/sm2.py",
+     "attack_success": false,
+     "latency_ms": 3.85,
+     "detail": {
+      "op": "sm2_sign@1KB",
+      "size": 1024,
+      "n": 200,
+      "p50_ms": 3.85,
+      "p95_ms": 5.24,
+      "p99_ms": 5.86,
+      "mean_ms": 4.04,
+      "mbps_p50": 0.3,
+      "engine": "openssl"
+     }
+    },
+    {
+     "name": "P3 sm2_sign@10KB",
+     "verdict": "pass",
+     "expected": "",
+     "actual": "",
+     "defense_ref": "app/crypto/sm2.py",
+     "attack_success": false,
+     "latency_ms": 3.93,
+     "detail": {
+      "op": "sm2_sign@10KB",
+      "size": 10240,
+      "n": 200,
+      "p50_ms": 3.93,
+      "p95_ms": 5.55,
+      "p99_ms": 6.18,
+      "mean_ms": 4.15,
+      "mbps_p50": 2.5,
+      "engine": "openssl"
+     }
+    },
+    {
+     "name": "P3 sm2_sign@100KB",
+     "verdict": "pass",
+     "expected": "",
+     "actual": "",
+     "defense_ref": "app/crypto/sm2.py",
+     "attack_success": false,
+     "latency_ms": 4.22,
+     "detail": {
+      "op": "sm2_sign@100KB",
+      "size": 102400,
+      "n": 200,
+      "p50_ms": 4.22,
+      "p95_ms": 6.66,
+      "p99_ms": 7.73,
+      "mean_ms": 4.54,
+      "mbps_p50": 23.1,
+      "engine": "openssl"
+     }
+    },
+    {
+     "name": "P3 sm2_verify@1KB",
+     "verdict": "pass",
+     "expected": "",
+     "actual": "",
+     "defense_ref": "app/crypto/sm2.py",
+     "attack_success": false,
+     "latency_ms": 0.37,
+     "detail": {
+      "op": "sm2_verify@1KB",
+      "size": 1024,
+      "n": 200,
+      "p50_ms": 0.37,
+      "p95_ms": 0.49,
+      "p99_ms": 0.6,
+      "mean_ms": 0.38,
+      "mbps_p50": 2.6,
+      "engine": "openssl"
+     }
+    },
+    {
+     "name": "P3 sm2_verify@10KB",
+     "verdict": "pass",
+     "expected": "",
+     "actual": "",
+     "defense_ref": "app/crypto/sm2.py",
+     "attack_success": false,
+     "latency_ms": 0.32,
+     "detail": {
+      "op": "sm2_verify@10KB",
+      "size": 10240,
+      "n": 200,
+      "p50_ms": 0.32,
+      "p95_ms": 0.54,
+      "p99_ms": 0.85,
+      "mean_ms": 0.36,
+      "mbps_p50": 30.2,
+      "engine": "openssl"
+     }
+    },
+    {
+     "name": "P3 sm2_verify@100KB",
+     "verdict": "pass",
+     "expected": "",
+     "actual": "",
+     "defense_ref": "app/crypto/sm2.py",
+     "attack_success": false,
+     "latency_ms": 0.61,
+     "detail": {
+      "op": "sm2_verify@100KB",
+      "size": 102400,
+      "n": 200,
+      "p50_ms": 0.61,
+      "p95_ms": 1.08,
+      "p99_ms": 1.24,
+      "mean_ms": 0.7,
+      "mbps_p50": 159.4,
+      "engine": "openssl"
+     }
+    },
+    {
+     "name": "P3 derive_kek@21000轮",
+     "verdict": "pass",
+     "expected": "",
+     "actual": "",
+     "defense_ref": "app/accounts/kdf.py",
+     "attack_success": false,
+     "latency_ms": 25.82,
+     "detail": {
+      "op": "derive_kek@21000轮",
+      "size": 64,
+      "n": 200,
+      "p50_ms": 25.82,
+      "p95_ms": 35.64,
+      "p99_ms": 38.24,
+      "mean_ms": 27.28,
+      "mbps_p50": 0.0,
+      "engine": "openssl",
+      "samples_actual": 200,
+      "note": "样本数=200 达标"
+     }
+    },
+    {
+     "name": "P3 derive_auth_r@challenge32",
+     "verdict": "pass",
+     "expected": "",
+     "actual": "",
+     "defense_ref": "zksvc sm2_auth_assemble.rs:87（Python 镜像基准）",
+     "attack_success": false,
+     "latency_ms": 0.0,
+     "detail": {
+      "op": "derive_auth_r@challenge32",
+      "size": 45,
+      "n": 200,
+      "p50_ms": 0.0,
+      "p95_ms": 0.0,
+      "p99_ms": 0.0,
+      "mean_ms": 0.0,
+      "mbps_p50": 35.8,
+      "engine": "openssl",
+      "note": "mod n 省略（<1µs 整数运算）——构造同源口径"
+     }
+    },
+    {
+     "name": "P3 ANOMALY 扫描：无（各梯度族相邻档无 >3× 退化）",
+     "verdict": "pass",
+     "expected": "",
+     "actual": "",
+     "defense_ref": "",
+     "attack_success": false,
+     "latency_ms": null,
+     "detail": {
+      "rule": "大档吞吐 < 小档 1/3 即标异变；固定开销摊销型上升属预期，已给出归因"
+     }
+    },
+    {
+     "name": "P3 摊销形态归因：sm2_sign: 每次调用固定开销主导小档（P50@1KB=3.85ms），大输入摊销后 MB/s 单调上升（0.3→23 MB/s）——",
+     "verdict": "pass",
+     "expected": "",
+     "actual": "",
+     "defense_ref": "perf_suite P3 异变归因规则",
+     "attack_success": false,
+     "latency_ms": null,
+     "detail": {
+      "explained": "sm2_sign: 每次调用固定开销主导小档（P50@1KB=3.85ms），大输入摊销后 MB/s 单调上升（0.3→23 MB/s）——预期形态，已归因"
+     }
+    },
+    {
+     "name": "P3 摊销形态归因：sm2_verify: 每次调用固定开销主导小档（P50@1KB=0.37ms），大输入摊销后 MB/s 单调上升（2.6→159 MB/s",
+     "verdict": "pass",
+     "expected": "",
+     "actual": "",
+     "defense_ref": "perf_suite P3 异变归因规则",
+     "attack_success": false,
+     "latency_ms": null,
+     "detail": {
+      "explained": "sm2_verify: 每次调用固定开销主导小档（P50@1KB=0.37ms），大输入摊销后 MB/s 单调上升（2.6→159 MB/s）——预期形态，已归因"
+     }
+    }
+   ]
+  },
+  "P1_prove_pipeline": {
+   "display": "P1 串行闸出证管线（并发 1 档·真链）",
+   "passed": 0,
+   "failed": 0,
+   "xfail": 0,
+   "total": 1,
+   "items": [
+    {
+     "name": "P1 arm run0",
+     "verdict": "environment_error",
+     "expected": "",
+     "actual": "",
+     "defense_ref": "",
+     "attack_success": false,
+     "latency_ms": null,
+     "detail": {
+      "detail": "{'_raw': 'Internal Server Error'}"
+     }
+    }
+   ]
+  },
+  "P5_e2e_flow": {
+   "display": "P5 端到端账单（与 P1 共享出证）",
+   "passed": 0,
+   "failed": 0,
+   "xfail": 0,
+   "total": 0,
+   "items": []
+  }
+ }
+}

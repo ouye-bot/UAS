@@ -15,9 +15,14 @@ import {
   KeystoreError,
   clearCachedSk,
   cacheSk,
+  KDF_LEGACY_V3_ITERATIONS,
+  type AccountKeystore,
+  deriveActivationVerifier,
   deriveKek,
+  openKeystore,
   openKeystoreV3,
-  sealKeystoreV3,
+  parseKeystoreBlob,
+  sealKeystoreV4,
   sealProfileSlot,
   storeKeystore,
   unsealProfileSlot,
@@ -108,12 +113,12 @@ export function dropPendingRegistration(): void {
   pending = null;
 }
 
-/** 第①步：建账户。浏览器生成 SM2 钥对→密码 KEK 密封（v3）→只上传密封件。 */
+/** 第①步：建账户。浏览器生成 SM2 钥对→密码 KEK 密封（v4=PBKDF2-HMAC-SM3）→只上传密封件。 */
 export async function registerAccount(username: string, password: string): Promise<PendingRegistration> {
   const kp = sm2.generateKeyPairHex();
   const sk = kp.privateKey;
   const pk = kp.publicKey.replace(/^04/, "");
-  const blob = sealKeystoreV3(sk, pk, password);
+  const blob = await sealKeystoreV4(sk, pk, password);
   await api("/auth/register", {
     method: "POST",
     body: JSON.stringify({ username, pubkey_hex: pk, sealed_blob: JSON.stringify(blob) }),
@@ -140,25 +145,25 @@ export async function submitProfile(reg: PendingRegistration, form: ProfileForm)
     method: "POST",
     body: JSON.stringify(form),
   });
-  const sealed = sealProfileSlot({ cred: out, form }, reg.password);
+  const sealed = await sealProfileSlot({ cred: out, form }, reg.password);
   await api("/auth/profile/keep", {
     method: "POST",
     body: JSON.stringify({ sealed_profile: JSON.stringify(sealed) }),
   });
-  finishRegistrationLocal(reg, form, out);
+  await finishRegistrationLocal(reg, form, out);
   return out;
 }
 
 /** 注册完成后的本机落盘（与旧登记流同键位——下游页面零改动）：fzCred/fzForm/
- * 密钥库本地缓存（v3 信封同步落 localStorage 作解锁 UX 快路径）/身份标签。 */
-export function finishRegistrationLocal(
+ * 密钥库本地缓存（v4 信封同步落 localStorage 作解锁 UX 快路径）/身份标签。 */
+export async function finishRegistrationLocal(
   reg: PendingRegistration,
   form: ProfileForm,
   cred: ProfileResult,
-): void {
+): Promise<void> {
   localStorage.setItem("fzCred", JSON.stringify(cred));
   localStorage.setItem("fzForm", JSON.stringify(form));
-  storeKeystore(sealKeystoreV3(reg.sk, reg.pk, reg.password));
+  storeKeystore(await sealKeystoreV4(reg.sk, reg.pk, reg.password));
   cacheSk(reg.sk);
   clearSessionState();
   storeIdentityTag();
@@ -176,16 +181,24 @@ export interface LoginOutcome {
 /** 登录。抛 ApiError（code 区分：activation_failed/密码错=bad_password/限速等）。
  * 密封件解封失败（GCM）=密码错误——本地即判，不猜服务端。 */
 export async function login(username: string, password: string): Promise<LoginOutcome> {
-  const pre = await api<{ mode: "challenge" | "activation"; kdf_salt_hex?: string }>(
-    `/auth/prelogin/${encodeURIComponent(username)}`,
-  );
+  const pre = await api<{
+    mode: "challenge" | "activation";
+    kdf_salt_hex?: string;
+    verifier?: "v1" | "legacy_v3";
+    rounds?: number;
+  }>(`/auth/prelogin/${encodeURIComponent(username)}`);
   if (pre.mode === "activation") {
-    // 预置机构账户首登激活：初始密码核对子一次性比对→钥对生成+密封上传→焚烧
+    // 预置机构账户首登激活：初始密码核对子一次性比对→钥对生成+密封上传→焚烧。
+    // 核对子按 prelogin 下发格式分派复算（v1=独立派生域现行 / legacy_v3=旧种子
+    // 兼容读取——与后端 accounts/kdf.py 同域同参）；密封一律 v4 现行口径。
     const kp = sm2.generateKeyPairHex();
     const sk = kp.privateKey;
     const pk = kp.publicKey.replace(/^04/, "");
-    const verifier = deriveKek(password, pre.kdf_salt_hex ?? "");
-    const blob = sealKeystoreV3(sk, pk, password);
+    const verifier =
+      pre.verifier === "legacy_v3"
+        ? deriveKek(password, pre.kdf_salt_hex ?? "", KDF_LEGACY_V3_ITERATIONS)
+        : await deriveActivationVerifier(password, pre.kdf_salt_hex ?? "", pre.rounds);
+    const blob = await sealKeystoreV4(sk, pk, password, pre.rounds);
     await api("/auth/activate", {
       method: "POST",
       body: JSON.stringify({
@@ -199,10 +212,10 @@ export async function login(username: string, password: string): Promise<LoginOu
   const ks = await api<{ sealed_blob: string; pubkey_hex: string }>(
     `/auth/keystore/${encodeURIComponent(username)}`,
   );
-  const env = parseV3(ks.sealed_blob);
+  const env = parseKeystoreBlob(ks.sealed_blob);
   let sk: string;
   try {
-    sk = openKeystoreV3(env, password);
+    sk = await openKeystore(env, password);
   } catch (e) {
     if (e instanceof KeystoreError) {
       throw new ApiError("bad_password", "密码错误（密封件解封失败）", 401);
@@ -217,7 +230,29 @@ export async function login(username: string, password: string): Promise<LoginOu
   // ——重登后 storedPk()=空 → 子凭证签发/材料指纹全部断。密封件本来就在
   // 手上，解封成功即回写本地缓存（明文钥仍只驻内存）。
   storeKeystore(env);
-  return loginWithSk(username, sk, password);
+  const out = await loginWithSk(username, sk, password);
+  await upgradeKeystoreIfNeeded(env, password); // v3 存量→v4 惰性重封（同口令，无感）
+  return out;
+}
+
+/** v4 惰性升级（批 2-2.1）：存量 v3 密封件解封成功后以同口令 v4 重封并回传
+ * 服务端换新（本地缓存同步）——迁移语义"解锁成功即升级"。尽力而为：失败
+ * 不阻断登录（下次登录自动重试），不打断用户路径。 */
+async function upgradeKeystoreIfNeeded(env: AccountKeystore, password: string): Promise<void> {
+  if (env.v !== 3) return;
+  try {
+    const sk = await openKeystoreV3(env, password);
+    if (!skMatchPub(sk, env.pk)) return;
+    const fresh = await sealKeystoreV4(sk, env.pk, password);
+    await api("/auth/keystore/upgrade", {
+      method: "POST",
+      body: JSON.stringify({ sealed_blob: JSON.stringify(fresh) }),
+    });
+    storeKeystore(fresh);
+    cacheSk(sk); // storeKeystore 清了内存钥缓存——升级路径重挂（同一把钥）
+  } catch (e) {
+    console.warn("[keystore] v4 惰性升级未完成（下次登录自动重试）", e);
+  }
 }
 
 /** 持私钥直登（挑战-应答）：注册第①步建户后静默登录——第②步补资料需要
@@ -247,7 +282,7 @@ async function restoreProfileIfMissing(password: string): Promise<void> {
   const info = await me();
   if (!info?.sealed_profile) return;
   try {
-    const meta = unsealProfileSlot<{ cred: unknown; form: unknown }>(
+    const meta = await unsealProfileSlot<{ cred: unknown; form: unknown }>(
       JSON.parse(info.sealed_profile),
       password,
     );
@@ -262,31 +297,39 @@ async function restoreProfileIfMissing(password: string): Promise<void> {
 
 // ---- 角色钥解锁（审计/机构台敏感签名前置）----
 // 刷新后内存钥已清：本地缓存密钥（若有）或服务器密封件解封——密码只在
-// 解封瞬间使用，解封后钥驻内存（关浏览器即焚）。
+// 解封瞬间使用，解封后钥驻内存（关浏览器即焚）。存量 v3 密封件解封成功
+// 即惰性重封 v4（同口令回传服务端——批 2-2.1 无感升级）。
 export async function unlockSk(password: string): Promise<string> {
-  const { loadKeystore, isLegacyKeystore, openKeystoreV3, openWithPassphrase } = await import("./keystore");
+  const { loadKeystore, isLegacyKeystore, openKeystore, openWithPassphrase } = await import("./keystore");
   const username = cachedUsername();
   if (!username) throw new ApiError("not_logged_in", "未登录", 401);
   const local = loadKeystore();
-  if (local && !isLegacyKeystore(local) && (local as { v?: number }).v === 3) {
-    try {
-      const sk = openKeystoreV3(local as import("./keystore").KeystoreV3, password);
-      if (!skMatchPub(sk, (local as { pk: string }).pk)) throw new KeystoreError("密钥核对失败");
+  if (local && !isLegacyKeystore(local)) {
+    const v = (local as { v?: number }).v;
+    if (v === 3 || v === 4) {
+      let sk = "";
+      try {
+        sk = await openKeystore(local as import("./keystore").AccountKeystore, password);
+        if (!skMatchPub(sk, (local as { pk: string }).pk)) throw new KeystoreError("密钥核对失败");
+      } catch { /* 本地不可用——回落服务器密封件 */ }
+      if (sk) {
+        cacheSk(sk);
+        await upgradeKeystoreIfNeeded(local as import("./keystore").AccountKeystore, password);
+        return sk;
+      }
+    } else {
+      const sk = openWithPassphrase(local as never, password);
       cacheSk(sk);
       return sk;
-    } catch { /* 本地不可用——回落服务器密封件 */ }
-  } else if (local && !isLegacyKeystore(local)) {
-    const sk = openWithPassphrase(local as never, password);
-    cacheSk(sk);
-    return sk;
+    }
   }
   const ks = await api<{ sealed_blob: string; pubkey_hex: string }>(
     `/auth/keystore/${encodeURIComponent(username)}`,
   );
-  const env = parseV3(ks.sealed_blob);
+  const env = parseKeystoreBlob(ks.sealed_blob);
   let sk: string;
   try {
-    sk = openKeystoreV3(env, password);
+    sk = await openKeystore(env, password);
   } catch (e) {
     if (e instanceof KeystoreError) throw new ApiError("bad_password", "密码错误（密封件解封失败）", 401);
     throw e;
@@ -295,6 +338,7 @@ export async function unlockSk(password: string): Promise<string> {
     throw new ApiError("key_mismatch", "密封件与账户公钥不匹配", 409);
   }
   cacheSk(sk);
+  await upgradeKeystoreIfNeeded(env, password);
   return sk;
 }
 
@@ -314,12 +358,4 @@ function skMatchPub(sk: string, pkNo04: string): boolean {
   } catch {
     return false;
   }
-}
-
-function parseV3(text: string): import("./keystore").KeystoreV3 {
-  const o = JSON.parse(text) as import("./keystore").KeystoreV3;
-  if (o?.v !== 3 || typeof o.pk !== "string" || !o.enc) {
-    throw new KeystoreError("密封件形态不符（v3）");
-  }
-  return o;
 }

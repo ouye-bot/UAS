@@ -13,7 +13,8 @@ from app.chain.abi import abi_decode, abi_encode, fn_selector
 BUILD = Path(__file__).resolve().parents[2] / "contracts" / "build"
 CONTRACTS = ("IdentityRegistry", "PolicyRegistry", "FlightAuthRegistry", "TelemetryAnchor")
 
-# 框架 §六接口→源码必须存在的函数集（接口契约锚）
+# 框架 §六接口→源码必须存在的函数集（接口契约锚）；transferAdmin=批 3.2
+# 治理面移交（admin→AdminGovernor 多签+时间锁）
 REQUIRED_FNS = {
     "IdentityRegistry": {
         "registerCommitment",
@@ -21,10 +22,25 @@ REQUIRED_FNS = {
         "setRevocationRoot",
         "logWarrant",
         "isRevoked",
+        "transferAdmin",
     },
-    "PolicyRegistry": {"publishPolicy", "pinCircuit", "setClassRule", "getClassRule"},
-    "FlightAuthRegistry": {"recordAuth", "burnNonce", "revokeAuth", "nonceUsed"},
-    "TelemetryAnchor": {"anchorCheckpoint", "recordEvent", "verifyHead"},
+    "PolicyRegistry": {
+        "publishPolicy",
+        "pinCircuit",
+        "setClassRule",
+        "getClassRule",
+        "transferAdmin",
+    },
+    "FlightAuthRegistry": {
+        "recordAuth",
+        "burnNonce",
+        "revokeAuth",
+        "consumeSortie",
+        "remainingOf",
+        "nonceUsed",
+        "transferAdmin",
+    },
+    "TelemetryAnchor": {"anchorCheckpoint", "recordEvent", "verifyHead", "transferAdmin"},
 }
 
 
@@ -34,6 +50,26 @@ def test_abi_exists_and_required_fns(name):
     fns = {e["name"] for e in abi if e["type"] == "function"}
     missing = REQUIRED_FNS[name] - fns
     assert not missing, f"{name} ABI 缺接口: {missing}"
+
+
+def test_governor_abi_surface():
+    """AdminGovernor 接口契约锚（批 3.2）：多签+时间锁治理面函数与生命周期事件。"""
+    abi = json.loads((BUILD / "AdminGovernor.abi").read_text())
+    fns = {e["name"] for e in abi if e["type"] == "function"}
+    assert {
+        "propose",
+        "confirm",
+        "execute",
+        "cancel",
+        "getProposal",
+        "proposalOfCall",
+        "isOwner",
+        "owners",
+        "required",
+        "delay",
+    } <= fns
+    events = {e["name"] for e in abi if e["type"] == "event"}
+    assert {"Proposed", "Confirmed", "Executed", "Cancelled"} <= events
 
 
 def test_gm_selector_shape():

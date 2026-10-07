@@ -67,6 +67,12 @@ def _apply_body():
         1900000000,
     )
     _p, _pub = ra_signing_keypair()
+    # SN 绑定换代（2026-10-06）：服务端溯源链播种（app DB——受理门/worker
+    # 铸令牌共用 sub_cred_hash→credentials.serial_hex 解析面）。
+    from conftest import seed_sn_chain
+
+    with db_mod.SessionLocal() as _s:
+        seed_sn_chain(_s, msg, b"FZ-SN-E2E")
     plan_hash_hex = "cd" * 32
     nonce_hex = secrets.token_bytes(16).hex()
     # 造真实出证产物目录（instances 由服务端同源折算函数生成——一致性校验可通过）
@@ -84,7 +90,8 @@ def _apply_body():
     zk_dir = _os.environ.get("FZ_ZK_CASES_DIR", "/tmp/fz-zk-cases")
     d = _os.path.join(zk_dir, case_id)
     _os.makedirs(d, exist_ok=True)
-    inst = ["0" * 64] * 25
+    inst = ["0" * 64] * 26
+    inst[25] = _fe_be32_hex_from_bytes32(sm3_bytes(b"FZ-SN-E2E"))  # SN 绑定换代：实例 25
     inst[19] = _fe_be32_hex_from_digest(
         sm3_bytes(bytes.fromhex(binding_challenge(plan_hash_hex, nonce_hex)))
     )
@@ -146,10 +153,72 @@ def test_apply_bad_signature_rejected(client):
     assert resp.json()["code"] == "bad_sub_signature"
 
 
-def test_apply_replay_rejected(client):
+def test_apply_replay_and_case_binding_semantics(client):
+    """重放/案卷绑定语义（批 4-1 换代）：同 case_id 同材料=幂等受理（原申请
+    原回执直接返回）；同子凭证换案卷=409 sub_cred_used（一次性判决不放松）。"""
     body = _apply_body()
-    assert client.post("/authz/apply", json=body).status_code == 200
-    # 同 sub_cred_hash 二次申请（一次性子凭证——链级 usedSubCreds 同族）
-    resp = client.post("/authz/apply", json=body)
+    r1 = client.post("/authz/apply", json=body)
+    assert r1.status_code == 200, r1.text
+    d1 = r1.json()["data"]
+    # 同 body 原样重发（同 case_id 同材料）——幂等：200+同一申请+同一回执码
+    r2 = client.post("/authz/apply", json=body)
+    assert r2.status_code == 200, r2.text
+    d2 = r2.json()["data"]
+    assert d2["application_id"] == d1["application_id"]
+    assert d2["receipt_code"] == d1["receipt_code"]
+    # 库内只此一行（不重复入队）
+    from sqlalchemy import func, select
+
+    from app.authz.models import Application as _A
+    from app.db import SessionLocal as _SL
+
+    _s = _SL()
+    try:
+        n = _s.scalar(select(func.count()).select_from(_A))
+    finally:
+        _s.close()
+    assert n == 1
+
+    # 换案卷（新 case_id）重放同一子凭证——一次性判决原样保留（不因幂等放松）
+    other_case = secrets.token_hex(8)
+    _mk_case_dir(other_case, body["plan_hash_hex"], body["nonce_hex"])
+    body2 = dict(body, case_id=other_case)
+    resp = client.post("/authz/apply", json=body2)
     assert resp.status_code == 409
     assert resp.json()["code"] == "sub_cred_used"
+
+
+def _mk_case_dir(case_id: str, plan_hash_hex: str, nonce_hex: str) -> None:
+    """造出证产物目录（与 _apply_body 同源折算——案卷绑定语义测试用）。"""
+    import os as _os
+
+    from app.authz.policy import POLICY_VERSION as _PV
+    from app.authz.policy import get_rule
+    from app.authz.service import (
+        _fe_be32_hex_from_bytes32,
+        _fe_be32_hex_from_digest,
+        _fe_be32_hex_from_u64,
+        binding_challenge,
+    )
+
+    d = _os.path.join(_os.environ.get("FZ_ZK_CASES_DIR", "/tmp/fz-zk-cases"), case_id)
+    _os.makedirs(d, exist_ok=True)
+    inst = ["0" * 64] * 26
+    inst[25] = _fe_be32_hex_from_bytes32(sm3_bytes(b"FZ-SN-E2E"))  # SN 绑定换代：实例 25
+    inst[19] = _fe_be32_hex_from_digest(
+        sm3_bytes(bytes.fromhex(binding_challenge(plan_hash_hex, nonce_hex)))
+    )
+    pred_domain = b"FZ-ZKSVC-PRED-ID" + b"\x01"
+    inst[20] = _fe_be32_hex_from_digest(
+        sm3_bytes(pred_domain + (plan_hash_hex + "|" + nonce_hex + "|" + _PV).encode())
+    )
+    inst[21] = _fe_be32_hex_from_u64(_NOW)
+    inst[22] = _fe_be32_hex_from_u64(get_rule(0)[1])
+    inst[23] = _fe_be32_hex_from_bytes32(bytes(32))
+    inst[24] = _fe_be32_hex_from_u64(0)
+    with open(_os.path.join(d, "proof.bin"), "wb") as f:
+        f.write(b"proof")
+    with open(_os.path.join(d, "instances.json"), "w", encoding="utf-8") as f:
+        f.write(json.dumps({"instances": inst}))
+    with open(_os.path.join(d, "verifier_param.bin"), "wb") as f:
+        f.write(b"vp")

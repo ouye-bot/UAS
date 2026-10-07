@@ -1,30 +1,35 @@
-"""/auth/* 路由（2026-09-29 账户门户批）：注册/预检/挑战/激活/登录/资料/会话。
+"""/auth/* 路由（2026-09-29 账户门户批；2026-10-04 批 2 密码底座升档）：
+注册/预检/挑战/激活/登录/资料/会话/密封件惰性升级。
 
-统一信封 {code,message,data}；Cookie：HttpOnly+SameSite=Lax（fz_session）。
-限速：challenge/activate/login 共享尝试窗（内存固定窗——多进程部署升共享存储）。
+统一信封 {code,message,data}；Cookie：HttpOnly+SameSite=Lax（fz_session），
+secure=FZ_COOKIE_SECURE（缺省 production 档自动 True）。
+限速：challenge/activate/login 共享尝试窗（rate_limit_buckets 落库——
+多副本部署共享同窗，重启不清零）。
 """
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
-from app.accounts.deps import require_role
+from app.accounts.deps import principal_from, require_role
 from app.accounts.service import (
-    AccountError,
     SESSION_COOKIE,
+    AccountError,
     activate,
     auth_limiter,
+    cookie_secure,
     get_account,
     issue_challenge,
-    keystore_of,
     keep_profile,
+    keystore_of,
     login,
     prelogin,
     register_account,
     submit_profile,
+    upgrade_sealed_blob,
 )
 from app.db import get_session
 
@@ -93,7 +98,7 @@ def register(body: RegisterIn, session: Session = Depends(get_session)):
 @router.get("/prelogin/{username}")
 def prelogin_route(username: str, request: Request, session: Session = Depends(get_session)):
     try:
-        auth_limiter.check(f"prelogin|{_client_key(request, username)}")
+        auth_limiter.check(f"prelogin|{_client_key(request, username)}", session)
         data = prelogin(session, username)
     except AccountError as exc:
         return _err(exc)
@@ -110,10 +115,34 @@ def keystore_route(username: str, session: Session = Depends(get_session)):
     return JSONResponse(status_code=200, content={"code": "ok", "message": "", "data": data})
 
 
+class KeystoreUpgradeIn(BaseModel):
+    # v4 重封件（客户端解封存量 v3 后同口令重封回传——惰性升级面）
+    sealed_blob: str = Field(min_length=32, max_length=8192)
+
+
+@router.post("/keystore/upgrade")
+def keystore_upgrade_route(
+    body: KeystoreUpgradeIn, request: Request, session: Session = Depends(get_session)
+):
+    """密封件惰性升级回传（批 2-2.1）：登录/解锁会话内把 v3 存量密封件
+    换成同口令 v4 重封件（属主自换——principal 即属主，路径无用户名参数）。"""
+    p = principal_from(request, session)
+    if p is None:
+        return JSONResponse(
+            status_code=401,
+            content={"code": "unauthorized", "message": "未登录或会话已失效", "data": None},
+        )
+    try:
+        upgrade_sealed_blob(session, p.username, body.sealed_blob)
+    except AccountError as exc:
+        return _err(exc)
+    return JSONResponse(status_code=200, content={"code": "ok", "message": "", "data": None})
+
+
 @router.post("/challenge/{username}")
 def challenge_route(username: str, request: Request, session: Session = Depends(get_session)):
     try:
-        auth_limiter.check(f"challenge|{_client_key(request, username)}")
+        auth_limiter.check(f"challenge|{_client_key(request, username)}", session)
         nonce = issue_challenge(session, username)
     except AccountError as exc:
         return _err(exc)
@@ -123,7 +152,7 @@ def challenge_route(username: str, request: Request, session: Session = Depends(
 @router.post("/activate")
 def activate_route(body: ActivateIn, request: Request, session: Session = Depends(get_session)):
     try:
-        auth_limiter.check(f"activate|{_client_key(request, body.username)}")
+        auth_limiter.check(f"activate|{_client_key(request, body.username)}", session)
         activate(session, body.username, body.verifier_hex, body.pubkey_hex, body.sealed_blob)
     except AccountError as exc:
         return _err(exc)
@@ -133,11 +162,11 @@ def activate_route(body: ActivateIn, request: Request, session: Session = Depend
 @router.post("/login")
 def login_route(body: LoginIn, request: Request, session: Session = Depends(get_session)):
     try:
-        auth_limiter.check(f"login|{_client_key(request, body.username)}")
+        auth_limiter.check(f"login|{_client_key(request, body.username)}", session)
         token, row = login(session, body.username, body.nonce_hex, body.sig_hex)
     except AccountError as exc:
         return _err(exc)
-    auth_limiter.reset(f"login|{_client_key(request, body.username)}")
+    auth_limiter.reset(f"login|{_client_key(request, body.username)}", session)
     resp = JSONResponse(
         status_code=200,
         content={
@@ -157,7 +186,7 @@ def login_route(body: LoginIn, request: Request, session: Session = Depends(get_
         token,
         httponly=True,
         samesite="lax",
-        secure=False,  # 演示 http 档；生产 TLS 部署置 True（部署面开关）
+        secure=cookie_secure(),  # 批 2-2.5②：FZ_COOKIE_SECURE 配置化；production 档自动 True
         max_age=12 * 3600,
         path="/",
     )

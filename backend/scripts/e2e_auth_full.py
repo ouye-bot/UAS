@@ -117,6 +117,12 @@ def _sess_cookie(path: str) -> str:
     return "; ".join(f"{k}={v}" for k, v in s.cookies.get_dict().items())
 
 
+def _adm_sk() -> str:
+    """管理员签名钥（_ADM_SESS 惰性初始化后取 .sk——script_login 附挂）。"""
+    _sess_cookie("/ra/revoke")
+    return _ADM_SESS.sk
+
+
 def api_get(path: str) -> dict:
     with opener().open(API + path, timeout=30) as r:
         return json.loads(r.read().decode())
@@ -155,11 +161,13 @@ def main() -> int:
     # ① 登记（RA 真实签发）
     holder_sk, holder_pk = generate_keypair()
     sn = "FZ-SN-E2E-" + secrets.token_hex(2)
+    username = "e2e-" + secrets.token_hex(3)
+    id_number = "11010119900101" + secrets.token_hex(2)  # 逐轮随机（B7 禁入黑名单纪律）
     rc, reg = api_post(
         "/ra/register",
         {
-            "username": "e2e-" + secrets.token_hex(3),
-            "id_number": "110101199001011234",
+            "username": username,
+            "id_number": id_number,
             "cert_level": 3,
             "sn": sn,
             "user_pub_hex": holder_pk,
@@ -175,7 +183,7 @@ def main() -> int:
         {
             "master_cred_hash_hex": cred["master_cred_hash_hex"],
             "salt_hex": cred["salt_hex"],
-            "id_number": "110101199001011234",
+            "id_number": id_number,
             "cert_level": 3,
             "sn": sn,
             "holder_pub_hex": holder_pk,
@@ -204,7 +212,7 @@ def main() -> int:
                 "plan_hash_hex": plan_hash_hex,
                 "nonce_hex": nonce_hex,
                 "class_id": 1,
-                "id_number": "110101199001011234",
+                "id_number": id_number,
                 "cert_level": 3,
                 "sn": sn,
                 "salt_hex": cred["salt_hex"],
@@ -301,7 +309,13 @@ def main() -> int:
     expect(tok["plan_hash"] == plan_hash_hex, "⑧ 令牌绑定 plan_hash（A2）")
     expect(len(tok["nonce"]) == 32, "nonce 一次性形态")
     expect(tok["authId"] > 0, "authId 贯穿键在场")
-    expect("sn_hash" not in tok and "sn" not in tok, "令牌零设备字段（B4-d7）")
+    # ⑥代 SN 绑定口径（2026-10-06 换代）：令牌携 sn_hash（哈希形态=服务端
+    # 权威 SM3(serial) 全 32B hex，非设备原文）供桥端第 6 查比对——旧 B4-d7
+    # 「零设备字段」断言随之换代为「零设备原文+哈希同值」。
+    from app.crypto.sm3 import sm3_bytes as _sm3b
+
+    expect("sn" not in tok, "⑧ 令牌零设备原文（B4-d7 换代）")
+    expect(tok.get("sn_hash") == _sm3b(sn.encode()).hex(), "⑧ 令牌 sn_hash=SM3(serial) 同值（⑥代 SN 绑定）")
 
     # ⑨⑩⑪ 真链档断言组（阶段一：recordAuth 链上对账+nonce 链级重放拒绝）
     if os.environ.get("FZ_CHAIN_ANCHOR", "fake") != "fake":
@@ -323,7 +337,7 @@ def main() -> int:
         fa = load_binding("FlightAuthRegistry", client, addr["FlightAuthRegistry"]["address"])
         auth_id = tok["authId"]
 
-        # ⑨ recordAuth 11 元组逐项对账（D17/D18 在链）
+        # ⑨ recordAuth 12 元组逐项对账（D17/D18 在链；授权包配额制 2026-10-06 末位 remaining）
         rec = fa.call_fn("getAuth", [auth_id])
         th_local = sm3_hex(body)
         proof_digest_local = sm3_hex((CASES / case_id / "proof.bin").read_bytes())
@@ -350,18 +364,75 @@ def main() -> int:
             fa.call_fn("nonceUsed", [bytes.fromhex(nonce_hex)])[0] is True,
             "⑩-1 链上 nonceUsed=true（烧毁在链）",
         )
+        # 隔离轴配套：换发全新合法子凭证+同 nonce 新案卷真出证（门序实证：
+        # 案卷归属门与产物存在门均先于 nonce 门——随机案卷号/随机哈希两种
+        # 旧隔离手法都会死在更早的门。新材料全链真出证⟹所有先序门全过，
+        # 唯一复用项=nonce——nonce 链级烧毁独立拒绝轴语义完整保留）
+        rc2b, sub2 = api_post(
+            "/ra/sub-credentials",
+            {
+                "master_cred_hash_hex": cred["master_cred_hash_hex"],
+                "salt_hex": cred["salt_hex"],
+                "id_number": id_number,
+                "cert_level": 3,
+                "sn": sn,
+                "holder_pub_hex": holder_pk,
+            },
+        )
+        expect(rc2b == 200 and sub2["code"] == "ok", "⑩-0 隔离轴配套子凭证换发")
+        sub2 = sub2["data"]
+        replay_plan = secrets.token_bytes(32).hex()
+        _req = urllib.request.Request(
+            BRIDGE + "/prove/start",
+            data=json.dumps(
+                {
+                    "plan_hash_hex": replay_plan,
+                    "nonce_hex": nonce_hex,
+                    "class_id": 1,
+                    "id_number": id_number,
+                    "cert_level": 3,
+                    "sn": sn,
+                    "salt_hex": cred["salt_hex"],
+                    "id_prime_hex": sub2["id_prime_hex"],
+                    "sig_hex": sub2["sig_hex"],
+                    "expires_at": sub2["expires_at"],
+                    "holder_sk_hex": holder_sk,
+                    "holder_pk_hex": holder_pk,
+                }
+            ).encode(),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with opener().open(_req, timeout=30) as r:
+            start2 = json.loads(r.read().decode())
+        replay_case = start2["case_id"]
+        _st, _t0 = "assembling", time.time()
+        while _st in ("assembling", "proving"):
+            time.sleep(5)
+            with opener().open(f"{BRIDGE}/prove/task/{start2['task_id']}", timeout=15) as r:
+                _t = json.loads(r.read().decode())
+            _st = _t.get("status") or _t.get("data", {}).get("status", _st)
+            if time.time() - _t0 > 1500:
+                print("  [FAIL] 隔离轴出证超时")
+                raise SystemExit(1)
+        expect(_st == "done", f"⑩-0b 隔离轴同 nonce 新案卷出证（{time.time() - _t0:.0f}s）")
         rc10, again = api_post(
             "/authz/apply",
             {
                 "session_pk_hex": holder_pk,
-                "sub_cred_message_hex": sub["message_hex"],
-                "sub_sig_hex": sub["sig_hex"],
-                # 换新子凭证材料仍拒——nonce 链级烧毁是独立拒绝轴
-                "sub_cred_hash_hex": secrets.token_bytes(32).hex(),
+                # 2026-10-06 修正：换发全新合法子凭证（原随机哈希手法撞现行门序
+                # ——服务端哈希重算门先于 nonce 门，随机哈希死在重算门无法隔离
+                # nonce 独立轴）。新凭证材料全合法⟹子凭证面全过，唯一复用项=
+                # nonce——nonce 链级烧毁是独立拒绝轴的语义完整保留。
+                "sub_cred_message_hex": sub2["message_hex"],
+                "sub_sig_hex": sub2["sig_hex"],
+                "sub_cred_hash_hex": sub2["sub_cred_hash_hex"],
                 "nonce_hex": nonce_hex,
                 "plan_hash_hex": plan_hash_hex,
                 "class_id": 1,
-                "case_id": case_id,
+                # 全新真案卷（⑩-0b 产物）——案卷归属门与产物门全过，
+                # 唯一复用项=nonce（隔离轴）
+                "case_id": replay_case,
                 "rev_root_hex": api_get("/ra/revocation/snapshot")["data"]["root_hex"],
                 "t_start": prove_t_epoch,
                 "t_end": prove_t_epoch + 3600,
@@ -382,7 +453,7 @@ def main() -> int:
     sub_in = {
         "master_cred_hash_hex": cred["master_cred_hash_hex"],
         "salt_hex": cred["salt_hex"],
-        "id_number": "110101199001011234",
+        "id_number": id_number,
         "cert_level": 3,
         "sn": sn,
         "holder_pub_hex": holder_pk,
@@ -391,15 +462,72 @@ def main() -> int:
     rc12a, sub2 = api_post("/ra/sub-credentials", sub_in)
     expect(rc12a == 200 and sub2["code"] == "ok", "⑫-1 吊销前子凭证签发（基线）")
     sub2 = sub2["data"]
-    rc12b, rv = api_post(
-        "/ra/revoke",
-        {"master_cred_hash_hex": cred["master_cred_hash_hex"], "reason": "e2e 撤销负例"},
+    # ⑫-1b 吊销前备好真案卷（门序实证：案卷归属门+产物门先于撤销根门；吊销
+    # 后见证 403 无法再出证——负例所需的"旧材料+真案卷"必须在吊销前铸成）
+    _plan12 = secrets.token_bytes(32).hex()
+    _req12 = urllib.request.Request(
+        BRIDGE + "/prove/start",
+        data=json.dumps(
+            {
+                "plan_hash_hex": _plan12,
+                "nonce_hex": secrets.token_bytes(16).hex(),
+                "class_id": 1,
+                "id_number": id_number,
+                "cert_level": 3,
+                "sn": sn,
+                "salt_hex": cred["salt_hex"],
+                "id_prime_hex": sub2["id_prime_hex"],
+                "sig_hex": sub2["sig_hex"],
+                "expires_at": sub2["expires_at"],
+                "holder_sk_hex": holder_sk,
+                "holder_pk_hex": holder_pk,
+            }
+        ).encode(),
+        headers={"Content-Type": "application/json"},
+        method="POST",
     )
-    expect(
-        rc12b == 200 and rv["code"] == "ok" and rv["data"]["root_hex"] != old_root,
-        "⑫-2 吊销（机构管理员会话——账户批）→纪元根更迭",
-        f"rc={rc12b} body={json.dumps(rv, ensure_ascii=False)[:200]}",
+    with opener().open(_req12, timeout=30) as r:
+        _st12 = json.loads(r.read().decode())
+    _case12 = _st12["case_id"]
+    _st, _t0 = "assembling", time.time()
+    while _st in ("assembling", "proving"):
+        time.sleep(5)
+        with opener().open(f"{BRIDGE}/prove/task/{_st12['task_id']}", timeout=15) as r:
+            _t = json.loads(r.read().decode())
+        _st = _t.get("status") or _t.get("data", {}).get("status", _st)
+        if time.time() - _t0 > 1500:
+            print("  [FAIL] ⑫-1b 备案卷出证超时")
+            raise SystemExit(1)
+    expect(_st == "done", f"⑫-1b 吊销前备案卷出证（{time.time() - _t0:.0f}s）")
+    # ⑫-2 B1 升格两步式签名吊销（2026-10-06 适配）：preview 取句柄集+纪元
+    # →FZ-REVOKE|v1|… 管理员钥签名→admin 会话 POST（旧裸 /ra/revoke 无会话
+    # 无签名形态已随 B1 退役）
+    _sess_cookie("/ra/revoke")  # 惰性初始化 _ADM_SESS（admin 登录）
+    from app.crypto.sm2 import sign as _sm2_sign
+
+    _pv = _ADM_SESS.get(
+        API + f"/ra/revoke/by-username/preview?username={username}", timeout=30
+    ).json()["data"]
+    _msg = (
+        "FZ-REVOKE|v1|"
+        + "|".join(sorted(h.lower() for h in _pv["handles"]))
+        + f"|e2e 撤销负例|{_pv['epoch']}"
     )
+    _r12 = _ADM_SESS.post(
+        API + "/ra/revoke/by-username",
+        json={
+            "username": username,
+            "reason": "e2e 撤销负例",
+            "sig_hex": _sm2_sign(_adm_sk(), _msg.encode()),
+            "epoch": _pv["epoch"],
+        },
+        timeout=60,
+    )
+    rc12b = _r12.status_code
+    rv = _r12.json()
+    expect(rc12b == 200, "⑫-2 吊销（管理员签名+会话）受理", f"rc={rc12b} {str(rv)[:150]}")
+    new_root = api_get("/ra/revocation/snapshot")["data"]["root_hex"]
+    expect(new_root != old_root, "⑫-2b 纪元根更迭（撤销数学生效）")
     rc12c, stale = api_post(
         "/authz/apply",
         {
@@ -410,7 +538,7 @@ def main() -> int:
             "nonce_hex": secrets.token_bytes(16).hex(),
             "plan_hash_hex": secrets.token_bytes(32).hex(),
             "class_id": 1,
-            "case_id": case_id,
+            "case_id": _case12,
             "rev_root_hex": old_root,
             "t_start": prove_t_epoch,
             "t_end": prove_t_epoch + 3600,

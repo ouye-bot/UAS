@@ -1,7 +1,7 @@
 {
  "pin_commit": "4201a82",
  "file_count": 148,
- "aggregate_sm3": "961ee911d1226d6c6768a78d0dd05240bddf514ec04dd2582cac204d6a243aba",
+ "aggregate_sm3": "e6481fb56957dd8520acd94236f9880a93264e04ee48b00f9a1ebcdb974a86e8",
  "files": [
   {
    "path": "plonkish/.gitignore",
@@ -145,8 +145,8 @@
   },
   {
    "path": "plonkish/plonkish_backend/src/backend/hyperplonk/prover.rs",
-   "bytes": 19064,
-   "sm3": "f163278fbded9a84cf5826e2a6867c55977ee115225dad088e53b3b6479ddc87"
+   "bytes": 20054,
+   "sm3": "e0b8d3a8b39801e792b9377ea426106d863b9fb64e9f3bb8ec6c8f36d03d0860"
   },
   {
    "path": "plonkish/plonkish_backend/src/backend/hyperplonk/util.rs",
@@ -160,8 +160,8 @@
   },
   {
    "path": "plonkish/plonkish_backend/src/backend/hyperplonk.rs",
-   "bytes": 31022,
-   "sm3": "7572c2e45026c601c3e852654ec2145c1e6e9143e8caaeb0aee6181a7be154fb"
+   "bytes": 32697,
+   "sm3": "82238b7d50ecfc44a5ed5a18b19c5921ebf3472b1410b14352ea74a573d32f48"
   },
   {
    "path": "plonkish/plonkish_backend/src/backend/hyperplonk.rs~",
@@ -200,8 +200,8 @@
   },
   {
    "path": "plonkish/plonkish_backend/src/pcs/multilinear/basefold.rs",
-   "bytes": 187281,
-   "sm3": "ddac4573a4c3f27d68bfbc80198c405a1c98ea01e9e9babd54d0310640d5629b"
+   "bytes": 208033,
+   "sm3": "c8ca9f26c86b96d57e49c240e4c94fbb375b1a3a70316f672dead1de8cded6fc"
   },
   {
    "path": "plonkish/plonkish_backend/src/pcs/multilinear/blaze.rs",
@@ -265,8 +265,8 @@
   },
   {
    "path": "plonkish/plonkish_backend/src/pcs.rs",
-   "bytes": 6695,
-   "sm3": "2f27ceb9ccde36525bce9b055ff49863758fa76efc400e15676aac9f313dcba8"
+   "bytes": 9351,
+   "sm3": "2e5e0b1fa06d7afe7918aa5f8a239c93cfcf8928ef39bb4c176ed4483ec11831"
   },
   {
    "path": "plonkish/plonkish_backend/src/piop/#sum_check.rs#",
@@ -475,8 +475,8 @@
   },
   {
    "path": "plonkish/plonkish_sm2_probe/src/bin/auth_census.rs",
-   "bytes": 14138,
-   "sm3": "aa00f032c193e42df6cd2c248d7fbaf3495bfee77515b4135dc5563541bddf2d"
+   "bytes": 15066,
+   "sm3": "ad92b3ee4e2aae80b45d4bdaed70628dcfb44f57ced60a9046f98102bb0ce1c3"
   },
   {
    "path": "plonkish/plonkish_sm2_probe/src/bin/b7_filter_multiscale.rs",
@@ -565,8 +565,8 @@
   },
   {
    "path": "plonkish/plonkish_sm2_probe/src/sm2_auth_assemble.rs",
-   "bytes": 42730,
-   "sm3": "5e25f545a76e78e9623864d1250e79446d61a35359b93a96368c5920834fe951"
+   "bytes": 43042,
+   "sm3": "bf6d0904baeaee12141445469eb148c78c18f199779102b736e7ba0ffca7dcb8"
   },
   {
    "path": "plonkish/plonkish_sm2_probe/src/sm2_dkg.rs",
@@ -580,18 +580,18 @@
   },
   {
    "path": "plonkish/plonkish_sm2_probe/src/sm2_ec_window_gadget.rs",
-   "bytes": 20134,
-   "sm3": "191681c86320b2ade07ea46dd0baf729f3f89d40241bbe16dbd2d83c4255a00a"
+   "bytes": 26271,
+   "sm3": "f54965ba8c1bfc4cbb101b6fc40d9ea82e62e799268d1c8e33a1e4180adf2d66"
   },
   {
    "path": "plonkish/plonkish_sm2_probe/src/sm2_ec_window_proto.rs",
-   "bytes": 13819,
-   "sm3": "e503c12686080ecc9756c09b7b5d421e6ed43e68a5891a7f242f2dca504692a2"
+   "bytes": 14899,
+   "sm3": "a93f6dbca31fa169505b9d5e264d251dc9a389a9e9eabb080c188ad3ab780e86"
   },
   {
    "path": "plonkish/plonkish_sm2_probe/src/sm2_full_statement_assemble.rs",
-   "bytes": 249152,
-   "sm3": "11298aaa8c560ceaefa7b8da06e41b6f9d7f9309557995c0cc58ead840fa8ecb"
+   "bytes": 260120,
+   "sm3": "3f999c8b2fe0f9aa31b80172719468f484717e55548b4c7f9bdf9b205f205364"
   },
   {
    "path": "plonkish/plonkish_sm2_probe/src/sm2_join.rs",
@@ -665,8 +665,8 @@
   },
   {
    "path": "plonkish/plonkish_sm2_probe/src/sm3_lookup_weave.rs",
-   "bytes": 31991,
-   "sm3": "9eb966037c6f30669a6bdc7b7d8cb79b195bc53f1cab6aae5c59d810bc2b188b"
+   "bytes": 55162,
+   "sm3": "798aeb9d4c25c83358cf7009ff0c8c9858860e02c3e60685bd9979101a2b6922"
   },
   {
    "path": "plonkish/plonkish_sm2_probe/src/sm3_native_ref.rs",
@@ -680,8 +680,8 @@
   },
   {
    "path": "plonkish/plonkish_sm2_probe/src/smt_weave.rs",
-   "bytes": 24636,
-   "sm3": "d6cbb2a99de543c995d73e240e3232bbf99dddc07819f241eb3c8535b0d6feee"
+   "bytes": 25111,
+   "sm3": "85a44cc94d88a10aec9f82b187a9555053df38fb3d16993c37fa77d4585b987a"
   },
   {
    "path": "plonkish/plonkish_sm2_probe/src/trail_host.rs",
@@ -690,8 +690,8 @@
   },
   {
    "path": "plonkish/plonkish_sm2_probe/src/trail_weave.rs",
-   "bytes": 32447,
-   "sm3": "620c66853e1ebb59539ea21b96cb8b8431a079ad194763192f104771673c75dd"
+   "bytes": 59382,
+   "sm3": "4f2adbc224dc6dea89eea194e0fbddec723396af83b081bab0e1f51c42efe47c"
   },
   {
    "path": "plonkish/plonkish_sm2_probe/tests/auth_golden_vector.json",

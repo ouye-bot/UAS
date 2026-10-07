@@ -1,0 +1,94 @@
+{
+ "schema": 1,
+ "source_run_id": "8648cfe99cf0",
+ "created": "2026-10-03T03:06:57",
+ "concurrency": 1,
+ "budget": {
+  "used": 6,
+  "cap": 6
+ },
+ "runs_planned": 4,
+ "throughput_per_min": 0.508,
+ "precision": "prove 段 1s/worker·arm 0.1s（中断跑 stdout 回收）；吞吐墙钟由桥 journal POST /prove/start 200 与 /arm 200 时间戳重建（03:07:44→03:13:38，354s/3 完整流）",
+ "runs": [
+  {
+   "run": 0,
+   "warmup": false,
+   "complete": true,
+   "prove_e2e_ms": 97000,
+   "assemble_ms": 2000,
+   "prove_ms": 95000,
+   "gate_wait_s": 0,
+   "submit_retries": 0,
+   "precision": "prove/装配=1s（stdout 打点回收）；worker/arm=0.1s",
+   "worker_ms": 3100.0,
+   "arm_ms": 4200.0
+  },
+  {
+   "run": 1,
+   "warmup": false,
+   "complete": true,
+   "prove_e2e_ms": 111000,
+   "assemble_ms": 2000,
+   "prove_ms": 109000,
+   "gate_wait_s": 0,
+   "submit_retries": 0,
+   "precision": "prove/装配=1s（stdout 打点回收）；worker/arm=0.1s",
+   "worker_ms": 4000.0,
+   "arm_ms": 4100.0
+  },
+  {
+   "run": 2,
+   "warmup": false,
+   "complete": true,
+   "prove_e2e_ms": 116000,
+   "assemble_ms": 2000,
+   "prove_ms": 113000,
+   "gate_wait_s": 0,
+   "submit_retries": 0,
+   "precision": "prove/装配=1s（stdout 打点回收）；worker/arm=0.1s",
+   "worker_ms": 3200.0,
+   "arm_ms": 4100.0
+  },
+  {
+   "run": 3,
+   "warmup": false,
+   "complete": false,
+   "prove_e2e_ms": 103000,
+   "assemble_ms": 2000,
+   "prove_ms": 101000,
+   "gate_wait_s": 0,
+   "submit_retries": 0,
+   "precision": "prove/装配=1s（stdout 打点回收）；worker/arm=0.1s",
+   "invalidation": "apply 409 instance_mismatch（实例 23 rev_root）——S 于窗口尾恢复操作（03:14:58/03:15:17 disarm，03:15:11 其 prove 被 my 任务闸 429）致撤销根前进；申请面 fail-closed 按设计拒（authz/service.py L212+L248 双重根一致性）。prove 段（103s）数据有效在案"
+  }
+ ],
+ "gate": [
+  {
+   "run": 0,
+   "code": 429,
+   "ms": null,
+   "evidence": "桥 journal：每次提交同秒 200+429 探针对"
+  },
+  {
+   "run": 1,
+   "code": 429,
+   "ms": null,
+   "evidence": "桥 journal：每次提交同秒 200+429 探针对"
+  },
+  {
+   "run": 2,
+   "code": 429,
+   "ms": null,
+   "evidence": "桥 journal：每次提交同秒 200+429 探针对"
+  },
+  {
+   "run": 3,
+   "code": 429,
+   "ms": null,
+   "evidence": "桥 journal：每次提交同秒 200+429 探针对"
+  }
+ ],
+ "curve": null,
+ "notes": "4 张全部 200 即刻受理（gate_wait=0）——独占窗内串行闸零争用；S 的 03:15:11 prove 亦被闸 429 拒（闸对第三方同样在位）"
+}

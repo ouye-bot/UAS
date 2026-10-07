@@ -14,6 +14,22 @@ from sqlalchemy.orm import Session, sessionmaker
 _DB_URL = os.environ.get("FZ_DB_URL", "")
 _DB_PATH = Path(__file__).resolve().parent.parent / "feizheng.db"
 _engine = create_engine(_DB_URL or f"sqlite:///{_DB_PATH}", echo=False, pool_pre_ping=True)
+
+# SQLite WAL + busy_timeout（2026-10-02 乙路路线三·立即项）：受理/审计/会话三写
+# 并发下 "database is locked"（main.py 异常分型话术证明发生过）的最低成本根修。
+# WAL 允许读写并发；busy_timeout 让瞬时锁等待而非立即报错。PG 档不受影响。
+if (_DB_URL or f"sqlite:///{_DB_PATH}").startswith("sqlite"):
+    from sqlalchemy import event
+
+    @event.listens_for(_engine, "connect")
+    def _sqlite_pragmas(dbapi_connection, connection_record):
+        cur = dbapi_connection.cursor()
+        cur.execute("PRAGMA journal_mode=WAL")
+        cur.execute("PRAGMA busy_timeout=5000")
+        cur.execute("PRAGMA synchronous=NORMAL")
+        cur.close()
+
+
 SessionLocal = sessionmaker(bind=_engine, expire_on_commit=False)
 
 

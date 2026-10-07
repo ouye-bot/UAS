@@ -125,8 +125,9 @@ def _real_chain_anchor() -> ChainAuditAnchor:
         except Exception as e:  # noqa: BLE001  留痕缺失=显式空（记录缺失≠无罪）
             out["auth_record"] = None
             out["auth_record_error"] = str(e)[:120]
-        # 检查点留痕回读（latest/anchoredHeads 合约状态面；事件为日志面——
-        # EventRecorded 事件按需 getPastLogs，演示窗接线）
+        # 检查点留痕回读（latest/anchoredHeads 合约状态面；事件时间线不再
+        # 按需 getPastLogs——P1-C3 事件索引守护线程已接线（create_app 真链档
+        # 挂载），chain_events 投影只读，见下方 events 块）
         try:
             head, seq, ts = ta.call_fn("latest", [auth_id])
             out["checkpoints"] = (
@@ -499,15 +500,25 @@ def verify_collab_sigs(
     return _ok(out)
 
 
+class CloseIn(BaseModel):
+    """结案升格（0018）body：结论+说明+审计员签名（FZ-COLLAB-CLOSE|v1|
+    {req_hash}|{conclusion}|{conclusion_text} 的 SM2 签名）。"""
+
+    conclusion: str = Field(min_length=1, max_length=16)
+    conclusion_text: str = Field(default="", max_length=500)
+    sig_hex: str = Field(min_length=16, max_length=512)
+
+
 @router.post("/collab-requests/{req_id}/close")
 def close_collab_request(
     req_id: int,
+    body: CloseIn,
     request: Request,
     session: Session = Depends(get_session),
     _p=Depends(require_role("auditor")),
 ):
-    """审计员结案（executed→closed）：解锁实名已核实，案件闭环
-    （队长拍板：请求生命周期 待批准→已批准·待执行→已执行·待结案→已结案）。"""
+    """审计员结案（executed→closed，0018 升格）：结论+说明+签名+时间戳+
+    案件台账+案卷指纹——缺结论 422/坏签名 401/非 executed 态 409。"""
     from app.accounts import collab as collab_svc
     from app.accounts.deps import principal_from as _pf
     from app.accounts.service import get_account
@@ -515,11 +526,31 @@ def close_collab_request(
     p = _pf(request, session)
     acc = get_account(session, p.username)
     try:
-        out = collab_svc.close_request(session, auditor=acc, request_id=req_id)
+        out = collab_svc.close_request(
+            session,
+            auditor=acc,
+            request_id=req_id,
+            conclusion=body.conclusion,
+            conclusion_text=body.conclusion_text,
+            sig_hex=body.sig_hex,
+        )
     except collab_svc.CollabError as exc:
         return JSONResponse(
             status_code=getattr(exc, "status", 400) or 400,
             content={"code": exc.code, "message": str(exc), "data": None},
+        )
+    # 处置联动挂钩（2026-10-04 A5/B2，audit 层方案——不动 collab.py）：结案
+    # 结论=verified（属实）即自动生成机构处置待办（req_hash 幂等——重复触发
+    # 不重复建单）；误报/无法查证不建。case_no/req_hash 取请求行，username
+    # 由挂钩从令状行取解锁实名（unlocked 数据）。
+    if out.get("conclusion") == "verified":
+        from app.audit.disposal import create_disposal_request
+
+        create_disposal_request(
+            session,
+            req_hash_hex=out["req_hash_hex"],
+            case_no=out["case_no"],
+            warrant_hash_hex=out["warrant_hash_hex"],
         )
     return _ok(out)
 
@@ -527,7 +558,11 @@ def close_collab_request(
 @router.get("/warrants/{wh}/trace")
 def trace(wh: str, _p=Depends(require_role("auditor")), session: Session = Depends(get_session)):
     try:
-        return _ok(_svc(session).trace(warrant_hash_hex=wh))
+        out = _svc(session).trace(warrant_hash_hex=wh)
+        # 批 4-3 档位显式化：追溯响应顶层携带链锚档（real/fake）——fake 档的
+        # 留痕/链面回读如实自述，第三方核对不再猜档。
+        out["mode"] = "fake" if os.environ.get("FZ_CHAIN_ANCHOR", "fake") == "fake" else "real"
+        return _ok(out)
     except AuditError as exc:
         return JSONResponse(
             status_code=_ERR_STATUS.get(exc.code, 404),

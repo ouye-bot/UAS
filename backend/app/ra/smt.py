@@ -11,7 +11,9 @@ x 坐标 pk′.x——主凭证吊销经 RA 撤销传播进树，B4 接线），
 - 非成员证明：键路径上 32 个兄弟子树根（叶→根序）+ 根；
   验证=沿路径重算（叶层取空叶默认）至根比对。
 
-树每次全量重算（演示规模吊销集——诚实边界；增量化远期优化挂账）。
+树缺省每次全量重算（演示规模撤销集）；批 4-7 起 [`IncrementalSMT`] 提供增量
+维护面：插入/撤销只重算脏路径（O(32) SM3/次），根与全量重算逐字节一致
+（单测钉定），消费面见 [`cached_tree`]。
 """
 
 from __future__ import annotations
@@ -79,6 +81,107 @@ def _build_levels(handles: list[bytes]) -> dict[int, dict[int, bytes]]:
 def smt_root(handles: list[bytes]) -> bytes:
     """撤销句柄集合 → SMT 根（集合语义，顺序无关；空集合=DEFAULT[0]）。"""
     return _build_levels(handles)[0].get(0, _DEFAULTS[0])
+
+
+# ---- 批 4-7：增量维护面（脏路径更新，根==全量重算逐字节一致）----
+
+
+class IncrementalSMT:
+    """增量维护的撤销 SMT：插入/删除只重算脏路径。
+
+    levels[d] 保存非默认节点（位置→哈希；缺省位置取 _DEFAULTS[d]）；插入沿
+    键路径写叶并逐层重算父（与默认子树同值的节点即弃——字典只存脏差异）；
+    删除=摘叶后沿同路径重算。撤销集演化下每请求全量重算（O(n·32)）改
+    O(32) 脏路径更新；根与 [`smt_root`] 全量重算逐字节一致（test_ra_smt 钉定）。
+    """
+
+    def __init__(self) -> None:
+        self._leaves: dict[int, bytes] = {}
+        self._levels: dict[int, dict[int, bytes]] = {d: {} for d in range(DEPTH + 1)}
+        self._root: bytes = _DEFAULTS[0]
+
+    def _refresh_path(self, handle_pos: int) -> None:
+        """沿 handle_pos 的叶→根路径重算脏节点（叶层已更新后调用）。"""
+        pos = handle_pos
+        for d in range(DEPTH, 0, -1):
+            left = self._levels[d].get(pos & ~1, _DEFAULTS[d])
+            right = self._levels[d].get(pos | 1, _DEFAULTS[d])
+            parent = pos >> 1
+            val = _parent(left, right)
+            if val == _DEFAULTS[d - 1]:
+                self._levels[d - 1].pop(parent, None)  # 与空子树同值=非脏，即弃
+            else:
+                self._levels[d - 1][parent] = val
+            pos = parent
+        self._root = self._levels[0].get(0, _DEFAULTS[0])
+
+    def insert(self, handle: bytes) -> None:
+        """插入撤销句柄（32B；已在树中=幂等 no-op）。"""
+        if len(handle) != 32:
+            raise ValueError("句柄须 32 字节")
+        pos = _leaf_pos(handle)
+        if pos in self._leaves:
+            return
+        leaf = _leaf_hash(handle)
+        self._leaves[pos] = leaf
+        self._levels[DEPTH][pos] = leaf
+        self._refresh_path(pos)
+
+    def remove(self, handle: bytes) -> None:
+        """移除撤销句柄（32B；不在树中=幂等 no-op）——撤销误登记的回收面。"""
+        if len(handle) != 32:
+            raise ValueError("句柄须 32 字节")
+        pos = _leaf_pos(handle)
+        if pos not in self._leaves:
+            return
+        del self._leaves[pos]
+        self._levels[DEPTH].pop(pos, None)
+        self._refresh_path(pos)
+
+    def __contains__(self, handle: bytes) -> bool:
+        return _leaf_pos(handle) in self._leaves
+
+    def __len__(self) -> int:
+        return len(self._leaves)
+
+    def root(self) -> bytes:
+        """当前根（== smt_root(全部已插句柄) 逐字节）。"""
+        return self._root
+
+    def non_membership_witness(self, handle: bytes) -> dict:
+        """非成员证明（与模块级 non_membership_witness 同构同判据）。"""
+        if len(handle) != 32:
+            raise ValueError("句柄须 32 字节")
+        bits = _path_bits(handle)
+        leaf_pos = _leaf_pos(handle)
+        siblings: list[str] = []
+        for d in range(DEPTH, 0, -1):
+            node_pos = leaf_pos >> (DEPTH - d)
+            sib = self._levels[d].get(node_pos ^ 1, _DEFAULTS[d])
+            siblings.append(sib.hex())
+        return {"siblings": siblings, "leaf_index_bits": bits}
+
+
+_TREE_CACHE: dict = {"tree": None, "handles": set()}
+
+
+def cached_tree(handles: list[bytes]) -> IncrementalSMT:
+    """进程级增量缓存访问器：以句柄集合为账本——新增句柄沿脏路径增量插入，
+    消失的句柄增量摘除，集合不变=零重算直接复用（每请求全量重算 O(n·32) 的
+    撤销面热点收口）。调用方语义=传入当前撤销句柄全集（集合语义顺序无关）。"""
+    tree: IncrementalSMT | None = _TREE_CACHE["tree"]
+    if tree is None:
+        tree = IncrementalSMT()
+        _TREE_CACHE["tree"] = tree
+        _TREE_CACHE["handles"] = set()
+    prev: set[bytes] = _TREE_CACHE["handles"]
+    now = set(handles)
+    for h in sorted(now - prev):  # 排序保证确定性构建次序（根与次序无关，仅纪律）
+        tree.insert(h)
+    for h in sorted(prev - now):
+        tree.remove(h)
+    _TREE_CACHE["handles"] = now
+    return tree
 
 
 def non_membership_witness(handle: bytes, handles: list[bytes]) -> dict:

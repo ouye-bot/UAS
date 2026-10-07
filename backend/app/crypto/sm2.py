@@ -75,9 +75,23 @@ def _c(priv_hex: str, pub_hex: str) -> CryptSM2:
     return CryptSM2(private_key=priv_hex or "0" * 64, public_key=pub_hex, mode=1)
 
 
+def _gen_priv_in_domain() -> str:
+    """私钥采样循环（信任根收口件5）：标量均匀取自 [1, n-1]，**Keygen 合法域
+    实为 [1, n-2]**（_assert_priv 同域，SP-19 跨线同步①）——旧 generate_keypair
+    声称 [1,n-1] 而下游校验 [1,n-2] 自相矛盾：边界点 d=n-1 使 (1+d)^{-1} 不存在
+    （签名恒不过验证的静默废件面，2026-09-13 探针实锤）。现拒绝 d≥n-1 或 d<1
+    重采样直至合法（拒绝概率 ~2^-256 量级，期望零次重试，无性能影响）。"""
+    while True:
+        d = secrets.randbelow(_N - 1) + 1  # [1, n-1]
+        if 1 <= d <= _N - 2:
+            return format(d, "064x")
+        # 边界拒绝——重采样（纪律：不钳制不回绕，域外即重来）
+
+
 def generate_keypair() -> tuple[str, str]:
-    """生成 (priv_hex64, pub_hex128)。私钥均匀取自 [1, n-1]。"""
-    priv = format(secrets.randbelow(_N - 1) + 1, "064x")
+    """生成 (priv_hex64, pub_hex128)。私钥域=[1, n-2]（GB/T 32918.2 Keygen
+    域，采样循环见 _gen_priv_in_domain——域内均匀，边界点重采样拒绝）。"""
+    priv = _gen_priv_in_domain()
     return priv, pubkey_from_priv(priv)
 
 

@@ -1,0 +1,349 @@
+{
+ "schema_version": 1,
+ "run_id": "a0d6cc046bf0",
+ "suite": "security_chain",
+ "env": {
+  "timestamp": "2026-10-03T03:57:39",
+  "git_commit": "f3013f4",
+  "platform": "Windows-11-10.0.26200-SP0",
+  "python": "3.13.12",
+  "hostname": "蜡笔小新",
+  "cores": 16,
+  "ram_gb": 19.8,
+  "circuit": {
+   "name": "AUTH@2026-10 换代",
+   "constraints": 19578,
+   "proof_bytes": 22675632
+  },
+  "prove_max_concurrent": "1",
+  "chain_mode": ""
+ },
+ "summary": {
+  "total": 9,
+  "passed": 9,
+  "failed": 0,
+  "xfail": 0,
+  "environment_error": 0,
+  "pass_rate": 1.0,
+  "duration_s": 102.0,
+  "verdict": "success",
+  "aborted": false,
+  "abort_reason": "",
+  "attack_success": []
+ },
+ "modules": {
+  "P": {
+   "display": "环境前置断言",
+   "passed": 1,
+   "failed": 0,
+   "xfail": 0,
+   "total": 1,
+   "items": [
+    {
+     "name": "P 环境前置：backend 真链档+桥 SITL+worker [5632, 26028] 在场+/metrics 可达",
+     "verdict": "pass",
+     "expected": "",
+     "actual": "",
+     "defense_ref": "scripts/demo_up.py",
+     "attack_success": false,
+     "latency_ms": null,
+     "detail": {
+      "worker_pids": [
+       5632,
+       26028
+      ],
+      "backend_pids": [
+       9404,
+       22540
+      ],
+      "link": {
+       "mode": "sitl",
+       "conn": "tcp:127.0.0.1:5760",
+       "breach_seen": false,
+       "last_statustext": "Arming motors"
+      },
+      "panel": "real"
+     }
+    }
+   ]
+  },
+  "A": {
+   "display": "机构会话激活",
+   "passed": 1,
+   "failed": 0,
+   "xfail": 0,
+   "total": 1,
+   "items": [
+    {
+     "name": "A-1 种子账户激活+会话（auditor/admin 挑战-应答）",
+     "verdict": "pass",
+     "expected": "",
+     "actual": "",
+     "defense_ref": "scripts/script_auth.py:script_login",
+     "attack_success": false,
+     "latency_ms": null,
+     "detail": {
+      "auditor": "active",
+      "admin": "active"
+     }
+    }
+   ]
+  },
+  "V": {
+   "display": "真出证（预算项——AUTH 电路 ~90-180s）",
+   "passed": 1,
+   "failed": 0,
+   "xfail": 0,
+   "total": 1,
+   "items": [
+    {
+     "name": "V-1 真出证完成（真电路真证明，84s）",
+     "verdict": "pass",
+     "expected": "",
+     "actual": "",
+     "defense_ref": "zksvc（19,578 约束 AUTH 电路）",
+     "attack_success": false,
+     "latency_ms": 84400.0,
+     "detail": {
+      "case_id": "b50471ebe2560f81"
+     }
+    }
+   ]
+  },
+  "S4": {
+   "display": "令牌一次性——受理→取件→双击竞态→二次 ARM 拒",
+   "passed": 4,
+   "failed": 0,
+   "xfail": 0,
+   "total": 4,
+   "items": [
+    {
+     "name": "S4-1 受理→worker 真验证→取件+令牌验签（authId=234 贯穿）",
+     "verdict": "pass",
+     "expected": "",
+     "actual": "",
+     "defense_ref": "app/zk/worker.py:_process_one",
+     "attack_success": false,
+     "latency_ms": 283.3,
+     "detail": {
+      "auth_id": 234,
+      "alt_max": 120
+     }
+    },
+    {
+     "name": "S4-2 双击竞态：恰一 ok（first_arm=true），败者 token_used（FC 串行/一次性拦）",
+     "verdict": "pass",
+     "expected": "",
+     "actual": "",
+     "defense_ref": "gcs/bridge/sitl_link.py:FlightGate.attempt_arm",
+     "attack_success": false,
+     "latency_ms": null,
+     "detail": {
+      "name": "S4 并发双 ARM",
+      "results": [
+       {
+        "status": 200,
+        "ok": true,
+        "code": null,
+        "first_arm": true,
+        "rearmed": null,
+        "ms": 4082.1
+       },
+       {
+        "status": 200,
+        "ok": false,
+        "code": "token_used",
+        "first_arm": null,
+        "rearmed": null,
+        "ms": 4098.6
+       }
+      ],
+      "token_arms_rows": 1,
+      "total_s": 4.1
+     }
+    },
+    {
+     "name": "S4-3 二次 ARM → token_used 拒（一次授权一次解锁）",
+     "verdict": "pass",
+     "expected": "",
+     "actual": "",
+     "defense_ref": "gcs/bridge/sitl_link.py:FlightGate.attempt_arm(token_used)",
+     "attack_success": false,
+     "latency_ms": 47.5,
+     "detail": {
+      "denial_rows": 15
+     }
+    },
+    {
+     "name": "S4-4痕迹 /arm/status 单一事实源 used=true+桥审计库跨请求存活（SITL 已复位 disarm=True）",
+     "verdict": "pass",
+     "expected": "",
+     "actual": "",
+     "defense_ref": "gcs/bridge/server.py:arm_status",
+     "attack_success": false,
+     "latency_ms": null,
+     "detail": {
+      "disarm": true
+     }
+    }
+   ]
+  },
+  "S5": {
+   "display": "围栏 fail-closed（桥 ARM 面）——篡改 alt_max/错 plan_hash",
+   "passed": 2,
+   "failed": 0,
+   "xfail": 0,
+   "total": 2,
+   "items": [
+    {
+     "name": "S5-1 篡改 alt_max→bad_signature 拒；错 plan_hash→plan_mismatch 拒（双负例）",
+     "verdict": "pass",
+     "expected": "",
+     "actual": "",
+     "defense_ref": "gcs/bridge/telemetry.py:verify_token",
+     "attack_success": false,
+     "latency_ms": null,
+     "detail": {
+      "codes": [
+       "bad_signature",
+       "plan_mismatch"
+      ],
+      "lat_ms": [
+       41.0,
+       27.0
+      ]
+     }
+    },
+    {
+     "name": "S5-1痕迹 拒绝落桥 audit 面 denials 表（可查）",
+     "verdict": "pass",
+     "expected": "",
+     "actual": "",
+     "defense_ref": "gcs/bridge/telemetry.py:LocalAudit.record_denial",
+     "attack_success": false,
+     "latency_ms": null,
+     "detail": {
+      "new_denials": 2
+     }
+    }
+   ]
+  }
+ },
+ "chain_sections": {
+  "s1_matrix": [
+   {
+    "module": "P",
+    "attack": "P 环境前置：backend 真链档+桥 SITL+worker [5632, 26028] 在场+/metrics 可达",
+    "verdict": "pass",
+    "expected": "",
+    "actual": "",
+    "attack_success": false,
+    "defense_ref": "scripts/demo_up.py"
+   },
+   {
+    "module": "A",
+    "attack": "A-1 种子账户激活+会话（auditor/admin 挑战-应答）",
+    "verdict": "pass",
+    "expected": "",
+    "actual": "",
+    "attack_success": false,
+    "defense_ref": "scripts/script_auth.py:script_login"
+   },
+   {
+    "module": "V",
+    "attack": "V-1 真出证完成（真电路真证明，84s）",
+    "verdict": "pass",
+    "expected": "",
+    "actual": "",
+    "attack_success": false,
+    "defense_ref": "zksvc（19,578 约束 AUTH 电路）"
+   },
+   {
+    "module": "S4",
+    "attack": "S4-1 受理→worker 真验证→取件+令牌验签（authId=234 贯穿）",
+    "verdict": "pass",
+    "expected": "",
+    "actual": "",
+    "attack_success": false,
+    "defense_ref": "app/zk/worker.py:_process_one"
+   },
+   {
+    "module": "S4",
+    "attack": "S4-2 双击竞态：恰一 ok（first_arm=true），败者 token_used（FC 串行/一次性拦）",
+    "verdict": "pass",
+    "expected": "",
+    "actual": "",
+    "attack_success": false,
+    "defense_ref": "gcs/bridge/sitl_link.py:FlightGate.attempt_arm"
+   },
+   {
+    "module": "S4",
+    "attack": "S4-3 二次 ARM → token_used 拒（一次授权一次解锁）",
+    "verdict": "pass",
+    "expected": "",
+    "actual": "",
+    "attack_success": false,
+    "defense_ref": "gcs/bridge/sitl_link.py:FlightGate.attempt_arm(token_used)"
+   },
+   {
+    "module": "S4",
+    "attack": "S4-4痕迹 /arm/status 单一事实源 used=true+桥审计库跨请求存活（SITL 已复位 disarm=True）",
+    "verdict": "pass",
+    "expected": "",
+    "actual": "",
+    "attack_success": false,
+    "defense_ref": "gcs/bridge/server.py:arm_status"
+   },
+   {
+    "module": "S5",
+    "attack": "S5-1 篡改 alt_max→bad_signature 拒；错 plan_hash→plan_mismatch 拒（双负例）",
+    "verdict": "pass",
+    "expected": "",
+    "actual": "",
+    "attack_success": false,
+    "defense_ref": "gcs/bridge/telemetry.py:verify_token"
+   },
+   {
+    "module": "S5",
+    "attack": "S5-1痕迹 拒绝落桥 audit 面 denials 表（可查）",
+    "verdict": "pass",
+    "expected": "",
+    "actual": "",
+    "attack_success": false,
+    "defense_ref": "gcs/bridge/telemetry.py:LocalAudit.record_denial"
+   }
+  ],
+  "s2_races": [
+   {
+    "name": "S4 并发双 ARM",
+    "results": [
+     {
+      "status": 200,
+      "ok": true,
+      "code": null,
+      "first_arm": true,
+      "rearmed": null,
+      "ms": 4082.1
+     },
+     {
+      "status": 200,
+      "ok": false,
+      "code": "token_used",
+      "first_arm": null,
+      "rearmed": null,
+      "ms": 4098.6
+     }
+    ],
+    "token_arms_rows": 1,
+    "total_s": 4.1
+   }
+  ],
+  "s3_rate_limit_429": {},
+  "s4_recovery_verdicts": [],
+  "s5_honesty": [
+   "清理账：disarm:ok。保留项：令状/协作请求/申请/授权（链上锚定审计痕迹，删除即毁痕）；sec_chain_rev 用户凭证按业务真实吊销（撤销面实弹产物）。",
+   "S10 复原 worker 以 FZ_WORKER_LEASE_S=60 拉起（demo 缺省 1200）——测试预算内接管孤儿任务的租约 knob，仅测试窗使用；此后 worker 按该 env 常驻。",
+   "真弹消耗：真出证×2（AUTH 电路真证明）+真链 recordAuth/burnNonce+真 ARM/DISARM+真 429 限速+真进程击杀+真 systemd 桥停起；无任何测试豁免头/旁路标记。"
+  ]
+ }
+}

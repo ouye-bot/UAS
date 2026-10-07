@@ -75,9 +75,13 @@ def split_token(payload: bytes) -> tuple[dict, str, bytes]:
 
 
 def verify_token(payload: bytes, *, plan_hash_hex: str, now: int | None = None) -> dict:
-    """地面站层令牌验证（五查：签名/窗/计划一致/字段完整/nonce 形态）。"""
+    """地面站层令牌验证（六查：签名/窗/计划一致/字段完整/nonce 形态/SN 绑定）。
+
+    第 6 查（SN 绑定换代 2026-10-06）：SM3(本机 SN)==token.sn_hash——本机 SN
+    与 device_key.device_serial() 同源（设备钥派生同一读数）；不符=sn_mismatch
+    拒绝（授权令牌钉死到出证序列号——换机重放/套用他机令牌面封堵）。"""
     tok, sig, body_raw = split_token(payload)
-    for f in ("authId", "plan_hash", "alt_max", "t_start", "t_end", "nonce", "policy_version"):
+    for f in ("authId", "plan_hash", "alt_max", "t_start", "t_end", "nonce", "policy_version", "sn_hash"):
         if f not in tok:
             raise TokenError("bad_token", f"令牌缺字段 {f}")
     e = sm3_bytes(body_raw)  # 验签对象=原始 body 字节（非重规范化形态）
@@ -90,6 +94,16 @@ def verify_token(payload: bytes, *, plan_hash_hex: str, now: int | None = None) 
         raise TokenError("plan_mismatch", "令牌 plan_hash 与本机计划不一致（A2 绑定面）")
     if len(tok["nonce"]) != 32:
         raise TokenError("bad_nonce", "nonce 形态非法")
+    # ⑥ SN 绑定：令牌 sn_hash（服务端权威 SM3(serial) 全 32B，engine 签名域
+    # 覆盖）vs 本机 SN 自算——同 device_key 单源。
+    from device_key import device_serial
+
+    local_sn_hash = sm3_bytes(device_serial().encode()).hex()
+    if tok["sn_hash"] != local_sn_hash:
+        raise TokenError(
+            "sn_mismatch",
+            "令牌 sn_hash 与本机序列号不符（授权钉死出证设备——换机不可用）",
+        )
     return tok
 
 
@@ -113,6 +127,21 @@ class LocalAudit:
             "CREATE TABLE IF NOT EXISTS denials ("
             "at TEXT, code TEXT, detail TEXT)"
         )
+        # 消费回报待重试队列（信任根收口件1）：/authz/consume 回报失败时落行——
+        #堵「同令牌双飞」窗（服务端消费账本缺失期间，删本地库重放可绕
+        # token_consumed 终拒）。下次任意 ARM/采样定时触发重试，成功即删。
+        self._c.execute(
+            "CREATE TABLE IF NOT EXISTS consume_pending ("
+            "auth_id INTEGER, token_hash_hex TEXT, enqueued_at TEXT, "
+            "PRIMARY KEY (auth_id, token_hash_hex))"
+        )
+        # 架次账本（授权包配额制 2026-10-06）：每个「新架次 ARM」一行（同会话
+        # 重解锁不记账）。本地执法轴——服务端 remaining 迟到位/回报失败窗内，
+        # 本地计数仍封锁超配额解锁（零弱化：缺省配额 1 时第 2 架次恒拒）。
+        self._c.execute(
+            "CREATE TABLE IF NOT EXISTS sortie_arms ("
+            "token_hash_hex TEXT, armed_at TEXT, PRIMARY KEY (token_hash_hex, armed_at))"
+        )
         self._c.commit()
 
     def first_arm(self, payload: bytes) -> tuple[str, int, str] | None:
@@ -131,6 +160,30 @@ class LocalAudit:
         self._c.commit()
         return at
 
+    def record_sortie(self, payload: bytes) -> str:
+        """架次记账（授权包配额制）：仅「新架次 ARM」调用（同会话重解锁不记
+        ——重解锁路径在闸门早退，不达此处）。isoformat 含微秒=同令牌连发键
+        不碰撞；INSERT OR IGNORE 幂等。"""
+        th = sm3_bytes(payload).hex()
+        at = dt.datetime.utcnow().isoformat()
+        self._c.execute(
+            "INSERT OR IGNORE INTO sortie_arms VALUES (?,?)", (th, at)
+        )
+        self._c.commit()
+        return at
+
+    def sortie_count(self, payload: bytes) -> int:
+        """本令牌本地架次计数（授权包配额制执法轴）。表查询异常（旧库损坏等
+        形态）=保守按 1 计（fail-closed——按已用处理，不放大配额）。"""
+        try:
+            row = self._c.execute(
+                "SELECT COUNT(*) FROM sortie_arms WHERE token_hash_hex=?",
+                (sm3_bytes(payload).hex(),),
+            ).fetchone()
+            return int(row[0]) if row else 0
+        except Exception:  # noqa: BLE001 —— 账本不可读=保守已用
+            return 1
+
     def record_denial(self, code: str, detail: str) -> None:
         self._c.execute(
             "INSERT INTO denials VALUES (?,?,?)",
@@ -143,3 +196,31 @@ class LocalAudit:
 
     def denials(self) -> list:
         return self._c.execute("SELECT at, code, detail FROM denials ORDER BY at").fetchall()
+
+    # ---- 消费回报待重试队列（信任根收口件1：consume_pending） ----
+
+    def consume_pending_enqueue(self, auth_id: int, token_hash_hex: str) -> str:
+        """回报失败落队（进程重启不丢——SQLite 与令牌账本同库同生命周期）。
+        同 (auth_id, token_hash) 重复失败覆盖重记（enqueued_at 刷新，幂等）。"""
+        at = dt.datetime.utcnow().isoformat()
+        self._c.execute(
+            "INSERT OR REPLACE INTO consume_pending VALUES (?,?,?)",
+            (int(auth_id), token_hash_hex, at),
+        )
+        self.c_commit()
+        return at
+
+    def consume_pending_all(self) -> list:
+        """全队列（auth_id, token_hash_hex, enqueued_at）——按入队序重试。"""
+        return self._c.execute(
+            "SELECT auth_id, token_hash_hex, enqueued_at FROM consume_pending "
+            "ORDER BY enqueued_at, auth_id"
+        ).fetchall()
+
+    def consume_pending_remove(self, auth_id: int, token_hash_hex: str) -> None:
+        """回报成功即删（幂等——行不存在为无害 no-op）。"""
+        self._c.execute(
+            "DELETE FROM consume_pending WHERE auth_id=? AND token_hash_hex=?",
+            (int(auth_id), token_hash_hex),
+        )
+        self.c_commit()

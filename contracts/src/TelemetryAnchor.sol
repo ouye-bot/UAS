@@ -51,4 +51,11 @@ contract TelemetryAnchor {
         emit RoleChanged("engine", engine, next, uint64(now));
         engine = next;
     }
+
+    // ---- 管理面移交（批 3.2：admin→governor 多签+时间锁，一次性仪式）----
+    function transferAdmin(address next) external onlyAdmin {
+        require(next != address(0), "bad admin");
+        emit RoleChanged("admin", admin, next, uint64(now));
+        admin = next;
+    }
 }

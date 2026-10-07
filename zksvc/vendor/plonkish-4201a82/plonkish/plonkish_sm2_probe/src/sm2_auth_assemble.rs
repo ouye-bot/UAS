@@ -247,6 +247,7 @@ mod tests {
             class_id: pi.class_id,
             id_number: pi.id_number,
             sn_h: sn_hash_of(&pi.serial),
+            serial: pi.serial.clone(),
             smt_siblings: Some(siblings),
             smt_root: Some(root),
         };
@@ -293,6 +294,7 @@ mod tests {
             class_id: pi.class_id,
             id_number: pi.id_number,
             sn_h: sn_hash_of(&pi.serial),
+            serial: pi.serial.clone(),
             smt_siblings: Some(siblings),
             smt_root: Some(root),
         };
@@ -412,6 +414,7 @@ mod tests {
             class_id: pi.class_id,
             id_number: pi.id_number,
             sn_h: sn_hash_of(&pi.serial),
+            serial: pi.serial.clone(),
             smt_siblings: Some(siblings),
             smt_root: Some(cur), // 伪造：根=含成员树（链上公示的 rev_root）
         };
@@ -442,6 +445,7 @@ mod tests {
             class_id: pi.class_id,
             id_number: pi.id_number,
             sn_h: sn_hash_of(&pi.serial),
+            serial: pi.serial.clone(),
             smt_siblings: Some(siblings),
             smt_root: Some(root),
         };
@@ -564,6 +568,7 @@ mod tests {
             class_id: pi.class_id,
             id_number: pi.id_number,
             sn_h: sn_hash_of(&pi.serial),
+            serial: pi.serial.clone(),
             smt_siblings: Some(fake_sib),
             smt_root: Some(root), // 真实公示根（链上/RA 镜像可验的那个值）
         };
@@ -673,6 +678,7 @@ mod tests {
             class_id: pi.class_id,
             id_number: pi.id_number,
             sn_h: sn_hash_of(&pi.serial),
+            serial: pi.serial.clone(),
             smt_siblings: Some(siblings),
             smt_root: Some(root2), // 拼接：k_other 树的路径+k_other2 树的根
         };
@@ -708,6 +714,7 @@ mod tests {
             class_id: declared, // 声明 class ≠ C 原像 class
             id_number: pi.id_number,
             sn_h: sn_hash_of(&pi.serial),
+            serial: pi.serial.clone(),
             smt_siblings: Some(siblings),
             smt_root: Some(root),
         };
@@ -787,6 +794,7 @@ mod tests {
             class_id: pi.class_id,
             id_number: pi.id_number,
             sn_h: sn_hash_of(&pi.serial),
+            serial: pi.serial.clone(),
             smt_siblings: Some(siblings),
             smt_root: Some(root),
         };

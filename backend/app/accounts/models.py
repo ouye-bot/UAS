@@ -46,8 +46,12 @@ class Account(Base):
     sealed_profile: Mapped[str | None] = mapped_column(Text, nullable=True)
     # 非敏感展示列：主凭证哈希（链上承诺句柄——本就是公示面）
     cred_hash_hex: Mapped[str | None] = mapped_column(String(64), nullable=True)
-    # 预置账户首登激活核对子（派生自初始密码；激活成功即焚——稳态零密码材料）
+    # 预置账户首登激活核对子（派生自初始密码；激活成功即焚——稳态零密码材料）。
+    # 批 2-2.2：核对子改独立派生域（PBKDF2 info="FZ-ACTIVATE-VERIFY|v1"）——
+    # 不再是 KEK 等价物；init_verifier_ver 标记格式（"v1"=独立域；NULL=旧种子
+    # KEK 等价格式——兼容读取，激活即焚=换代）。
     init_verifier_hex: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    init_verifier_ver: Mapped[str | None] = mapped_column(String(8), nullable=True)
     init_kdf_salt_hex: Mapped[str | None] = mapped_column(String(32), nullable=True)
     created_ts: Mapped[dt.datetime] = mapped_column(DateTime, default=dt.datetime.utcnow)
     last_login_ts: Mapped[dt.datetime | None] = mapped_column(DateTime, nullable=True)
@@ -91,7 +95,12 @@ class CollabRequest(Base):
     legal_basis_text: Mapped[str | None] = mapped_column(Text, nullable=True)
     note: Mapped[str] = mapped_column(Text, default="")
     req_hash_hex: Mapped[str] = mapped_column(String(64))
-    status: Mapped[str] = mapped_column(String(16), default="pending")  # pending/approved/rejected/executed
+    status: Mapped[str] = mapped_column(String(16), default="pending")  # pending/approved/executing/rejected/executed/execute_failed
+    # 执行租约（批 2-2.5③ 多副本失效面）：approved→executing 条件 UPDATE 时
+    # 落领取人+租约到期；执行线程心跳续租；重启恢复只回收 approved 与
+    # executing 中租约已过期者（活租约=他副本在途，不误杀）。
+    locked_by: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    lease_until: Mapped[dt.datetime | None] = mapped_column(DateTime, nullable=True)
     auditor_username: Mapped[str] = mapped_column(String(64))
     auditor_sig_hex: Mapped[str] = mapped_column(String(256))
     admin_username: Mapped[str | None] = mapped_column(String(64), nullable=True)
@@ -103,6 +112,39 @@ class CollabRequest(Base):
     created_ts: Mapped[dt.datetime] = mapped_column(DateTime, default=dt.datetime.utcnow)
     decided_ts: Mapped[dt.datetime | None] = mapped_column(DateTime, nullable=True)
     executed_ts: Mapped[dt.datetime | None] = mapped_column(DateTime, nullable=True)
+    # ---- 结案升格（0018）：结案=案件终局动作，须有结论+签名+时间戳的密码学重量 ----
+    # 结论枚举（verified=属实 / mistaken=误报 / inconclusive=无法查证）；
+    # 属实（verified）时 conclusion_text 服务端强制必填（终局判词不留白）。
+    conclusion: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    conclusion_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # 审计员钥签 FZ-COLLAB-CLOSE|v1|{req_hash}|{conclusion}|{conclusion_text}
+    conclusion_sig_hex: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    closed_ts: Mapped[dt.datetime | None] = mapped_column(DateTime, nullable=True)
+    # 案卷指纹（A6）：SM3(令状哈希|req_hash|双签名|函指纹|实名哈希|结论|closed_ts)
+    case_archive_fp_hex: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+
+class CaseLedger(Base):
+    """案件台账（append-only，0018 结案升格）：一行=一次案件终局动作。
+
+    结案此前仅条件 UPDATE status 列——零结论/零签名/零时间戳/零台账（对比：
+    驳回都强制理由+签名）。本表让案件终局逐笔留痕：req_hash+结论+审计员签名
+    +实名哈希+案卷指纹——collab_requests 行之外的独立复核锚（台账行永不
+    删除/改写）。"""
+    __tablename__ = "case_ledger"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    req_hash_hex: Mapped[str] = mapped_column(String(64), index=True)
+    warrant_hash_hex: Mapped[str] = mapped_column(String(64), index=True)
+    case_no: Mapped[str] = mapped_column(String(128))
+    action: Mapped[str] = mapped_column(String(32))  # close（结案；演进位：reopen 等）
+    conclusion: Mapped[str] = mapped_column(String(16))  # verified / mistaken / inconclusive
+    conclusion_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    sig_hex: Mapped[str] = mapped_column(String(256))  # 审计员结案签名
+    operator: Mapped[str] = mapped_column(String(64))  # 结案审计员用户名
+    identity_hash_hex: Mapped[str] = mapped_column(String(64))  # SM3(实名 username|id_number)
+    case_archive_fp_hex: Mapped[str] = mapped_column(String(64))  # 案卷指纹（A6）
+    closed_ts: Mapped[dt.datetime] = mapped_column(DateTime)
 
 
 class AccountPubkeyHistory(Base):
@@ -139,3 +181,16 @@ class AccountAdminLog(Base):
     username: Mapped[str] = mapped_column(String(64), index=True)
     operator: Mapped[str] = mapped_column(String(64))  # 动作发起者（offline_seed_script）
     detail: Mapped[str | None] = mapped_column(Text, nullable=True)  # 结构化补充（如被关闭的纪元号）
+
+
+class RateLimitBucket(Base):
+    """登录尝试限速桶（批 2-2.5① 多进程失效面）：/auth/* 尝试窗落库——
+    此前为进程内存固定窗（多副本部署各记各账、重启清零）。key=限速键
+    （如 "login|ip|username"），固定窗（window_start 起 window_s 秒）内
+    计数；跨进程共享语义=同库同窗。"""
+
+    __tablename__ = "rate_limit_buckets"
+
+    bucket_key: Mapped[str] = mapped_column(String(128), primary_key=True)
+    window_start: Mapped[dt.datetime] = mapped_column(DateTime)
+    hits: Mapped[int] = mapped_column(Integer, default=0)

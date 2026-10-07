@@ -5,7 +5,7 @@
   默认真链模式（需 WSL FISCO 四节点在线——脚本自动探活拉起）；--fake 切无链模式。
 
 拉起三服务（各占独立控制台窗口，Ctrl+C 或关窗即停）：
-  backend  http://127.0.0.1:8000  （含审计台 /audit/ui/）
+  backend  http://127.0.0.1:8000  （API/分发页 /verify/；治理台走 web 登录）
   bridge   http://127.0.0.1:8100
   web      http://localhost:5174
 停止：python scripts/demo_down.py（或直接关三个控制台窗口）。
@@ -34,7 +34,7 @@ CHECKLIST = """
   真链档：受理门控链视图（nonceUsed/pin）+worker recordAuth 真链上链+
   检查点/事件上链（/engine 面）全接线——阶段一二判决行在 docs/性能档案.md。
 
-前端（飞手五屏）  http://localhost:5174
+前端（飞手工作台）  http://localhost:5174
   ①我的记录     注册承诺 → 真实 RA 签发（链上 registerCommitment）
                 签发子凭证 → id′/24h 有效期
                 负例：坏格式身份证 → 后端 422 原样呈现
@@ -45,12 +45,11 @@ CHECKLIST = """
                 →「爬升一段」进入合规高度带（自动真采样 2Hz）→ 冲高触发
                 固件围栏红条 →「结束飞行并封链」（检查点锚定+DISARM）
   ④留痕与TRAIL  样本 ≥128 →「TRAIL 出证」（本机 ~1 分钟）→ 判决件三件套下载
-                → 第三方复验（verify-instances）；链上留痕面板第六屏同步
-  ⑤回执查询     跨屏回执码查询；负例：随机码 404
-审计台（治理面）  http://127.0.0.1:8000/audit/ui/
-  令牌          fake 档=fake-audit-token；真链档=每场随机（%TEMP%
-z_audit_token.txt）
-  流程          创建令状（logWarrant 上链）→ 无令状解锁拒 → RA 协作解锁
+                → 第三方复验（verify-instances）；链上留痕面板同步
+                （回执查询页已删 2026-10-04——回执码消费走③取件）
+审计台（治理面）  http://localhost:5174  审计员账户登录 → 审计工作台
+  流程          线索聚合（可立案过滤）→ 创建令状（logWarrant 上链）→
+                协作队列发起双控解锁（审计签名+管理员签名缺一不可）
                 → 追溯时间线（事件→令状→实名，链上单一事实源）
 【全真判决行】scenario_S1_fullchain.py 45 断言（登记→出证→ARM 真 SITL→
   合规飞行→TRAIL 证书→围栏触发取证→令状追溯，零替身）。
@@ -161,6 +160,20 @@ def main() -> int:
             env["FZ_CHAIN_ANCHOR"] = "fake"
             print("[chain] ⚠ 链不可达——本次以无链模式启动（fail-closed 诚实降级）")
     env["FZ_ZKSVC_DIR"] = str(UAS / "zksvc")
+    # .local_env 注入（2026-10-04 批3.2 根修）：链上交易钥已换 CSPRNG 随机
+    # （部署合约的角色=这四把钥）——backend/worker 不加载它们就退回派生
+    # 演示钥，链写全部被合约 revert（roles_live G.1 实弹 0x16 抓出）。解析
+    # export KEY=VALUE 行注入子进程 env；.local_env 为部署事实源，同键覆盖
+    # 外部值（与桥脚本 source 同语义）。真链档缺此文件=起服后在对账/写面
+    # 处人话报错，不静默。
+    _env_file = UAS / ".local_env"
+    if _env_file.exists():
+        import re as _re
+
+        for _line in _env_file.read_text(encoding="utf-8").splitlines():
+            _m = _re.match(r"^\s*(?:export\s+)?([A-Z0-9_]+)=(.*)\s*$", _line)
+            if _m and not _line.lstrip().startswith("#"):
+                env[_m.group(1)] = _m.group(2).strip().strip('"').strip("'")
     # 出证产物目录三服务同源（backend 受理对账 / worker 判决件 / bridge 写面
     # 共用同一 _cases_dir——缺省 /tmp 会让受理 400 case_incomplete 假败，
     # R2 收口实测踩雷：对账面读 backend/fz-zk-cases 而写面落 /tmp）。
@@ -207,10 +220,21 @@ def main() -> int:
 
     flags = subprocess.CREATE_NEW_CONSOLE if os.name == "nt" else 0
     procs = []
-    procs.append(subprocess.Popen(
-        [str(PY), "-m", "uvicorn", "app.main:create_app", "--factory",
-         "--host", "127.0.0.1", "--port", "8000"],
-        cwd=str(BACKEND), env=env, creationflags=flags))
+    # backend 日志落盘（2026-10-02 乙5 可观测性：JSON 日志/异常堆栈可回读——
+    # 控制台窗口缓冲不可编程回读的教训）。FZ_DEMO_LOGS=0 恢复控制台形态。
+    _logd = UAS / "logs" / "demo"
+    _logd.mkdir(parents=True, exist_ok=True)
+    if os.environ.get("FZ_DEMO_LOGS", "1") != "0":
+        _blog = open(_logd / "backend.log", "ab")
+        procs.append(subprocess.Popen(
+            [str(PY), "-m", "uvicorn", "app.main:create_app", "--factory",
+             "--host", "127.0.0.1", "--port", "8000"],
+            cwd=str(BACKEND), env=env, stdout=_blog, stderr=subprocess.STDOUT))
+    else:
+        procs.append(subprocess.Popen(
+            [str(PY), "-m", "uvicorn", "app.main:create_app", "--factory",
+             "--host", "127.0.0.1", "--port", "8000"],
+            cwd=str(BACKEND), env=env, creationflags=flags))
     # ③GCS 化拓扑统一（2026-09-27）：桥=SITL 同侧（WSL）——Windows 桥
     # （FakeLink）退役（真实测试策略：产品路径零合成遥测）。启动=模板脚本
     # （gcs_bridge_start.sh，自持真实 C 盘路径与密钥读文件）复制到 ASCII

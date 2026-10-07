@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import os
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
@@ -214,22 +215,27 @@ class _RecordingTransport:
 
 
 def _auth_recorded_receipt() -> dict:
-    """AuthRecorded 事件回执（indexed authId=5 在 topic1）。"""
+    """AuthRecorded 事件回执（indexed authId=5 在 topic1；sorties=3 在 data）。"""
     from app.chain.abi import sig_hash
 
     topic0 = (
         "0x"
         + sig_hash(
-            "AuthRecorded(uint256,bytes32,bytes16,uint8,uint16,uint40,uint40,bytes32,bytes32,address,uint64)",
+            "AuthRecorded(uint256,bytes32,bytes16,uint8,uint16,uint40,uint40,bytes32,bytes32,uint8,address,uint64)",
             gm=True,
         ).hex()
+    )
+    # 事件归属地址=当前绑定合约（地址簿轮换后同步——decode_logs 只认绑定
+    # 地址日志（SP-10.4.1），旧部署硬编码地址会被正确过滤）
+    addresses = json.loads(
+        (Path(__file__).resolve().parents[2] / "contracts" / ".chain_addresses.json").read_text()
     )
     return {
         "status": "0x0",
         "transactionHash": "0x" + "cd" * 32,
         "logs": [
             {
-                "address": "0x233610b9b4733f2306c9392bacf61d488b90ac48",
+                "address": addresses["FlightAuthRegistry"]["address"],
                 "topics": [topic0, "0x" + (5).to_bytes(32, "big").hex()],
                 "data": "0x",
             }
@@ -271,11 +277,15 @@ _RECORD_AUTH_KW = dict(
     t_end=1700003600,
     sub_cred_hash_hex="cc" * 32,
     proof_digest_hex="dd" * 32,
+    sorties=3,
 )
 
 
 def test_worker_real_record_auth_roundtrip():
-    """真链 recordAuth：calldata 同构+AuthRecorded 事件解出 authId=5。"""
+    """真链 recordAuth：calldata 同构+AuthRecorded 事件解出 authId=5。
+
+    授权包配额制（2026-10-06）：第 9 参 sorties=3 透传上链（缺省 1=令牌一次
+    性历史语义）。"""
     tr = _RecordingTransport(receipt=_auth_recorded_receipt())
     with _RealChainWorkerDeps(tr) as deps:
         auth_id, tx = deps.chain_record_auth(**_RECORD_AUTH_KW)
@@ -294,10 +304,11 @@ def test_worker_real_record_auth_roundtrip():
                 1700003600,
                 bytes.fromhex("cc" * 32),
                 bytes.fromhex("dd" * 32),
+                3,
             ],
         )
         sel = fn_selector(
-            "recordAuth(bytes32,bytes16,uint8,uint16,uint40,uint40,bytes32,bytes32)", gm=True
+            "recordAuth(bytes32,bytes16,uint8,uint16,uint40,uint40,bytes32,bytes32,uint8)", gm=True
         )
         assert expected[: len(sel)] == sel, "selector 前缀一致"
         data = expected[len(sel) :]
@@ -310,10 +321,50 @@ def test_worker_real_record_auth_roundtrip():
         assert w32(5)[-5:] == (1700003600).to_bytes(5, "big")  # tEnd uint40
         assert w32(6) == bytes.fromhex("cc" * 32)  # subCredHash
         assert w32(7) == bytes.fromhex("dd" * 32)  # proofDigest
+        assert w32(8)[-1] == 3  # sorties uint8（配额 1~5）
         send = next(c for c in tr.calls if c["method"] == "sendRawTransaction")
         raw = bytes.fromhex(send["params"][1].removeprefix("0x"))
         assert expected in raw, "calldata 完整嵌入签名交易（RLP payload）"
     assert auth_id == 5 and tx == "0x" + "cd" * 32
+
+
+def test_worker_real_consume_sortie_calldata():
+    """consumeSortie 链写（授权包配额制）：calldata=selector+authId 槽，
+    SortieConsumed 事件解出递减后 remaining=2。"""
+    from app.chain.abi import fn_selector, sig_hash
+
+    topic0 = (
+        "0x"
+        + sig_hash(
+            "SortieConsumed(uint256,uint8,address,uint64)",
+            gm=True,
+        ).hex()
+    )
+    receipt = {
+        "status": "0x0",
+        "transactionHash": "0x" + "ab" * 32,
+        "logs": [
+            {
+                "address": json.loads(
+                    (Path(__file__).resolve().parents[2] / "contracts" / ".chain_addresses.json").read_text()
+                )["FlightAuthRegistry"]["address"],
+                "topics": [topic0, "0x" + (7).to_bytes(32, "big").hex()],
+                # data: remaining=2 ‖ engine(32B) ‖ ts(32B)
+                "data": "0x"
+                + (2).to_bytes(32, "big").hex()
+                + "11" * 32
+                + (1790000100).to_bytes(32, "big").hex(),
+            }
+        ],
+    }
+    tr = _RecordingTransport(receipt=receipt)
+    with _RealChainWorkerDeps(tr) as deps:
+        remaining = deps.chain_consume_sortie(auth_id=7)
+    assert remaining == 2
+    expected = deps._fa_binding.encode_calldata("consumeSortie", [7])
+    sel = fn_selector("consumeSortie(uint256)", gm=True)
+    assert expected[: len(sel)] == sel
+    assert expected[len(sel) :] == (7).to_bytes(32, "big")
 
 
 def test_worker_real_burn_nonce_calldata():
@@ -387,12 +438,26 @@ def test_trail_binding_issues_engine_sig(client):
     assert r.status_code == 200
     d = r.json()["data"]
     assert d["alt_max_cm"] == 5000, "微型 50m × 100（TRAIL 电路 cm 口径）"
+    # 二批 BIND2：围栏 4 界随绑定权威供给（政策 FENCE_RECTS[0]——批1 1.7 收窄+
+    # 盲审二轮整改 2026-10-04：S4 合成场迁至 SITL 原点近旁（35.363S/149.165E），
+    # 单一演示空域单一矩形紧贴（-35.9°~-33.95°N / 148.6°~150.55°E，全在南半
+    # 球）、四界对两场半径余量≥0.5°）
+    assert d["min_lat"] == -359_000_000 and d["max_lat"] == -339_500_000
+    assert d["min_lon"] == 1_486_000_000 and d["max_lon"] == 1_505_500_000
     from app.kms import engine_pub_hex
 
-    msg = f"FZ-TRAIL-BIND|7|5000|{head}".encode()
+    msg = (
+        f"FZ-TRAIL-BIND2|7|5000|{head}|"
+        f"{d['min_lat']}|{d['max_lat']}|{d['min_lon']}|{d['max_lon']}"
+    ).encode()
     from app.crypto.sm2 import verify_digest
 
     assert verify_digest(engine_pub_hex(), sm3_bytes(msg), d["sig_hex"])
+    # 域分隔负例：旧格式 FZ-TRAIL-BIND 报文在 BIND2 验签下必须失效
+    old_msg = f"FZ-TRAIL-BIND|7|5000|{head}".encode()
+    assert not verify_digest(engine_pub_hex(), sm3_bytes(old_msg), d["sig_hex"]), (
+        "旧格式绑定报文不得通过 BIND2 验签（域分隔换代语义）"
+    )
     # 锚定证据（信封随 binding.json 发放）：内容+独立引擎签名可离线验
     ev = d["anchor_evidence"]
     assert ev["seq"] == 1 and ev["chain_head_hex"] == "cc" * 32

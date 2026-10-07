@@ -13,8 +13,6 @@
 
 from __future__ import annotations
 
-import json
-import secrets
 import sys
 from pathlib import Path
 
@@ -22,36 +20,27 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import requests  # noqa: E402
 
-from app.accounts.kdf import derive_kek  # noqa: E402
+from app.accounts.envelope import seal_envelope_v4, unseal_envelope  # noqa: E402
+from app.accounts.kdf import (  # noqa: E402
+    KDF_LEGACY_V3_ITERATIONS,
+    _legacy_v3,
+    derive_activation_verifier,
+)
 from app.crypto.sm2 import generate_keypair, sign  # noqa: E402
-from app.crypto.sm4 import SM4GCM  # noqa: E402
 
 
 def _unseal_blob(blob_text: str, passphrase: str) -> str:
-    """v3 信封解封（与前端 openKeystoreV3 同构）：KEK=KDF(pass,salt)→SM4-GCM。"""
-    env = json.loads(blob_text)
-    if env.get("v") != 3:
-        raise RuntimeError("密封件形态不符（v3）")
-    enc = env["enc"]
-    kek = bytes.fromhex(derive_kek(passphrase, enc["salt"]))
+    """信封解封（版本分派：v3 legacy 旧链 / v4 PBKDF2——与前端 openKeystore
+    同构）：KEK=按版本分派 KDF→SM4-GCM。"""
     try:
-        pt = SM4GCM(kek).decrypt(
-            bytes.fromhex(enc["nonce"]), bytes.fromhex(enc["ct"]), bytes.fromhex(enc["tag"]),
-            b"FZ-KEYSTORE-v3|pass",
-        )
+        return unseal_envelope(blob_text, passphrase)
     except Exception as e:  # noqa: BLE001  GCM 认证失败=密码错误（人话化）
         raise RuntimeError("密码错误（密封件解封失败）") from e
-    return pt.hex()
 
 
 def _sealed_blob(pk: str, sk: str, passphrase: str) -> str:
-    salt = secrets.token_hex(16)
-    nonce = secrets.token_hex(12)
-    kek = bytes.fromhex(derive_kek(passphrase, salt))
-    ct, tag = SM4GCM(kek).encrypt(bytes.fromhex(nonce), bytes.fromhex(sk), b"FZ-KEYSTORE-v3|pass")
-    return json.dumps(
-        {"v": 3, "pk": pk, "enc": {"salt": salt, "nonce": nonce, "ct": ct.hex(), "tag": tag.hex()}}
-    )
+    """v4 密封（keystore.ts sealKeystoreV4 同构——PBKDF2-HMAC-SM3）。"""
+    return seal_envelope_v4(sk, pk, passphrase)
 
 
 def script_login(api_base: str, username: str, password: str) -> requests.Session:
@@ -73,15 +62,22 @@ def script_login(api_base: str, username: str, password: str) -> requests.Sessio
         pre_r.raise_for_status()
         mode = pre_r.json()["data"]["mode"]
         if mode == "activation":
-            # 预置机构账户首登激活：核对子→钥对生成+密封上传（核对子随后即焚）
+            # 预置机构账户首登激活：核对子→钥对生成+密封上传（核对子随后即焚）。
+            # 核对子按 prelogin 下发格式分派（v1=独立域现行 / legacy_v3=旧种子
+            # 兼容读取面——两端同域复算）。
             sk, pk = generate_keypair()
             _remember_sk(sk)
             pk_no04 = pk  # 服务端 sm2 公钥=X‖Y 无 04 前缀
+            pre = pre_r.json()["data"]
+            if pre.get("verifier", "v1") == "legacy_v3":
+                verifier = _legacy_v3(password, pre["kdf_salt_hex"], KDF_LEGACY_V3_ITERATIONS)
+            else:
+                verifier = derive_activation_verifier(password, pre["kdf_salt_hex"])
             r = s.post(
                 f"{api_base}/auth/activate",
                 json={
                     "username": username,
-                    "verifier_hex": derive_kek(password, pre_r.json()["data"]["kdf_salt_hex"]),
+                    "verifier_hex": verifier,
                     "pubkey_hex": pk_no04,
                     "sealed_blob": _sealed_blob(pk_no04, sk, password),
                 },

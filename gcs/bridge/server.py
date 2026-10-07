@@ -16,9 +16,16 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 _engine_pub_cache: str | None = None
-from device_key import device_keypair
-from fence import TelemetryChain
-from sitl_link import FakeLink, FlightGate, SITLLink
+from device_key import device_keypair, device_serial
+from fence import SampleRejected, TelemetryChain
+from sitl_link import (
+    _REVOKE_CHECK_EVERY_N,
+    FakeLink,
+    FlightGate,
+    SITLLink,
+    is_real_link,
+    param_delta_ok,
+)
 from telemetry import LocalAudit
 
 app = FastAPI(title="FZ-GCS-Bridge", version="0.1")
@@ -53,8 +60,17 @@ _chain: TelemetryChain | None = None
 _chain_started_ts: float | None = None
 _breach_event_filed = False  # 违规事件已转发真链（前端切页重挂靠回放）
 
-_SERIAL = os.environ.get("FZ_DEVICE_SERIAL", "FZ-SN-DEV-01")
+_SERIAL = device_serial()  # SN 单源（2026-10-06 换代：与桥第 6 查同源）
 _DEV_PRIV, _DEV_PUB = device_keypair(_SERIAL)
+
+# 取证面计数器（批1）：/telemetry/state 可见——拒样/围栏漂移/无会话 ARM 处置。
+# B5 批2：revoke_alert_events=飞行中吊销复查命中拍数（闩锁存续期每 30s 一拍）。
+_COUNTERS = {
+    "rejected_samples": 0,
+    "fence_drift_events": 0,
+    "rogue_arm_events": 0,
+    "revoke_alert_events": 0,
+}
 
 
 class ArmIn(BaseModel):
@@ -94,10 +110,34 @@ def _require_armed():
 @app.post("/telemetry/start")
 def telemetry_start(body: ChainStartIn):
     global _chain
-    denied = _require_armed()
-    if denied:
-        return denied
-    _chain = TelemetryChain(body.auth_id, _DEV_PRIV, bytes.fromhex(body.fence_state_hex))
+    # 围栏证词单源化（批1-1.3）：检查点签名的围栏态不再来自客户端请求体
+    # （body.fence_state_hex 可与固件围栏任意背离=证词伪造面），改由闸门
+    # 会话状态构造（ARM 序列写后回读断言过的 fence_state）；auth_id 同源
+    # 核对——请求体无对应活跃会话=409。
+    session_aid = getattr(_gate, "session_auth_id", None)
+    gate_fs = getattr(_gate, "fence_state", None)
+    if not getattr(_gate, "is_armed", False) or session_aid is None or gate_fs is None:
+        return JSONResponse(
+            status_code=409,
+            content={
+                "ok": False,
+                "code": "no_active_session",
+                "message": "无活跃授权会话——请先完成授权解锁（ARM），围栏证词由闸门会话单源供给",
+            },
+        )
+    if int(body.auth_id) != int(session_aid):
+        return JSONResponse(
+            status_code=409,
+            content={
+                "ok": False,
+                "code": "auth_session_mismatch",
+                "message": (
+                    f"请求 auth_id={body.auth_id} 与当前授权会话（auth_id={session_aid}）不符——"
+                    "起链必须对应当前活跃授权（围栏证词单源）"
+                ),
+            },
+        )
+    _chain = TelemetryChain(session_aid, _DEV_PRIV, gate_fs)
     # 新架次=干净账本（2026-09-29 实测：breach_seen 闩锁跨架次存活，第二架次
     # 遥测立刻带"已触发围栏"脏标志+伪造违规事件——起链即归零）
     _link.breach_seen = False
@@ -105,7 +145,12 @@ def telemetry_start(body: ChainStartIn):
     global _chain_started_ts, _breach_event_filed
     _chain_started_ts = time.time()
     _breach_event_filed = False
-    return {"ok": True, "genesis_head_hex": _chain.head.hex(), "device_pub_hex": _DEV_PUB}
+    return {
+        "ok": True,
+        "genesis_head_hex": _chain.head.hex(),
+        "device_pub_hex": _DEV_PUB,
+        "fence_state_hex": gate_fs.hex(),  # 证词源回显（客户端可见实际入链围栏态）
+    }
 
 
 @app.get("/telemetry/state")
@@ -114,7 +159,9 @@ def telemetry_state():
     什么状态"照实恢复——服务器是唯一事实源，页面刷新/切页往返不再装作没飞过。
     只读；chain_not_started=本架次尚未起链（前端按未开始渲染）。"""
     if _chain is None:
-        return {"chain_active": False}
+        return {"chain_active": False, "counters": dict(_COUNTERS),
+                # 飞行中吊销告警（B5 批2）：未起链同样可见（闩锁值或 None）
+                "revoke_alert": getattr(_gate, "revoke_alert", None)}
     enable = _chain.fence_state[0] if len(_chain.fence_state) >= 3 else 0
     alt_max_cm = int.from_bytes(_chain.fence_state[1:3], "big") if len(_chain.fence_state) >= 3 else 0
     last_cp = _chain.checkpoints[-1] if _chain.checkpoints else None
@@ -132,13 +179,66 @@ def telemetry_state():
         "anchored_seq": _chain.anchored_seq,
         "breach_seen": bool(getattr(_link, "breach_seen", False)),
         "breach_event_filed": _breach_event_filed,
+        # 飞行中吊销告警（B5 批2）：闩锁值或 None——前端切页回放不丢告警
+        "revoke_alert": getattr(_gate, "revoke_alert", None),
         "fc_armed": fc_armed,
         "started_ts": _chain_started_ts,
+        # 合理性门/取证面计数（批1-1.4/1.6）
+        "rejected_count": _chain.rejected_count,
+        "last_reject": _chain.last_reject,
+        "counters": dict(_COUNTERS),
     }
+
+
+_FENCE_PATROL_EVERY_N = 40  # 2Hz × 40 样本 = 每 20s 巡检一次（批1-1.2）
+
+
+def _fence_patrol_if_due(t_srv: int, alt_cm: int) -> dict | None:
+    """飞行中围栏巡检（批1-1.2）：每 40 样本（2Hz≈20s）回读
+    FENCE_ENABLE/FENCE_ALT_MAX/FENCE_TYPE 与链证词值对拍——任一漂移=breach 类
+    审计事件+日志+计数。行为语义=FENCE_ACTION 不动（不新增自动降落：只检测+
+    取证，保持取证路径演示不破坏）。回读失败同样按漂移类取证（围栏状态不可
+    确认=不可盲信仍在）。返回 None=本拍不巡检或无漂移；dict=漂移取证。"""
+    if _chain is None or _chain.n == 0 or _chain.n % _FENCE_PATROL_EVERY_N != 0:
+        return None
+    fs = _chain.fence_state
+    wants = (
+        ("FENCE_ENABLE", float(fs[0])),
+        ("FENCE_ALT_MAX", float(int.from_bytes(fs[1:3], "big"))),
+        ("FENCE_TYPE", 3.0),
+    )
+    drifts: list[str] = []
+    for name, wv in wants:
+        try:
+            got = _link.get_param(name)
+        except Exception as e:  # noqa: BLE001 —— 回读失败=围栏状态不可确认
+            drifts.append(f"{name} 回读失败（{str(e)[:80]}）")
+            continue
+        if not param_delta_ok(wv, got):
+            drifts.append(f"{name} 飞控存量 {got} ≠ 证词值 {wv}")
+    if not drifts:
+        return None
+    detail = "飞行中围栏巡检漂移: " + "; ".join(drifts)
+    _audit.record_denial("fence_drift_detected", detail)
+    _COUNTERS["fence_drift_events"] += 1
+    print(f"[fence-patrol] {detail}", flush=True)
+    return {"detail": detail, "event": _chain.breach_event(t_srv, alt_cm, 2)}  # source=2 地面站监测
 
 
 @app.post("/telemetry/sample")
 def telemetry_sample(body: SampleIn):
+    # 结构性封禁（批1-1.5）：本端点只服务 fake 档受控测试面——真链路形态
+    # （SITLLink 非 FakeLink）下手工注样整体不可用（env 开关不得越结构界）。
+    if is_real_link(_link):
+        return JSONResponse(
+            status_code=403,
+            content={
+                "ok": False,
+                "code": "structural_ban",
+                "message": "真链路形态禁止手工注样——遥测唯一来源=飞控真采样"
+                "（/telemetry/sitl_sample）；合成样仅限 fake 档受控测试",
+            },
+        )
     if os.environ.get("FZ_ALLOW_SYNTHETIC_SAMPLE") != "1":
         return JSONResponse(
             status_code=403,
@@ -150,22 +250,36 @@ def telemetry_sample(body: SampleIn):
         return denied
     if _chain is None:
         return {"ok": False, "code": "chain_not_started"}
-    head = _chain.push(body.t_epoch, body.alt_cm, body.lat_1e7, body.lon_1e7)
+    # 服务端时间轴单源（批1-1.4）：客户端 t_epoch 忽略——链行时间由桥端
+    # time.time() 给定（倒拨/前拨不可达）；合理性门超界=拒样+计数。
+    t_srv = int(time.time())
+    try:
+        head = _chain.push(t_srv, body.alt_cm, body.lat_1e7, body.lon_1e7, wall=time.time())
+    except SampleRejected as e:
+        _COUNTERS["rejected_samples"] += 1
+        print(f"[telemetry] 合成样拒绝（{e.code}）: {e.message}", flush=True)
+        return {"ok": False, "code": f"sample_{e.code}", "message": e.message,
+                "rejected_count": _chain.rejected_count}
     cp = _chain.maybe_checkpoint(time.time(), None)
-    return {"ok": True, "head_hex": head.hex(), "n": _chain.n, "checkpoint": cp}
+    return {"ok": True, "head_hex": head.hex(), "n": _chain.n, "checkpoint": cp,
+            "t_epoch": t_srv}
 
 
 @app.get("/telemetry/sitl_sample")
 def telemetry_sitl_sample(t_epoch: int):
     """SITL 真采样（R1-4）：高度取自真飞控 GLOBAL_POSITION_INT（relative_alt mm
     折 cm），入链+围栏触发检测（STATUSTEXT）一体。fake 链路下拒绝（fail-closed
-    ——不伪造遥测）。"""
+    ——不伪造遥测）。
+
+    批1：t_epoch 参数忽略——服务端 time.time() 时间轴单源（客户端不可倒拨）；
+    入链经合理性门（fence.push——超界拒样计数）；每 40 样本围栏巡检（漂移=取证
+    事件）。"""
     denied = _require_armed()
     if denied:
         return denied
     if _chain is None:
         return {"ok": False, "code": "chain_not_started"}
-    if not isinstance(_link, SITLLink):
+    if not is_real_link(_link):
         return {"ok": False, "code": "not_sitl_link", "message": "FZ_GCS_LINK!=sitl（无真实遥测面）"}
     pos = _link.global_position()
     if pos is None:
@@ -175,12 +289,44 @@ def telemetry_sitl_sample(t_epoch: int):
     # 同源一致；飞行中语义不受影响——真实高度恒 ≥0）。
     alt_cm = max(0, pos["alt_mm"] // 10)
     _link.drain(0)
-    head = _chain.push(t_epoch, alt_cm, pos["lat_1e7"], pos["lon_1e7"])
+    t_srv = int(time.time())
+    try:
+        head = _chain.push(t_srv, alt_cm, pos["lat_1e7"], pos["lon_1e7"], wall=time.time())
+    except SampleRejected as e:
+        _COUNTERS["rejected_samples"] += 1
+        print(f"[telemetry] 样本拒绝（{e.code}）: {e.message}", flush=True)
+        return {"ok": False, "code": f"sample_{e.code}", "message": e.message,
+                "rejected_count": _chain.rejected_count}
     cp = _chain.maybe_checkpoint(time.time(), None)
     breached = _link.breach_seen
     event = None
+    drift = None
     if breached:
-        event = _chain.breach_event(t_epoch, alt_cm, 1)  # source=1 固件围栏
+        event = _chain.breach_event(t_srv, alt_cm, 1)  # source=1 固件围栏
+    else:
+        drift = _fence_patrol_if_due(t_srv, alt_cm)
+        if drift is not None:
+            event = drift["event"]  # 前端存在即转发 /telemetry/event（取证上链）
+    # 飞行中吊销复查（B5 批2）+授权窗到期收敛（信任根收口件2）：每 60 样本
+    # （2Hz≈30s）对 /authz/status 复查。异常不炸采样循环（fail-safe——复查失败
+    # 仅日志，遥测主径照常）。同拍（仅复查拍，非每样本——5s 超时网络面不得
+    # 进入 2Hz 主径）顺带触发消费回报队列重试（信任根收口件1：采样循环=
+    # 飞行期定时器；fail-safe 不炸主径）。
+    try:
+        rev_alert = _gate.revoke_recheck_if_due(_chain.n)
+        if rev_alert is not None:
+            _COUNTERS["revoke_alert_events"] += 1
+        if _chain.n % _REVOKE_CHECK_EVERY_N == 0:
+            _gate._retry_consume_pending()
+    except Exception as e:  # noqa: BLE001 —— 复查/重试面故障不阻断取证主径
+        rev_alert = None
+        print(f"[revoke-alert] 复查异常（fail-safe 继续）: {e}", flush=True)
+    # 信任根收口件2：授权窗到期=取证事件上链（source=2 地面站监测——复用
+    # drift 事件转发语义，前端将 event 转发 /telemetry/event 落链，取证链
+    # 保留）+检查点停锚（/telemetry/anchor 按 _gate.session_converged 拒锚）。
+    if rev_alert is not None and rev_alert.get("kind") == "auth_window_expired" and event is None:
+        event = _chain.breach_event(t_srv, alt_cm, 2)
+        print("[expiry-alert] 到期取证事件已生成（随采样响应出桥上链）", flush=True)
     # ③GCS 化旁路字段（姿态/飞控模式——仅 UI 态势面，不进 14B 链行）。
     att = getattr(_link, "last_attitude", None)
     mode = getattr(_link, "last_mode", None)
@@ -189,18 +335,24 @@ def telemetry_sitl_sample(t_epoch: int):
         "head_hex": head.hex(),
         "n": _chain.n,
         "alt_cm": alt_cm,
+        "t_epoch": t_srv,
         "checkpoint": cp,
         "fence_breached": breached,
         "last_statustext": _link.last_statustext,
         "event": event,
+        "fence_drift": drift is not None,
+        "fence_drift_detail": drift["detail"] if drift else None,
         "att": att,
         "mode": mode,
+        # 飞行中吊销告警（B5 批2）：命中拍回传闩锁值（结构化）——前端即时显告
+        "revoke_alert": rev_alert,
         # 飞控侧上锁位旁路（UI 横幅：gate armed 但 FC 落地自动上锁=提醒重解锁）
         "armed": getattr(_link, "last_fc_armed", None),
         # P3 遥测真实感：电池/GPS/HUD（drain 缓存直读——全部 MAVLink 现成字段）
         "bat": getattr(_link, "last_bat", None),
         "gps": getattr(_link, "last_gps", None),
         "hud": getattr(_link, "last_hud", None),
+        "rejected_count": _chain.rejected_count,
     }
 
 
@@ -276,9 +428,24 @@ def telemetry_anchor():
 
     推进 anchored_seq（只前进）；单条失败=停止并结构化回传（fail-closed——
     后续重试从断点续锚，不跳号不吞错）。
+
+    信任根收口件2（检查点停锚）：授权会话已收敛（撤销/授权窗到期闩锁命中）
+    ⟹ 拒绝新锚定（复用 backend auth_revoked 停锚语义——授权终结后不再产生
+    新锚定证词；已锚检查点=既成取证，不受影响不回滚）。
     """
     if _chain is None:
         return {"ok": False, "code": "chain_not_started"}
+    if getattr(_gate, "session_converged", lambda: False)():
+        why = "auth_revoked" if _gate.revoke_alert is not None else "auth_window_expired"
+        return {
+            "ok": False,
+            "code": why,
+            "message": (
+                "授权会话已终结（{}）——检查点停锚（复用撤销停锚语义）：不再产生新锚定证词，"
+                "已锚检查点取证保留".format("链上授权已撤销" if why == "auth_revoked" else "授权窗已到期")
+            ),
+            "anchored_seq": _chain.anchored_seq,
+        }
     results = []
     for cp in _chain.checkpoints:
         if cp["seq"] <= _chain.anchored_seq:
@@ -329,7 +496,7 @@ def telemetry_event(body: dict):
 @app.post("/sitl/wait_gps")
 def sitl_wait_gps(timeout_s: int = 120):
     """等待 GPS 锁（B5：SITL 起后 fix_type≥3 才可 ARM）。fake 链路=直接 ok。"""
-    if isinstance(_link, SITLLink):
+    if is_real_link(_link):
         locked = _link.wait_gps_lock(timeout_s)
         return {"ok": locked, "mode": "sitl"}
     return {"ok": False, "code": "sitl_required", "mode": "fake"}
@@ -367,7 +534,7 @@ def sitl_climb(pwm: int = 1700, hold_s: float = 2.0,
     denied = _require_armed()
     if denied:
         return denied
-    if not isinstance(_link, SITLLink):
+    if not is_real_link(_link):
         return {"ok": False, "code": "not_sitl_link", "message": "FZ_GCS_LINK!=sitl"}
     if getattr(_link, "last_fc_armed", None) is False:
         return {
@@ -448,10 +615,58 @@ def sitl_climb(pwm: int = 1700, hold_s: float = 2.0,
 @app.post("/sitl/disarm")
 def sitl_disarm():
     """停转+释放 RC（判决收尾）。"""
-    if not isinstance(_link, SITLLink):
+    if not is_real_link(_link):
         return {"ok": False, "code": "not_sitl_link"}
+    global _last_legit_disarm_ts
     _gate.disarm()
+    _last_legit_disarm_ts = time.time()  # 无会话监视的合法停转宽限窗起点
     return {"ok": True}
+
+
+# ---- 无会话 ARM 监视器（批1-1.6）：FC armed 而闸门无活跃授权会话=令牌外解锁 ----
+
+_ROGUE_ARM_INTERVAL_S = 2.0
+_DISARM_GRACE_S = 10.0  # 合法停转后 FC 心跳 armed 位滞后窗——不误报
+_last_legit_disarm_ts = 0.0
+_rogue_thread_started = False
+
+
+def rogue_arm_check() -> bool:
+    """无会话 ARM 单次检查（后台监视线程每 _ROGUE_ARM_INTERVAL_S 调用）。
+
+    FC armed 位=1 而 _gate 无活跃授权会话（is_armed=False）→ 令牌外解锁形态
+    （rogue arm）。处置：立即 DISARM 尝试+结构化审计事件（rogue_arm_detected）
+    +日志；事件计数入 /telemetry/state。返回 True=本次检出并已处置。
+    单测注：直接调用本函数即可断言（不经线程——确定性）。"""
+    fc_armed = getattr(_link, "last_fc_armed", None)
+    if fc_armed is not True or getattr(_gate, "is_armed", False):
+        return False
+    if time.time() - _last_legit_disarm_ts < _DISARM_GRACE_S:
+        return False  # 合法停转后的心跳滞后——非 rogue
+    _gate.disarm()  # DISARM 尝试+RC 释放+授权态复位（幂等）
+    _COUNTERS["rogue_arm_events"] += 1
+    detail = "无会话 ARM 检出：FC armed 而桥无活跃授权会话——已发 DISARM 尝试（取证在案）"
+    _audit.record_denial("rogue_arm_detected", detail)
+    print(f"[rogue-arm] {detail}", flush=True)
+    return True
+
+
+def _start_rogue_arm_monitor() -> None:
+    global _rogue_thread_started
+    if _rogue_thread_started:
+        return
+    _rogue_thread_started = True
+
+    def _loop():
+        while True:
+            try:
+                rogue_arm_check()
+            except Exception as e:  # noqa: BLE001 —— 监视线程不许死（异常照实留痕）
+                print(f"[rogue-arm] 监视检查异常（继续）: {e}", flush=True)
+            time.sleep(_ROGUE_ARM_INTERVAL_S)
+
+    threading.Thread(target=_loop, daemon=True, name="rogue-arm-monitor").start()
+    print("[rogue-arm] 无会话 ARM 监视器已挂载（2s 周期）", flush=True)
 
 
 @app.get("/arm/status")
@@ -460,7 +675,11 @@ def arm_status(token_payload_hex: str):
     =审计库（SQLite 持久，跨桥重启/页面刷新存活）。
 
     used=该令牌已有成功解锁记录；can_rearm=同会话授权延续窗口（授权门仍开 ∧
-    飞控侧已回落上锁——重解锁路径可用，此时前端按钮应显式可点）。"""
+    飞控侧已回落上锁——重解锁路径可用，此时前端按钮应显式可点）。
+    授权包配额制（2026-10-06 多架次拍板）：增 remaining/sorties（backend
+    /authz/status 权威配额——前端「剩余架次 N」显示与新架次按钮判定）与
+    local_sorties（本地架次账本计数）。查询面故障=配额三值 None（前端退化
+    回令牌一次性显示；配额执法在闸门预检面，不受显示面故障影响）。"""
     try:
         payload = bytes.fromhex(token_payload_hex)
     except ValueError:
@@ -471,12 +690,24 @@ def arm_status(token_payload_hex: str):
         and getattr(_gate, "is_armed", False)
         and getattr(_link, "last_fc_armed", None) is False
     )
-    return {"ok": True, "used": used, "can_rearm": can_rearm}
+    from sitl_link import authz_quota_fetch
+
+    quota = authz_quota_fetch(payload)
+    return {
+        "ok": True,
+        "used": used,
+        "can_rearm": can_rearm,
+        "remaining": quota["remaining"],
+        "sorties": quota["sorties"],
+        "local_sorties": _audit.sortie_count(payload),
+    }
 
 
 @app.get("/link_status")
 def link_status():
-    mode = "sitl" if isinstance(_link, SITLLink) else "fake"
+    # 批1-1.5：FakeLink 是 SITLLink 子类——裸 isinstance 在 fake 档误报
+    # "sitl"（真档探活假绿）。真链路面判定单源 is_real_link。
+    mode = "sitl" if is_real_link(_link) else "fake"
     info = {"mode": mode, "conn": getattr(_link, "conn_str", None)}
     if mode == "sitl":
         info["breach_seen"] = _link.breach_seen
@@ -486,16 +717,23 @@ def link_status():
 
 @app.get("/engine_pub")
 def engine_pub():
-    """引擎公钥（公开面——Web 端验签消费）。R3-B2：改代理 backend
-    （/authz/engine/pub），桥进程不再持有 FZ_ENGINE_SK（TCB 对齐）。"""
+    """引擎公钥+本机序列号（公开面——Web 端验签与 SN 单源消费）。R3-B2：改代理
+    backend（/authz/engine/pub），桥进程不再持有 FZ_ENGINE_SK（TCB 对齐）。
+
+    device_serial（SN 单源根治 2026-10-07）：响应携带本机序列号读数（与第 6 查
+    device_serial()、设备钥派生同一单源）——网页注册/申请自此取桥读数，网页自由
+    文本与桥本机读数无对齐 ⟹ 首次 ARM 必 sn_mismatch 的产品缺口就此封死。
+    安全注记：桥仅绑 127.0.0.1/WSL loopback（CORS 限 localhost/127.0.0.1），
+    序号公开面=本机进程；demo 档设备钥本由 SN 派生（公开已知语义），生产档钥
+    来自 SE、SN 公开无碍——公开本机 SN 不新增暴露面。"""
     global _engine_pub_cache
     if _engine_pub_cache:
-        return {"engine_pub_hex": _engine_pub_cache}
+        return {"engine_pub_hex": _engine_pub_cache, "device_serial": _SERIAL}
     try:
         r = _post_engine("/authz/engine/pub", {}) if False else _get_backend("/authz/engine/pub")
         d = r.get("data") or r
         _engine_pub_cache = d["engine_pub_hex"]
-        return {"engine_pub_hex": _engine_pub_cache}
+        return {"engine_pub_hex": _engine_pub_cache, "device_serial": _SERIAL}
     except Exception as e:  # noqa: BLE001
         from fastapi import HTTPException
 
@@ -507,3 +745,27 @@ def audit():
     return {"arms": _audit._c.execute(
         "SELECT token_hash_hex, auth_id, first_arm_at FROM token_arms").fetchall(),
         "denials": _audit.denials()}
+
+
+@app.on_event("startup")
+def _prove_startup_recovery():
+    """出证任务启动恢复（2026-10-04 任务二）：桥重启后库里进行中任务如实标
+    failed（bridge_restarted——可重试，不虚报 done）+遗留 zkc 孤儿进程击杀；
+    看门狗守护线程挂载（lease_until 超时强杀 stalled 任务）。失败不阻断启动
+    （恢复面非关键路径——日志留痕）。"""
+    from prover import _recover_tasks_on_startup, _start_prove_watchdog
+
+    try:
+        n = _recover_tasks_on_startup()
+        if n:
+            print(f"[bridge] 启动恢复：{n} 个进行中出证任务如实标 failed"
+                  f"（bridge_restarted——可重新发起）", flush=True)
+    except Exception as e:  # noqa: BLE001
+        print(f"[bridge] 出证任务启动恢复失败（忽略）: {e}", flush=True)
+    _start_prove_watchdog()
+    # 无会话 ARM 监视器（批1-1.6）：FC armed 而闸门无活跃授权会话 →
+    # DISARM 尝试+取证。守护线程——挂载失败不阻断启动。
+    try:
+        _start_rogue_arm_monitor()
+    except Exception as e:  # noqa: BLE001
+        print(f"[bridge] 无会话 ARM 监视器挂载失败（忽略）: {e}", flush=True)

@@ -19,6 +19,11 @@ bincode = "1.3.3"
 serde = { version = "1.0.152", features = ["derive"] }
 serde_json = "1.0"
 hex = "0.4"
+# A3（组合 A，2026-10-06）：mimalloc 全局分配器——压 Windows LFH 碎片残差
+#（prove 峰值窗 13K 列级分配/释放 churn）。离线钉定：registry 不可达 ⟹
+# 上游 mimalloc 0.1.43 / libmimalloc-sys 0.1.39 原样快照于 vendor-deps/
+#（仅依赖指向 path 化，零源码改动）。
+mimalloc = { path = "vendor-deps/mimalloc-0.1.43" }
 
 [[bin]]
 name = "zkc"

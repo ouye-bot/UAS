@@ -1,0 +1,60 @@
+{
+ "schema": 1,
+ "source_run_id": "81020a89db3f",
+ "created": "2026-10-03T11:06:24",
+ "concurrency": 1,
+ "budget": {
+  "used": 5,
+  "cap": 6
+ },
+ "runs_planned": 5,
+ "runs": [
+  {
+   "run": 0,
+   "warmup": false,
+   "user": "perf_p1_81020a89db3f_0",
+   "register_ms": 632.347600068897,
+   "sub_cred_ms": 52.31189995538443,
+   "binding_ms": 27.21109997946769,
+   "submit_ms": 60.19190000370145,
+   "gate_wait_s": 0.06019750004634261,
+   "submit_retries": 0,
+   "t_epoch": 1790996579,
+   "gate_probe_code": 429,
+   "gate_probe_ms": 38.67099992930889,
+   "polls": 43,
+   "prove_e2e_ms": 87462.98900002148,
+   "gate_wait_ms": 60.19750004634261,
+   "assemble_ms": 2118.122800020501,
+   "prove_ms": 85344.86620000098,
+   "apply_ms": 471.4196000713855,
+   "worker_ms": 3183.902299962938,
+   "fetch_ms": 21.101500024087727,
+   "auth_id": 235,
+   "arm_ms": 113936.14380003419
+  }
+ ],
+ "gate": [
+  {
+   "run": 0,
+   "code": 429,
+   "ms": 38.7
+  }
+ ],
+ "curve": {
+  "samples": 150,
+  "peak_rss_mb": 10099.5,
+  "avg_rss_mb": 2531.3,
+  "win_peak_rss_mb": 10038.1,
+  "wsl_peak_rss_mb": 61.3,
+  "topology": {
+   "backend_pid_8000": 25632,
+   "worker": "Windows app.zk.worker 全实例",
+   "zkc": "Windows zkc.exe（WSL 桥 interop 生成——档案 L795 判决行）",
+   "bridge": "WSL（server:app，/proc 4s 粒度）",
+   "note": "拓扑自适应扩展：Windows 面（backend 端口持有者+worker+zkc.exe）+WSL 面（桥 server:app）聚合曲线"
+  }
+ },
+ "wall_s": null,
+ "throughput_per_min": null
+}

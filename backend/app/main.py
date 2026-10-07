@@ -12,6 +12,18 @@ from app.telemetry.router import router as telemetry_router
 
 
 def create_app() -> FastAPI:
+    # 批 2-2.3：production 档 KMS 演示钥退出默认——任一 FZ_*_SK 未注入即拒绝
+    # 启动（人话列出缺项）。demo（环回）档直接通过，维持现状可跑。
+    from app.kms import assert_no_demo_keys_in_production
+
+    assert_no_demo_keys_in_production()
+
+    # 批 4-2：production 档服务形态断言——链锚 fake 缺省/遥测 stub/DB 未配置
+    # 三形态逐条人话拒启（demo 环回档零影响）。
+    from app.deployment import assert_production_services
+
+    assert_production_services()
+
     app = FastAPI(title="feizheng-backend", version="0.1.0")
     # P1-B1 可观测性：JSON 日志+request_id 贯穿+零依赖指标
     import logging
@@ -44,7 +56,7 @@ def create_app() -> FastAPI:
 
     @app.exception_handler(Exception)
     async def unhandled_to_json(request: Request, exc: Exception):
-        rid = getattr(request.state, "fz_rid", None) or new_request_id()
+        rid = getattr(request.state, "fz_rid", None) or new_request_id(request.headers.get("X-Request-ID"))
         logging.getLogger("fz.http").error(
             f"unhandled {type(exc).__name__}: {exc} rid={rid} path={request.url.path}"
         )
@@ -62,7 +74,7 @@ def create_app() -> FastAPI:
 
     @app.middleware("http")
     async def obs_middleware(request: Request, call_next):
-        rid = new_request_id()
+        rid = new_request_id(request.headers.get("X-Request-ID"))  # 跨程透传（桥/worker 带入）
         request.state.fz_rid = rid  # 异常处理器可引用同一追踪号
         t0 = time.perf_counter()
         response = await call_next(request)
@@ -131,6 +143,39 @@ def create_app() -> FastAPI:
             print(f"[FZ-STARTUP] 双控执行恢复：{_n} 条 approved 残留已转 execute_failed（可重试）", flush=True)
     except Exception as _e:  # noqa: BLE001
         _log.getLogger("fz.startup").warning(f"双控启动恢复跳过（{_e}）")
+
+    # 过期 Web 会话回收（2026-10-04 worker 扩展前置批）：web_sessions 只进不清
+    # =慢性膨胀——启动即清一次（失败不阻断启动——回收面非关键路径）。
+    try:
+        from app.accounts.service import purge_expired_sessions
+        from app.db import SessionLocal as _SessionLocal
+
+        _s = _SessionLocal()
+        try:
+            _n2 = purge_expired_sessions(_s)
+            if _n2:
+                print(f"[FZ-STARTUP] 过期 Web 会话回收：{_n2} 行", flush=True)
+        finally:
+            _s.close()
+    except Exception as _e:  # noqa: BLE001
+        _log.getLogger("fz.startup").warning(f"过期会话回收跳过（{_e}）")
+
+    # 存量 v3 信封启动扫查（拍板③③）：production 判定档下清点 v3 信封账户，
+    # >0 打印显式告警（数量+账户名掩码+处置指引）。不拒启——账户级问题不
+    # 阻断服务；库不可达同样只告警（诚实可见）。demo 档零影响（函数内判定）。
+    try:
+        from app.accounts.service import v3_envelope_stock_report
+        from app.db import SessionLocal as _SessionLocal
+
+        _s3 = _SessionLocal()
+        try:
+            _v3rep = v3_envelope_stock_report(_s3)
+            if _v3rep:
+                print(_v3rep, flush=True)
+        finally:
+            _s3.close()
+    except Exception as _e:  # noqa: BLE001
+        _log.getLogger("fz.startup").warning(f"存量 v3 信封扫查跳过（{_e}）")
 
     # 撤销纪元根启动守卫（2026-10-01 批）：真链档启动即自检——链上公示根 vs
     # 本地撤销镜像根，漂移即幂等对齐（复用 align_rev_root 推链核心，epoch+1

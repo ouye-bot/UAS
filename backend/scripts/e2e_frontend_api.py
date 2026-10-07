@@ -44,6 +44,9 @@ ZKC = UAS / "zksvc" / "target" / "release" / "zkc.exe"
 
 _checks = 0
 
+ID_NUMBER = "11010119900101" + secrets.token_hex(2)  # 逐轮随机（B7 黑名单纪律）
+
+
 def ok(label: str) -> None:
     global _checks
     _checks += 1
@@ -159,10 +162,10 @@ def main() -> int:
     # ============ [入口] 登记承诺 ============
     print("== [入口] 登记承诺 ==")
     holder_sk, holder_pk = generate_keypair()
-    sn = "FZ-SCR-" + secrets.token_hex(2)
+    sn = os.environ.get("FZ_DEVICE_SERIAL", "FZ-SN-DEV-01")  # ⑥代 SN 绑定：与桥 device_serial 同源单读（一证一机闭环）
     rc, reg = api("/ra/register", {
         "username": "scr-" + secrets.token_hex(3),
-        "id_number": "110101199001011234",
+        "id_number": ID_NUMBER,
         "cert_level": 3, "sn": sn, "user_pub_hex": holder_pk, "class_id": 1,
     })
     expect(rc == 200 and reg["code"] == "ok" and "master_cred_hash_hex" in reg.get("data", {}),
@@ -186,7 +189,7 @@ def main() -> int:
         rc, out = api("/ra/sub-credentials", {
             "master_cred_hash_hex": cred["master_cred_hash_hex"],
             "salt_hex": cred["salt_hex"],
-            "id_number": "110101199001011234",
+            "id_number": ID_NUMBER,
             "cert_level": 3, "sn": sn, "holder_pub_hex": sub_pk,
         })
         expect(rc == 200 and out["code"] == "ok", "子凭证签发", f"rc={rc}")
@@ -204,7 +207,7 @@ def main() -> int:
     expect(rc == 200 and "root_hex" in snap.get("data", {}), "2.2 撤销快照（公示根）")
     rc, nf = api("/ra/sub-credentials", {
         "master_cred_hash_hex": "ab" * 32, "salt_hex": "cd" * 16,
-        "id_number": "110101199001011234", "cert_level": 3, "sn": sn, "holder_pub_hex": sub1_pk,
+        "id_number": ID_NUMBER, "cert_level": 3, "sn": sn, "holder_pub_hex": sub1_pk,
     })
     expect(rc == 404 and nf.get("code") == "not_found", "2.3 坏 master 哈希 → 404 not_found", f"rc={rc}")
 
@@ -219,7 +222,7 @@ def main() -> int:
 
     rc, start = bridge("/prove/start", {
         "plan_hash_hex": plan_hash_hex, "nonce_hex": nonce_hex, "class_id": 1,
-        "id_number": "110101199001011234", "cert_level": 3, "sn": sn,
+        "id_number": ID_NUMBER, "cert_level": 3, "sn": sn,
         "salt_hex": cred["salt_hex"], "id_prime_hex": sub1["id_prime_hex"],
         "sig_hex": sub1["sig_hex"], "expires_at": sub1["expires_at"],
         "holder_sk_hex": sub1_sk, "holder_pk_hex": sub1_pk,
@@ -256,6 +259,9 @@ def main() -> int:
     expect(rc == 200 and ap.get("ok"), "3.5 受理通过（回执码签发）")
     receipt_code = ap["data"]["receipt_code"]
 
+    # 3.6 语义换代（批 4 案卷归属门后）：逐字节重放=幂等 200 返原申请（不二次
+    # 授权——先证幂等轴）；子凭证一次性负例改真隔离（同子凭证+全新
+    # nonce/计划/案卷 ⟹ 除子凭证面全新外全合法 ⟹ 必死于 sub_cred_used）。
     rc2, replay = api("/authz/apply", {
         "session_pk_hex": holder_pk,
         "sub_cred_message_hex": sub1["message_hex"], "sub_sig_hex": sub1["sig_hex"],
@@ -265,8 +271,49 @@ def main() -> int:
         "rev_root_hex": api("/ra/revocation/snapshot")[1]["data"]["root_hex"],
         "t_start": prove_t_epoch, "t_end": prove_t_epoch + 7200,
     })
-    expect(rc2 == 409 and replay.get("code") == "sub_cred_used",
-           "3.6 重放申请 → 409 sub_cred_used（屏②负例）", f"rc={rc2}")
+    expect(rc2 == 200 and replay["data"]["receipt_code"] == receipt_code,
+           "3.6a 逐字节重放=幂等返原件（批 4 语义——无二次授权）", f"rc={rc2}")
+    # 3.6b 隔离配套真案卷（门序实证：案卷产物门先于子凭证消费门——随机案卷
+    # 号死于 case_incomplete；用 sub1 材料先证一张未绑定案卷〔消费≠吊销，
+    # 见证仍可得〕，再以该案卷+同子凭证全新 nonce/计划申请 ⟹ 必死 sub_cred_used）
+    # 绑定单源纪律（2026-10-07 门序定谳）：apply 必须消费**该案卷出证所用**的
+    # 同一 plan/nonce/t_epoch（与 3.3→3.5 主流程同款）——另取随机 nonce/旧
+    # t_epoch 会在门⑤实例一致性被抢先拒成 instance_mismatch，打不到子凭证
+    # 一次性独立轴（门序：③链查重→⑤实例核对→库级查重）。新材料仅复用子凭证
+    # ⟹ 过全部先序门，唯一复用项=子凭证 ⟹ sub_cred_used（链级③′或库级查重，
+    # 同码双保险）。
+    _plan36 = secrets.token_bytes(32).hex()
+    _nonce36 = secrets.token_bytes(16).hex()
+    rc36, start36 = bridge("/prove/start", {
+        "plan_hash_hex": _plan36, "nonce_hex": _nonce36,
+        "class_id": 1, "id_number": ID_NUMBER, "cert_level": 3, "sn": sn,
+        "salt_hex": cred["salt_hex"], "id_prime_hex": sub1["id_prime_hex"],
+        "sig_hex": sub1["sig_hex"], "expires_at": sub1["expires_at"],
+        "holder_sk_hex": sub1_sk, "holder_pk_hex": sub1_pk,
+    }, timeout=30)
+    _st36 = "assembling"
+    _t36 = time.time()
+    while _st36 in ("assembling", "proving"):
+        time.sleep(5)
+        _, _t = bridge(f"/prove/task/{start36['task_id']}")
+        _st36 = _t.get("status") or _t.get("data", {}).get("status", _st36)
+        if time.time() - _t36 > 1500:
+            raise SystemExit(1)
+    expect(_st36 == "done", f"3.6b-0 隔离案卷出证（{time.time() - _t36:.0f}s）")
+    _t_epoch36 = start36["binding"]["t_epoch"]
+    rc2b, replay2 = api("/authz/apply", {
+        "session_pk_hex": holder_pk,
+        "sub_cred_message_hex": sub1["message_hex"], "sub_sig_hex": sub1["sig_hex"],
+        "sub_cred_hash_hex": sub1["sub_cred_hash_hex"],
+        "nonce_hex": _nonce36,
+        "plan_hash_hex": _plan36, "class_id": 1,
+        "case_id": start36["case_id"],
+        "rev_root_hex": api("/ra/revocation/snapshot")[1]["data"]["root_hex"],
+        "t_start": _t_epoch36, "t_end": _t_epoch36 + 7200,
+    })
+    expect(rc2b == 409 and replay2.get("code") == "sub_cred_used",
+           "3.6b 子凭证一次性（真隔离：新材料仅子凭证复用）→ 409 sub_cred_used（屏②负例）",
+           f"rc={rc2b}")
 
     sub2, _sub2_sk, sub2_pk = issue_sub()  # 换新子凭证材料（nonce 复用轴）
     # 一次性出示钥对拍②（任务判据）：两次签发=两把不同出示钥——出示公钥层
@@ -274,17 +321,40 @@ def main() -> int:
     expect(sub1["message_hex"][192:320] != sub2["message_hex"][192:320]
            and sub2["message_hex"][192:320] == sub2_pk.lower(),
            "2.4 新子凭证=新出示钥（两次签发 pk′ 互异且各绑定本报文——跨申请不可链接）")
+    # 3.7 隔离配套（同 3.6b 手法）：sub2 新材料+**同 nonce** 先证真案卷，
+    # 再申请 ⟹ 材料面全新合法、唯一复用项=nonce ⟹ 必死 nonce_used（链级烧毁）。
+    _plan37 = secrets.token_bytes(32).hex()
+    rc37, start37 = bridge("/prove/start", {
+        "plan_hash_hex": _plan37, "nonce_hex": nonce_hex,
+        "class_id": 1, "id_number": ID_NUMBER, "cert_level": 3, "sn": sn,
+        "salt_hex": cred["salt_hex"], "id_prime_hex": sub2["id_prime_hex"],
+        "sig_hex": sub2["sig_hex"], "expires_at": sub2["expires_at"],
+        "holder_sk_hex": _sub2_sk, "holder_pk_hex": sub2_pk,
+    }, timeout=30)
+    _st37 = "assembling"
+    _t37 = time.time()
+    while _st37 in ("assembling", "proving"):
+        time.sleep(5)
+        _, _t = bridge(f"/prove/task/{start37['task_id']}")
+        _st37 = _t.get("status") or _t.get("data", {}).get("status", _st37)
+        if time.time() - _t37 > 1500:
+            raise SystemExit(1)
+    expect(_st37 == "done", f"3.7-0 隔离案卷出证（同 nonce，{time.time() - _t37:.0f}s）")
+    # 绑定单源纪律（同 3.6b）：t_epoch 消费**本案卷**出证绑定——nonce 保持复用
+    # （隔离轴本体），其余维度全新合法 ⟹ 唯一复用项=nonce ⟹ nonce_used
+    # （链级③烧毁先行，库级查重兜底——worker 排水时序无关，确定性打中）。
+    _t_epoch37 = start37["binding"]["t_epoch"]
     rc3, nonce_replay = api("/authz/apply", {
         "session_pk_hex": holder_pk,
         "sub_cred_message_hex": sub2["message_hex"], "sub_sig_hex": sub2["sig_hex"],
         "sub_cred_hash_hex": sub2["sub_cred_hash_hex"],
-        "nonce_hex": nonce_hex, "plan_hash_hex": plan_hash_hex, "class_id": 1,
-        "case_id": case_id,
+        "nonce_hex": nonce_hex, "plan_hash_hex": _plan37, "class_id": 1,
+        "case_id": start37["case_id"],
         "rev_root_hex": api("/ra/revocation/snapshot")[1]["data"]["root_hex"],
-        "t_start": prove_t_epoch, "t_end": prove_t_epoch + 7200,
+        "t_start": _t_epoch37, "t_end": _t_epoch37 + 7200,
     })
     expect(rc3 == 409 and nonce_replay.get("code") == "nonce_used",
-           "3.7 同 nonce 换新子凭证 → 409 nonce_used（链级重放拒绝）", f"rc={rc3}")
+           "3.7 同 nonce 换新子凭证（真隔离）→ 409 nonce_used（链级重放拒绝）", f"rc={rc3}")
 
     # ============ [③令牌与飞行] 取件→ARM→遥测→锚定 ============
     print("== [③令牌与飞行] 取件→ARM→遥测→锚定 ==")
@@ -338,7 +408,7 @@ def main() -> int:
     # API 级模拟=同材料 holder_sk_hex 传空。
     rc, nodisk = bridge("/prove/start", {
         "plan_hash_hex": plan_hash_hex, "nonce_hex": nonce_hex, "class_id": 1,
-        "id_number": "110101199001011234", "cert_level": 3, "sn": sn,
+        "id_number": ID_NUMBER, "cert_level": 3, "sn": sn,
         "salt_hex": cred["salt_hex"], "id_prime_hex": sub1["id_prime_hex"],
         "sig_hex": sub1["sig_hex"], "expires_at": sub1["expires_at"],
         "holder_sk_hex": "", "holder_pk_hex": sub1_pk,
@@ -488,8 +558,10 @@ def main() -> int:
     b = bj.get("binding", {})
     ev = bj.get("anchor_evidence") or {}
     from app.crypto.sm2 import verify_digest as _vdig
+    # 二批 BIND2 扩域：绑定签名覆盖围栏 4 界（离线复核报文同步换代）
     ok_bind = _vdig(engine_pub_hex, sm3_bytes(
-        f"FZ-TRAIL-BIND|{b.get('auth_id')}|{b.get('alt_max_cm')}|{b.get('chain_head_hex')}".encode()),
+        (f"FZ-TRAIL-BIND2|{b.get('auth_id')}|{b.get('alt_max_cm')}|{b.get('chain_head_hex')}"
+         f"|{b.get('min_lat')}|{b.get('max_lat')}|{b.get('min_lon')}|{b.get('max_lon')}").encode()),
         b.get("sig_hex", ""))
     ok_evid = _vdig(engine_pub_hex, sm3_bytes(
         f"FZ-ANCHOR-EVID|{tok['authId']}|{ev.get('seq')}|{ev.get('chain_head_hex')}".encode()),

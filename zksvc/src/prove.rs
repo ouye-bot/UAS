@@ -61,6 +61,9 @@ impl BasefoldExtParams for ZkcVerifySpec {
 type Pcs = Basefold<FpSM2, Sm3, ZkcVerifySpec>;
 type Pb = HyperPlonk<Pcs>;
 type T = SM3Transcript<Cursor<Vec<u8>>>;
+/// 优化 2 缓存面类型单源：prove 侧参数 / 验证侧参数（zk_cache 工件的内存形态）。
+type ProverParam = <Pb as PlonkishBackend<FpSM2>>::ProverParam;
+type VerifierParam = <Pb as PlonkishBackend<FpSM2>>::VerifierParam;
 
 /// 种子三件（P4 逐字；证明字节因 D18 掩蔽新鲜熵不跨次复现——非复现锚，
 /// 见模块头种子口径）。
@@ -118,6 +121,9 @@ pub fn pcs_switches() -> PcsSwitches {
 /// 都是关）——自述与消费方分叉=判决件说谎，比不披露更糟。
 const ENV_MASK_OFF: &str = "MASK_OFF";
 
+/// 部署档声明 env（信任根收口件4）：production 判定的唯一开关面。
+const ENV_DEPLOYMENT: &str = "FZ_DEPLOYMENT";
+
 /// 掩蔽状态自述（评审 P3-2）：verdict.json 必须记录掩蔽态——MASK_OFF 置位时
 /// 证明可链接且外观不可检，判决件是唯一披露面（pcs_switches 同纪律）。
 pub fn mask_flag() -> &'static str {
@@ -126,6 +132,42 @@ pub fn mask_flag() -> &'static str {
     } else {
         "on"
     }
+}
+
+/// 部署档判定（信任根收口件4）：production = 显式声明 `FZ_DEPLOYMENT=production`
+/// （大小写不敏感——与 backend app/deployment.py is_production 的显式声明面同口径）。
+///
+/// 🔴 为何只认显式声明、不从构型 profile 推断放宽：FZ_ZK_PROFILE 三档
+/// （release-demo/dev/pinned）全部是演示/开发/对拍档，没有 production 档——
+/// "profile 不含 production" 与 "环回绑定即 demo"（backend 的非环回判定）都
+/// 是**可用性启发**；zkc 是单任务独立进程，读不到绑定面。掩蔽关闭=证明可链接
+/// 是硬安全属性，判定必须显式、保守、可审计：默认 demo（现状可跑），置
+/// production 即收紧。
+pub fn deployment_is_production() -> bool {
+    std::env::var(ENV_DEPLOYMENT)
+        .map(|v| v.trim().eq_ignore_ascii_case("production"))
+        .unwrap_or(false)
+}
+
+/// MASK_OFF 出证准入（信任根收口件4）：production 档 + MASK_OFF 置位 → 拒绝
+/// 出证（人话：掩蔽关闭=证明可链接，零知识声明失效——生产环境禁止）。
+/// 非 production（demo/dev/pinned）保持现状：仅 stderr 警示+判决件自述，
+/// 诊断/对照构型照常可跑。Err=拒绝（调用方 prove_pipeline 在任何装配/IO 前
+/// fail-closed 退出，exit 2 判决纪律）。
+pub fn mask_off_admission() -> Result<(), ProveError> {
+    if mask_flag() != "off" {
+        return Ok(());
+    }
+    if !deployment_is_production() {
+        // 现状保持：stderr 警条（评审 P3-2）——判决件自述 mask=off 唯一披露面
+        eprintln!(
+            "[warn] MASK_OFF 置位：ZK 掩蔽已关闭（证明可链接）——仅限诊断/对照构型，判决件已自述 mask=off"
+        );
+        return Ok(());
+    }
+    Err(ProveError::MaskOffInProduction(
+        "MASK_OFF 置位于 production 部署档——拒绝出证：掩蔽关闭=证明可链接（零知识声明失效），生产环境禁止；如需诊断构型请在非 production 档执行".to_string(),
+    ))
 }
 
 /// 部署默认（系统线 SV-3 决策 2026-09-17，论文线授权"SV-3 通过后自行翻默认"）：
@@ -159,6 +201,9 @@ pub enum ProveError {
     /// verdict=FAIL/exit 2，不得 panic 逃逸（2026-09-06 假见证 8 任务连炸
     /// exit 101 实证——67e4571 半成品重构的补完面）。
     InvalidStatement(String),
+    /// 信任根收口件4：production 部署档 + MASK_OFF（掩蔽关闭=证明可链接）
+    /// ——出证拒绝（fail-closed，先于任何装配/IO 零副作用）。
+    MaskOffInProduction(String),
 }
 
 impl std::fmt::Display for ProveError {
@@ -169,6 +214,7 @@ impl std::fmt::Display for ProveError {
             ProveError::Io(e) => write!(f, "IO: {e}"),
             ProveError::Backend(e) => write!(f, "后端: {e}"),
             ProveError::InvalidStatement(e) => write!(f, "证明输入非法（工作线程断言）: {e}"),
+            ProveError::MaskOffInProduction(e) => write!(f, "出证拒绝（掩蔽关闭）: {e}"),
         }
     }
 }
@@ -329,6 +375,22 @@ macro_rules! phase {
     };
 }
 
+/// 出示私钥交付通道自述（批 4-6）：spec 空 holder_sk_hex=env 注入通道（"env"
+/// ——私钥字节不落盘）；spec 携带=witness 通道（"witness"——与既有判决件字节
+/// 口径一致）。TRAIL/无输入档无发行方私钥面——维持既有值（判决件字节不变）。
+fn issuer_key_source(spec: &JobSpec) -> &'static str {
+    match &spec.input {
+        Some(ProfileInput::Auth { holder_sk_hex, .. }) => {
+            if holder_sk_hex.trim().is_empty() {
+                "env"
+            } else {
+                "witness"
+            }
+        }
+        _ => "witness",
+    }
+}
+
 #[derive(Serialize)]
 struct VerdictFile<'a> {
     profile: &'a str,
@@ -347,9 +409,11 @@ struct VerdictFile<'a> {
     verdict: &'a str,
     #[serde(skip_serializing_if = "Option::is_none")]
     verify_error: Option<&'a String>,
-    /// SP-20 R-4②：t1 发行方私钥交付通道降级标记（审计面）——"env"=服务化
-    /// 主路径（spec.json 零私钥字节）；"spec"=CLI/探针兼容回落（磁盘明文窗口，
-    /// 判决件可检）。判定逻辑与 assemble.rs 逐字段对齐（env 优先，权威在装配侧）。
+    /// SP-20 R-4②：发行方出示私钥交付通道自述（审计面，批 4-6 收口）——
+    /// "env"=服务化主路径（spec.json 零私钥字节，私钥经 FZ_ZK_HOLDER_SK_HEX
+    /// 注入）；"witness"=spec 明文回落（磁盘明文窗口，判决件可检；
+    /// FZ_ZK_FORBID_SPEC_KEY=1 时装配面直接拒绝该通道）。判定与 assemble.rs
+    /// resolve_holder_sk 同源同判（权威在装配侧，此处按 spec 形态同式复算）。
     #[serde(skip_serializing_if = "Option::is_none")]
     issuer_key_source: Option<&'a str>,
     /// Pred 档公开谓词参数（审计面：判决件自述"证的是哪个阈值/哪个 schema"）。
@@ -372,13 +436,11 @@ struct VerdictFile<'a> {
 /// 退出码语义由 CLI 层映射：OK=0 / 其余=2）。
 pub fn prove_pipeline(spec: &JobSpec, out_dir: &Path) -> Result<ProveReport, ProveError> {
     let t_all = Instant::now();
-    // 0) 电路身份指纹前置（fail-closed：漂移即拒，零副作用不建目录）
-    if mask_flag() == "off" {
-        // 评审 P3-2：掩蔽关闭必须显眼可见（stderr 警条）——verdict.json 同步自述
-        eprintln!(
-            "[warn] MASK_OFF 置位：ZK 掩蔽已关闭（证明可链接）——仅限诊断/对照构型，判决件已自述 mask=off"
-        );
-    }
+    // 0) 出证准入（信任根收口件4，fail-closed 最前置）：production + MASK_OFF
+    // =拒绝出证——零副作用不建目录不读 vendor（比指纹前置更早，掩蔽关闭=
+    // 证明可链接的构型在生产档根本没有出证资格）。
+    mask_off_admission()?;
+    // 0') 电路身份指纹前置（fail-closed：漂移即拒，零副作用不建目录）
     let fingerprint = vendor_fingerprint(&service_vendor_dir()?).map_err(ProveError::PinDrift)?;
 
     // 1) 大栈线程全链：装配→setup→preprocess→prove→落盘→盘上回读 verify
@@ -413,25 +475,89 @@ pub fn prove_pipeline(spec: &JobSpec, out_dir: &Path) -> Result<ProveReport, Pro
         // 废除 asm 全程驻留克隆与 JobCircuit 构造克隆（见证 4 份→2 份）。
         // 取证/审计钩子字段（tags/ledger/eg/ep…）随 asm 解构即弃——prove 管线零消费。
         let plonkish_sm2_probe::sm2_verify_assemble::Assembled {
-            info, advice, instances, ..
+            mut info, advice, instances, ..
         } = asm;
+        // 优化 2（跨证明确定性产物复用）：info 规范化（环内排序+环列排序）——
+        // 与 ①定谳探针 auth_cross_message_cached_params_e2e（第五版，2026-09-26
+        // 手动跑全绿）同构。装配器 HashMap 迭代序使原始 permutations 跨次装配
+        // 不可复现；规范化后电路结构=profile 纯函数（auth_structure_canonical_
+        // identity_guard 钉死）⟹ setup/preprocess 产物 (pp,vp) 跨消息恒等，
+        // 可按指纹键跨证明复用（见下方 zk_cache 集成）。
+        for ring in info.permutations.iter_mut() {
+            ring.sort();
+        }
+        info.permutations.sort();
         let circuits = JobCircuit {
             info,
             advice: std::sync::Mutex::new(Some(advice)),
             instances,
         };
 
-        let t0 = Instant::now();
-        let param = Pb::setup(&circuits.info, StdRng::seed_from_u64(SEED_SETUP ^ nv as u64))
-            .map_err(|e| ProveError::Backend(format!("{e:?}")))?;
-        let t_setup = t0.elapsed();
-        phase!(t_pipe, "setup_done batch_size_param");
-
-        let t0 = Instant::now();
-        let (pp, vp) = Pb::preprocess(&param, &circuits.info)
-            .map_err(|e| ProveError::Backend(format!("{e:?}")))?;
-        let t_pre = t0.elapsed();
-        phase!(t_pipe, "preprocess_done");
+        // 优化 2：setup+preprocess 产物 (pp,vp) 磁盘缓存（磁盘工件+惰性加载，
+        // 免常驻 daemon——设计定谳见 zk_cache 模块头）。键=指纹键（含电路身份
+        // 指纹+规范化 info 结构摘要+档位/构型），指纹换代/结构漂移自动键旋转。
+        // 🔴 随机性纪律红线：build 闭包只含 pinned setup（公开常数种子
+        // SEED_SETUP）+ preprocess（预处理承诺盐链=ChaCha8(public_salt_seed⊕
+        // domain)，公开种子确定性导出）——每证明盲化 λ/m 列/transcript 新鲜熵
+        // （OsRng）只在下方 Pb::prove 内现抽，绝不入缓存。
+        let structure_digest = {
+            use sm3::Digest as _;
+            let mut h = sm3::Sm3::new();
+            h.update(&bincode::serialize(&circuits.info).unwrap_or_default());
+            h.finalize().iter().map(|x| format!("{x:02x}")).collect::<String>()
+        };
+        let key_src = format!(
+            "fz-zk-pp-cache|fmt={}|fp={}|profile={:?}|reps={}|rate={}|k={}|struct={}|pcs={}",
+            crate::zk_cache::ARTIFACT_CACHE_FMT,
+            fingerprint,
+            spec_c.profile,
+            spec_c.reps,
+            spec_c.log_rate,
+            nv,
+            structure_digest,
+            pcs_switches().tag(),
+        );
+        let info_ref = &circuits.info;
+        let (params, cache_outcome) = crate::zk_cache::cached(
+            &key_src,
+            &crate::zk_cache::NAMES,
+            |blobs| -> Option<((ProverParam, VerifierParam), f64, f64)> {
+                let pp: ProverParam = bincode::deserialize(blobs.first()?).ok()?;
+                let vp: VerifierParam = bincode::deserialize(blobs.get(1)?).ok()?;
+                // (0,0)=占位分段时长；命中时真实耗时=Hit.load_s（下方覆写）
+                Some(((pp, vp), 0.0, 0.0))
+            },
+            || {
+                let t0 = Instant::now();
+                let param = Pb::setup(info_ref, StdRng::seed_from_u64(SEED_SETUP ^ nv as u64))
+                    .map_err(|e| format!("setup: {e:?}"))?;
+                let setup_s = t0.elapsed().as_secs_f64();
+                let t1 = Instant::now();
+                let (pp, vp) = Pb::preprocess(&param, info_ref)
+                    .map_err(|e| format!("preprocess: {e:?}"))?;
+                let pre_s = t1.elapsed().as_secs_f64();
+                let pp_b = bincode::serialize(&pp).map_err(|e| format!("pp 序列化: {e}"))?;
+                let vp_b = bincode::serialize(&vp).map_err(|e| format!("vp 序列化: {e}"))?;
+                Ok((((pp, vp), setup_s, pre_s), vec![pp_b, vp_b]))
+            },
+        );
+        // build 失败沿既有错误面（Backend）——缓存不吞错不改错
+        let ((pp, vp), mut t_setup, mut t_pre) = params.ok_or_else(|| {
+            ProveError::Backend(match &cache_outcome {
+                crate::zk_cache::Outcome::Miss { reason, .. }
+                | crate::zk_cache::Outcome::Off { reason } => reason.clone(),
+                crate::zk_cache::Outcome::Hit { .. } => {
+                    "不可达（命中必有产物）".to_string()
+                }
+            })
+        })?;
+        if let crate::zk_cache::Outcome::Hit { load_s } = &cache_outcome {
+            // 判决件耗时口径：命中时 setup=0（全跳过）、preprocess=缓存加载
+            // （读盘+SM3 校验+反序列化）——与纯计算口径可区分，收益可对账。
+            t_setup = 0.0;
+            t_pre = *load_s;
+        }
+        phase!(t_pipe, "params_ready cache={}", cache_outcome.tag());
 
         // 2.5) verifier 参数落盘（判决件第三件）。🔴 Task 6 深坑定谳：Basefold
         // commit 内嵌 D18 Phase 2 ZK 掩蔽（fresh mask_seed per commit）⟹
@@ -505,8 +631,8 @@ pub fn prove_pipeline(spec: &JobSpec, out_dir: &Path) -> Result<ProveReport, Pro
             proof_sm3_hex: sm3_hex(&proof_disk),
             structure: asm_structure,
             timings: Timings {
-                setup_s: t_setup.as_secs_f64(),
-                preprocess_s: t_pre.as_secs_f64(),
+                setup_s: t_setup,
+                preprocess_s: t_pre,
                 prove_s: t_prove.as_secs_f64(),
                 verify_s: t_verify.as_secs_f64(),
                 total_s: t_all.elapsed().as_secs_f64(),
@@ -532,9 +658,9 @@ pub fn prove_pipeline(spec: &JobSpec, out_dir: &Path) -> Result<ProveReport, Pro
             total_s: report.timings.total_s,
             verdict: report.verdict.as_str(),
             verify_error: report.verify_error.as_ref(),
-            // 飞证 AUTH：签名四件自载荷（witness 通道恒定——RA 签发面在 backend，
-            // zkc 零 RA 钥；issuer_key_source 审计面保留=witness）
-            issuer_key_source: Some("witness"),
+            // 飞证 AUTH：签名四件交付通道（批 4-6 起双通道可辨——env=主路径
+            // 私钥不落盘，witness=spec 明文回落档；TRAIL 无私钥面维持原值）
+            issuer_key_source: Some(issuer_key_source(&spec_c)),
             pred_theta,
             pred_schema_seg_hex,
             pcs_switches: report.pcs_switches,
@@ -728,6 +854,24 @@ pub struct BindingExpectations {
     /// 「0=缺失拒」误伤）；None（JSON 键缺席/null）才是缺失。
     #[serde(default)]
     pub t_start: Option<u32>,
+    /// TRAIL 采样周期 ms（二批换代改动2：实例 3 钉定必携——Option 形态，
+    /// 0 是哨兵非法但 None 才是缺失）。声明与记录 Δt 不符会被电路拒绝——
+    /// 期望核对钉的是「验证方认哪份周期」。
+    #[serde(default)]
+    pub sample_period_ms: Option<u32>,
+    /// TRAIL 矩形围栏 4 界（二批换代改动1：实例 4..7 钉定必携——期望面
+    /// 携带经纬度原值 i32×1e7（负值=南/西半球），核对前按偏置编码折算）。
+    #[serde(default)]
+    pub fence: Option<TrailFenceExpectations>,
+}
+
+/// TRAIL 围栏期望（4 界 i32×1e7——与 PolicyFace FENCE_RECTS/绑定面同口径）。
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct TrailFenceExpectations {
+    pub min_lat: i64,
+    pub max_lat: i64,
+    pub min_lon: i64,
+    pub max_lon: i64,
 }
 
 // ── R4 第二批 A-路线#3：canonical 电路 info 指纹键控磁盘缓存 ──
@@ -872,8 +1016,21 @@ pub fn verify_instances(
     } else {
         spec_path_auth.or(spec_path_trail)
     }
+    .or_else(|| {
+        // README 流程兜底（2026-10-07 队长实弹 UX 根修）：规范文件随判决件/
+        // 分发页同目录发放——未设 env 时从当前目录自动发现同名规范文件，
+        // 第三方验证不再因漏设环境变量而 rc=1。
+        let name = if want_trail {
+            "trail_canonical_spec.json"
+        } else {
+            "auth_canonical_spec.json"
+        };
+        std::path::Path::new(name)
+            .is_file()
+            .then(|| name.to_string())
+    })
     .ok_or_else(|| {
-        ProveError::Io("FZ_AUTH_CANONICAL_SPEC 未配置（canonical 电路参照缺失）".into())
+        ProveError::Io("canonical 电路参照缺失——请把规范文件（trail_canonical_spec.json / auth_canonical_spec.json）与本包放同一目录，或设置 FZ_TRAIL_CANONICAL_SPEC / FZ_AUTH_CANONICAL_SPEC 环境变量".into())
     })?;
     let text = std::fs::read_to_string(&canonical_spec_path)
         .map_err(|e| ProveError::Io(format!("canonical spec 不可读: {e}")))?;
@@ -964,6 +1121,66 @@ pub fn verify_instances(
         };
         if got2_fe != plonkish_sm2_probe::FpSM2::from(u64::from(want_t)) {
             return fail("实例 2（t_start）与声明起始时间不一致——拒绝".to_string());
+        }
+        // 二批换代（改动2）：周期实例 3 钉定必携——期望缺失/实例缺失/域元素
+        // 非法/值不符四类一律 FAIL（人话报错，与 alt_max/t_start 同法）。
+        let Some(want_period) = expected.sample_period_ms else {
+            return fail(
+                "TRAIL 期望绑定缺 sample_period_ms（采样周期实例 3 钉定必携——fail-closed）"
+                    .to_string(),
+            );
+        };
+        if want_period == 0 {
+            return fail("TRAIL 期望绑定 sample_period_ms=0 非法（周期域 1..60000）".to_string());
+        }
+        let got3 = match inst_hex.get(3) {
+            Some(g) => g.clone(),
+            None => return fail("实例 3 缺失（sample_period_ms）".to_string()),
+        };
+        let got3_fe = match crate::ctx_tag::fp_from_be32_hex(&got3) {
+            Some(f) => f,
+            None => return fail("实例 3 非法域元素（sample_period_ms）".to_string()),
+        };
+        if got3_fe != plonkish_sm2_probe::FpSM2::from(u64::from(want_period)) {
+            return fail("实例 3（sample_period_ms）与声明采样周期不一致——拒绝".to_string());
+        }
+        // 二批换代（改动1）：围栏 4 界实例 4..7 钉定必携（期望携经纬度原值，
+        // 偏置编码折算后逐位核对——e=(v+2^31) mod 2^32，与电路 bias_u32 同式）。
+        let Some(fence) = &expected.fence else {
+            return fail(
+                "TRAIL 期望绑定缺 fence（矩形围栏 4 界实例 4..7 钉定必携——fail-closed）"
+                    .to_string(),
+            );
+        };
+        let bias = |v: i64| -> Option<u32> {
+            let e = v + (1i64 << 31);
+            if (0..=0xFFFF_FFFF).contains(&e) {
+                Some(e as u32)
+            } else {
+                None
+            }
+        };
+        let fence_slots: [(&str, i64, usize); 4] = [
+            ("min_lat", fence.min_lat, 4),
+            ("max_lat", fence.max_lat, 5),
+            ("min_lon", fence.min_lon, 6),
+            ("max_lon", fence.max_lon, 7),
+        ];
+        for (name, want_v, idx) in fence_slots {
+            let Some(want_b) = bias(want_v) else {
+                return fail(format!("TRAIL 围栏期望 {name} 越经纬度值域（|lat|≤90°、|lon|≤180°）"));
+            };
+            let got = match inst_hex.get(idx) {
+                Some(g) => g.clone(),
+                None => return fail(format!("实例 {idx} 缺失（{name}）")),
+            };
+            let got_fe = match crate::ctx_tag::fp_from_be32_hex(&got) {
+                Some(f) => f,
+                None => return fail(format!("实例 {idx} 非法域元素（{name}）")),
+            };
+            if got_fe != plonkish_sm2_probe::FpSM2::from(u64::from(want_b)) {
+                return fail(format!("实例 {idx}（{name}）与围栏期望不一致——拒绝"));
+            }
         }
     } else {
     // 期望实例逐位核对（域元素形态——任何一维不符即 FAIL，先于重验证）
@@ -1199,6 +1416,8 @@ mod tests {
             e_hex: String::new(),          // 🔴 被测面：缺失
             alt_max_cm: 0,
             t_start: None,
+            sample_period_ms: None,
+            fence: None,
         };
         let report = verify_instances(
             &dir.join("proof.bin"),
@@ -1270,6 +1489,8 @@ mod tests {
             e_hex: String::new(),
             alt_max_cm: alt,
             t_start: ts,
+            sample_period_ms: None,
+            fence: None,
         };
         let files = (
             dir.join("proof.bin"),
@@ -1314,6 +1535,120 @@ mod tests {
         std::env::remove_var("FZ_TRAIL_CANONICAL_SPEC");
     }
 
+    /// 二批换代负例（改动1/改动2）：TRAIL 期望缺 sample_period_ms / fence ⟹
+    /// verify-instances 拒绝（实例 3/4..7 公开钉必携——期望面残缺 fail-closed）；
+    /// 围栏期望与实例 4..7 值不符 ⟹ 拒绝且原因具名。
+    #[test]
+    fn verify_instances_trail_missing_period_fence_fail_closed() {
+        use plonkish_sm2_probe::sm2_z_anchor::fe_be32;
+        use plonkish_sm2_probe::smt_weave::fold_words_be;
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        std::env::set_var("FZ_ZK_ALLOW_TRAIL", "1");
+        let spec = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/trail_canonical_spec.json");
+        std::env::set_var("FZ_TRAIL_CANONICAL_SPEC", &spec);
+
+        // 实例 0..3 合法（链头/alt_max/t_start/周期），专测实例 4..7 期望门。
+        let head_bytes: [u8; 32] = std::array::from_fn(|i| (i as u8) ^ 0x6B);
+        let head_fold = fold_words_be(&head_bytes);
+        let head_hex: String = head_bytes.iter().map(|b| format!("{b:02x}")).collect();
+        let fe = |v: u64| {
+            use ff::PrimeField;
+            let mut repr = <plonkish_sm2_probe::FpSM2 as PrimeField>::Repr::default();
+            repr.as_mut()[..8].copy_from_slice(&v.to_le_bytes());
+            let x = plonkish_sm2_probe::FpSM2::from_repr(repr).into_option().expect("u64 域元素");
+            fe_be32(&x).iter().map(|b| format!("{b:02x}")).collect::<String>()
+        };
+        let bias = |v: i64| -> String { fe((v + (1i64 << 31)) as u64) };
+        let dir = std::env::temp_dir().join(format!("fz-trail-exp2-neg-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("proof.bin"), b"garbage").unwrap();
+        std::fs::write(dir.join("verifier_param.bin"), b"garbage").unwrap();
+        let inst_head = fe_be32(&head_fold).iter().map(|b| format!("{b:02x}")).collect::<String>();
+        let inst8 = format!(
+            r#"{{"instances":["{inst_head}","{}","{}","{}","{}","{}","{}","{}"]}}"#,
+            fe(12_000),
+            fe(1_700_000_000),
+            fe(500),
+            bias(300_000_000),
+            bias(320_000_000),
+            bias(1_200_000_000),
+            bias(1_220_000_000),
+        );
+        let files = (
+            dir.join("proof.bin"),
+            dir.join("verifier_param.bin"),
+            dir.join("instances.json"),
+        );
+        std::fs::write(&files.2, &inst8).unwrap();
+        let fence_ok = crate::prove::TrailFenceExpectations {
+            min_lat: 300_000_000,
+            max_lat: 320_000_000,
+            min_lon: 1_200_000_000,
+            max_lon: 1_220_000_000,
+        };
+        let mk = |period: Option<u32>, fence: Option<crate::prove::TrailFenceExpectations>| BindingExpectations {
+            challenge_hex: String::new(),
+            pred_id: String::new(),
+            t_epoch: 0,
+            required_level: 0,
+            class_id: 0,
+            smt_root_hex: String::new(),
+            chain_head_hex: head_hex.clone(),
+            e_hex: String::new(),
+            alt_max_cm: 12_000,
+            t_start: Some(1_700_000_000),
+            sample_period_ms: period,
+            fence,
+        };
+
+        // ① 缺 sample_period_ms ⟹ FAIL 且原因具名。
+        let r1 = verify_instances(&files.0, &files.1, &files.2, &mk(None, Some(fence_ok.clone())))
+            .expect("期望残缺走 FAIL 判决");
+        assert_eq!(r1.verdict, "FAIL");
+        assert!(
+            r1.reason.clone().unwrap_or_default().contains("sample_period_ms"),
+            "拒绝原因必须具名 sample_period_ms：{:?}",
+            r1.reason
+        );
+
+        // ② 有周期缺 fence ⟹ FAIL 且原因具名。
+        let r2 = verify_instances(&files.0, &files.1, &files.2, &mk(Some(500), None))
+            .expect("期望残缺走 FAIL 判决");
+        assert_eq!(r2.verdict, "FAIL");
+        assert!(
+            r2.reason.clone().unwrap_or_default().contains("fence"),
+            "拒绝原因必须具名 fence：{:?}",
+            r2.reason
+        );
+
+        // ③ 围栏期望与实例不符（东界收窄 1）⟹ FAIL 且原因具名 max_lon。
+        let fence_bad = crate::prove::TrailFenceExpectations { max_lon: 1_219_999_999, ..fence_ok.clone() };
+        let r3 = verify_instances(&files.0, &files.1, &files.2, &mk(Some(500), Some(fence_bad)))
+            .expect("期望不符走 FAIL 判决");
+        assert_eq!(r3.verdict, "FAIL");
+        assert!(
+            r3.reason.clone().unwrap_or_default().contains("max_lon"),
+            "拒绝原因必须具名 max_lon：{:?}",
+            r3.reason
+        );
+
+        // ④ 全期望一致（垃圾证明仍会在后端验证拒绝——但实例核对门必须放行）
+        // ⟹ FAIL 原因不再是实例核对（到达后端验证段）。
+        let r4 = verify_instances(&files.0, &files.1, &files.2, &mk(Some(500), Some(fence_ok)))
+            .expect("垃圾证明走 FAIL 判决");
+        assert_eq!(r4.verdict, "FAIL");
+        let reason4 = r4.reason.clone().unwrap_or_default();
+        assert!(
+            !reason4.contains("实例") && !reason4.contains("围栏期望不一致"),
+            "全期望一致时不得以实例核对拒绝：{reason4:?}"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+        std::env::remove_var("FZ_TRAIL_CANONICAL_SPEC");
+    }
+
     /// SV-3 纪律：判决件必须显式记录 PCS 部署开关三件（同一电路在不同构型下尺寸/时延
     /// 不同，判决行须自述"证的是哪种构型"）。取值与 vendor 判定同式：env 恰为 "1" 才开。
     #[test]
@@ -1348,6 +1683,67 @@ mod tests {
         assert_eq!(mask_flag(), "off", "存在即关（与 vendor is_ok() 同式——置 0 也是关）");
         std::env::remove_var(ENV_MASK_OFF);
         assert_eq!(mask_flag(), "on", "取除后恢复缺省（无跨测试泄漏）");
+    }
+
+    /// 信任根收口件4：MASK_OFF 出证准入——production 档拒绝（掩蔽关闭=证明
+    /// 可链接，生产环境禁止）；demo/dev 档现状不变（仅 stderr 警示+判决件
+    /// 自述，诊断/对照构型照常可跑）。判定=FZ_DEPLOYMENT 恰为 production
+    /// （大小写不敏感）；其他值/缺省=非 production 不收紧。
+    #[test]
+    fn mask_off_admission_rejects_production_allows_demo() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        std::env::remove_var(ENV_MASK_OFF);
+        std::env::remove_var(ENV_DEPLOYMENT);
+        assert!(mask_off_admission().is_ok(), "掩蔽缺省 on=放行（现状）");
+        // demo 档 + MASK_OFF → 现状不变（Ok；stderr 警条+判决件自述兜底）
+        std::env::set_var(ENV_MASK_OFF, "1");
+        assert!(
+            mask_off_admission().is_ok(),
+            "非 production 档 MASK_OFF=诊断构型现状可跑（不收紧）"
+        );
+        // production + MASK_OFF → Err（拒绝出证，人话点名）
+        std::env::set_var(ENV_DEPLOYMENT, "production");
+        let err = mask_off_admission().expect_err("production+MASK_OFF 必须拒绝出证");
+        match &err {
+            ProveError::MaskOffInProduction(msg) => {
+                assert!(msg.contains("证明可链接"), "人话必须点名掩蔽关闭语义: {msg}");
+                assert!(msg.contains("生产环境禁止"), "人话必须点名生产禁令: {msg}");
+            }
+            other => panic!("必须为 MaskOffInProduction 变体: {other:?}"),
+        }
+        assert!(format!("{err}").contains("出证拒绝"), "Display 面可辨: {err}");
+        // 大小写不敏感；非 production 声明不收紧
+        std::env::set_var(ENV_DEPLOYMENT, "PRODUCTION");
+        assert!(mask_off_admission().is_err(), "判定大小写不敏感");
+        std::env::set_var(ENV_DEPLOYMENT, "demo");
+        assert!(mask_off_admission().is_ok(), "非 production 声明=不收紧");
+        // MASK 取除后恢复（无跨测试泄漏）
+        std::env::remove_var(ENV_MASK_OFF);
+        std::env::remove_var(ENV_DEPLOYMENT);
+        assert!(mask_off_admission().is_ok());
+    }
+
+    /// 信任根收口件4 管线面：prove_pipeline 在 production+MASK_OFF 下**最前置**
+    /// 拒绝——先于 vendor 指纹/装配/落盘，零副作用不建目录（fail-closed）。
+    #[test]
+    fn prove_pipeline_refuses_mask_off_in_production_zero_side_effects() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        std::env::set_var(ENV_DEPLOYMENT, "production");
+        std::env::set_var(ENV_MASK_OFF, "1");
+        let text = std::fs::read_to_string("tests/auth_canonical_spec.json")
+            .expect("auth canonical spec 缺失");
+        let spec: JobSpec = serde_json::from_str(&text).unwrap();
+        let dir = std::env::temp_dir().join(format!("fz-maskoff-prod-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let err = prove_pipeline(&spec, &dir).expect_err("production+MASK_OFF 必须拒绝出证");
+        assert!(
+            matches!(err, ProveError::MaskOffInProduction(_)),
+            "拒绝必须走 MaskOffInProduction 变体: {err:?}"
+        );
+        assert!(!dir.exists(), "fail-closed 最前置：零副作用不建目录");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::env::remove_var(ENV_MASK_OFF);
+        std::env::remove_var(ENV_DEPLOYMENT);
     }
 
     /// SP-20 R-4①：in_big_stack 主线程重放的 BigStackPanic 必须可被外层

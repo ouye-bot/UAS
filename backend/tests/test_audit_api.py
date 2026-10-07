@@ -225,6 +225,8 @@ def test_audit_full_lifecycle(app_client):
     tr = r.json()["data"]
     assert tr["warrant"]["unlocked"]["id_number"] == "110101199001011234"
     assert tr["warrant"]["target_auth_id"] == 7
+    # 批 4-3/4-7 档位显式化：fake 档追溯响应顶层 mode="fake"（留痕面如实自述）
+    assert tr["mode"] == "fake"
 
     # ⑦ 列表
     r = c.get("/audit/warrants")

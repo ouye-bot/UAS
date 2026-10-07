@@ -1,8 +1,15 @@
-"""RA API（B2）——统一信封 {code, data, message}（HTTP 状态码随负例语义）。
+"""RA API（B2；2026-10-04 撤销业务线硬化 B1/B4/B6/B7）——统一信封
+{code, data, message}（HTTP 状态码随负例语义）。
 
 端点：POST /ra/register、POST /ra/sub-credentials、GET /ra/revocation/snapshot、
-POST /ra/revoke、GET /ra/healthz。链上副作用：FZ_CHAIN_ANCHOR=fake 时落内存
-记录（测试断言），默认真链（B1 接入层直调 IdentityRegistry；演示确定性钥）。
+POST /ra/revoke、POST /ra/revoke/by-username（均 admin 会话+SM2 签名+理由必填；
+by-username 配 GET /ra/revoke/by-username/preview 两步式预览——前端签名须覆盖
+该用户全部有效凭证句柄串）、POST /ra/restore/request（admin 发起）、
+POST /ra/restore/{id}/countersign（auditor 复核——双控恢复）、
+GET /ra/restore/requests（admin+auditor 双面——审计员复核前看待复核列表）、
+GET /ra/healthz。
+链上副作用：FZ_CHAIN_ANCHOR=fake 时落内存记录（测试断言），默认真链
+（B1 接入层直调 IdentityRegistry；授权联动直调 FlightAuthRegistry——engine 钥）。
 """
 
 from __future__ import annotations
@@ -12,13 +19,13 @@ import os
 from pathlib import Path
 from typing import Any
 
-from app.accounts.deps import require_role
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.accounts.deps import require_role
 from app.chain.client import ChainError
 from app.db import get_session
 from app.ra.models import Revocation
@@ -60,11 +67,21 @@ def _chain_rev_epoch() -> int:
 def _ra_deps() -> RaDeps:
     if "deps" not in _deps_cache:
         from app.kms import ra_signing_keypair
+        from app.ra.service import AUTH_REVOKE_REASON_LINKAGE
 
         priv, pub = ra_signing_keypair()
         if os.environ.get("FZ_CHAIN_ANCHOR", "fake") == "fake":
             anchor: ChainAnchor = ChainAnchor(call=_FakeChain())
-            _deps_cache["deps"] = RaDeps(ra_priv_hex=priv, ra_pub_hex=pub, anchor=anchor)
+            fake_call = anchor.call
+
+            def _fake_auth_revoke(aid: int) -> dict:
+                """fake 档授权轴联动：无真链副作用，经 fake anchor 留痕供断言。"""
+                fake_call("revoke_auth", [int(aid), AUTH_REVOKE_REASON_LINKAGE])
+                return {"ok": True, "detail": "fake 档：revokeAuth 留痕（无真链副作用）"}
+
+            _deps_cache["deps"] = RaDeps(
+                ra_priv_hex=priv, ra_pub_hex=pub, anchor=anchor, auth_revoke=_fake_auth_revoke
+            )
         else:
             anchor = ChainAnchor(call=_real_chain_call, warrant_on_chain=_real_warrant_on_chain)
             _deps_cache["deps"] = RaDeps(
@@ -72,9 +89,35 @@ def _ra_deps() -> RaDeps:
                 ra_pub_hex=pub,
                 anchor=anchor,
                 chain_rev_epoch=_chain_rev_epoch,
+                auth_revoke=_real_auth_revoke,
             )
             _startup_align()
     return _deps_cache["deps"]
+
+
+def _real_auth_revoke(auth_id: int) -> dict:
+    """真链授权轴联动（B4）：FlightAuthRegistry.revokeAuth(authId, reason=2)，
+    engine 交易钥（KMS 派生，与 worker recordAuth 同域）。已撤销态如实跳过
+    （合约 require status==0，盲发必 revert）——返回 ok=False+明细。"""
+    from app.chain.client import ChainClient
+    from app.chain.contracts import load_binding
+    from app.chain.signer import TxSigner
+    from app.kms import chain_engine_tx_key
+    from app.ra.service import AUTH_REVOKE_REASON_LINKAGE
+
+    signer = TxSigner(chain_engine_tx_key())
+    client = ChainClient(
+        rpc_url=os.environ.get("FZ_CHAIN_RPC", "http://127.0.0.1:8545"),
+        from_addr=signer.address,
+    )
+    p = Path(__file__).resolve().parents[3] / "contracts" / ".chain_addresses.json"
+    addr = json.loads(p.read_text())["FlightAuthRegistry"]["address"]
+    fa = load_binding("FlightAuthRegistry", client, addr)
+    status = int(fa.call_fn("getAuth", [auth_id])[8])  # 11 元组第 9 位 status（0=有效）
+    if status != 0:
+        return {"ok": False, "detail": f"链上已是撤销态（status={status}）——如实跳过"}
+    fa.send_fn(signer, "revokeAuth", [auth_id, AUTH_REVOKE_REASON_LINKAGE])
+    return {"ok": True, "detail": "revokeAuth 已上链（reason=2 凭证吊销联动）"}
 
 
 def _startup_align() -> None:
@@ -166,15 +209,38 @@ class SubCredIn(BaseModel):
 
 
 class RevokeIn(BaseModel):
+    """B1 升格：理由必填（≥4 字，服务层强制——信封语义拒而非 422 裸奔）+
+    admin SM2 签名（FZ-REVOKE|v1|{handles 排序}|{reason}|{epoch}）+目标纪元。"""
+
     master_cred_hash_hex: str = Field(min_length=64, max_length=64)
-    reason: str = ""
+    reason: str = Field(default="", max_length=500)
+    sig_hex: str = Field(default="", max_length=512)
+    epoch: int = Field(default=0, ge=0)
 
 
 class RevokeByUsernameIn(BaseModel):
-    """按人级联吊销（R4 第二批 B-P2-5）——机构管理员运维面（账户批：角色守卫门禁）。"""
+    """按人级联吊销（R4 第二批 B-P2-5）——机构管理员运维面（账户批：角色守卫门禁）。
+    B1 升格：理由必填+admin SM2 签名+目标纪元（同 /ra/revoke 消息域）。"""
 
     username: str = Field(min_length=1, max_length=64)
-    reason: str = ""
+    reason: str = Field(default="", max_length=500)
+    sig_hex: str = Field(default="", max_length=512)
+    epoch: int = Field(default=0, ge=0)
+
+
+class RestoreRequestIn(BaseModel):
+    """B6 双控恢复·admin 发起：签名域 FZ-RESTORE|v1|{handle}|{reason}。"""
+
+    handle_hex: str = Field(min_length=64, max_length=64)
+    reason: str = Field(default="", max_length=500)
+    sig_hex: str = Field(default="", max_length=512)
+
+
+class RestoreCountersignIn(BaseModel):
+    """B6 双控恢复·auditor 复核：签名域 FZ-RESTORE-COUNTERSIGN|v1|{handle}|{reason}
+    （handle/reason 取自请求行——复核即绑定同一内容，换内容=验签失败）。"""
+
+    sig_hex: str = Field(default="", max_length=512)
 
 
 _ERR_STATUS = {
@@ -187,6 +253,7 @@ _ERR_STATUS = {
     "not_found": 404,
     "bad_input": 400,
     "chain_unavailable": 503,
+    "id_revoked_before": 409,
 }
 
 
@@ -207,6 +274,16 @@ def _deny(exc: RaError) -> JSONResponse:
 
 def _svc(session: Session) -> RaService:
     return RaService(session, _ra_deps())
+
+
+def _admin_pub(session: Session, username: str) -> str:
+    """动作签名人（会话主体）当前公钥——accounts 表单一事实源（collab 双控同源）。"""
+    from app.accounts.service import get_account
+
+    acc = get_account(session, username)
+    if not acc.pubkey_hex:
+        raise RaError("no_key", "签名人账户未生成密钥（未激活）", 409)
+    return acc.pubkey_hex
 
 
 def _register_impl(body: RegisterIn, session: Session = Depends(get_session)):
@@ -243,7 +320,7 @@ def ra_pubkey():
 @router.get("/revocation/witness")
 def revocation_witness(holder_pk_hex: str, session: Session = Depends(get_session)):
     """撤销非成员见证分发（公开镜像——匿名获取；B3b 深度 32，键=pk′.x）。"""
-    from app.ra.smt import non_membership_witness, smt_root
+    from app.ra.smt import cached_tree
 
     if len(holder_pk_hex) != 128 or not all(c in "0123456789abcdef" for c in holder_pk_hex.lower()):
         return _deny(RaError("bad_input", "公钥须 128 hex（x‖y）"))
@@ -253,12 +330,24 @@ def revocation_witness(holder_pk_hex: str, session: Session = Depends(get_sessio
         # R3-0.3 fail-fast：成员键无非成员见证——诚实拒绝而非让申请烧完出证
         # 后死于 root.fold（三代理评审 P0-1 配套面）。
         return _deny(RaError("revoked", "该出示公钥已列入撤销名单——申请将被数学拒绝"))
-    w = non_membership_witness(key, handles)
+    # 批 4-7：增量树缓存（集合差分维护——插入/撤销只重算脏路径；根与全量
+    # 重算逐字节一致，test_ra_smt 钉定）。
+    tree = cached_tree(handles)
+    w = tree.non_membership_witness(key)
+    # 纪元取 max(叶纪元, 台账纪元)——B6 恢复（摘叶不落叶行）后公示纪元仍单调
+    from sqlalchemy import func
+
+    from app.ra.models import RevocationLedger
+
+    led_epoch = session.scalar(select(func.max(RevocationLedger.epoch))) or 0
     return _ok(
         {
             "siblings_hex": w["siblings"],
-            "root_hex": smt_root(handles).hex(),
-            "epoch": max((r.epoch for r in session.scalars(select(Revocation)).all()), default=0),
+            "root_hex": tree.root().hex(),
+            "epoch": max(
+                max((r.epoch for r in session.scalars(select(Revocation)).all()), default=0),
+                int(led_epoch),
+            ),
         }
     )
 
@@ -272,10 +361,20 @@ def revocation_snapshot(session: Session = Depends(get_session)):
 def revoke(
     body: RevokeIn,
     session: Session = Depends(get_session),
-    _p=Depends(require_role("admin")),
+    p=Depends(require_role("admin")),
 ):
+    """按凭证吊销（B1 升格）：admin 会话+理由≥4 字+SM2 签名+纪元绑定。"""
     try:
-        return _ok(_svc(session).revoke(**body.model_dump()))
+        return _ok(
+            _svc(session).revoke(
+                master_cred_hash_hex=body.master_cred_hash_hex,
+                reason=body.reason,
+                admin_sig_hex=body.sig_hex,
+                epoch=body.epoch,
+                admin_username=p.username,
+                admin_pub_hex=_admin_pub(session, p.username),
+            )
+        )
     except RaError as exc:
         return _deny(exc)
     except ChainError as e:
@@ -286,16 +385,94 @@ def revoke(
 def revoke_by_username(
     body: RevokeByUsernameIn,
     session: Session = Depends(get_session),
-    _p=Depends(require_role("admin")),
+    p=Depends(require_role("admin")),
 ):
-    """按人级联吊销（R4 第二批 B-P2-5）：该用户全部有效凭证一次撤销（同纪元
-    同根一次推链）——封「按凭证吊销可逃逸」（重新登记即获新有效凭证）。"""
+    """按人级联吊销（R4 第二批 B-P2-5；B1 升格）：该用户全部有效凭证一次撤销
+    （同纪元同根一次推链）+授权轴联动（B4）+黑名单（B7）——封「按凭证吊销可
+    逃逸」（重新登记即获新有效凭证）。"""
     try:
-        return _ok(_svc(session).revoke_by_username(**body.model_dump()))
+        return _ok(
+            _svc(session).revoke_by_username(
+                username=body.username,
+                reason=body.reason,
+                admin_sig_hex=body.sig_hex,
+                epoch=body.epoch,
+                admin_username=p.username,
+                admin_pub_hex=_admin_pub(session, p.username),
+            )
+        )
     except RaError as exc:
         return _deny(exc)
     except ChainError as e:
         return _deny(RaError("chain_unavailable", str(e), 503))
+
+
+@router.post("/restore/request")
+def restore_request(
+    body: RestoreRequestIn,
+    session: Session = Depends(get_session),
+    p=Depends(require_role("admin")),
+):
+    """B6 双控恢复·第一签（admin 发起）：pending 请求落库，不执行任何恢复。"""
+    try:
+        return _ok(
+            _svc(session).restore_request(
+                handle_hex=body.handle_hex,
+                reason=body.reason,
+                admin_username=p.username,
+                admin_sig_hex=body.sig_hex,
+            )
+        )
+    except RaError as exc:
+        return _deny(exc)
+
+
+@router.post("/restore/{request_id}/countersign")
+def restore_countersign(
+    request_id: int,
+    body: RestoreCountersignIn,
+    session: Session = Depends(get_session),
+    p=Depends(require_role("auditor")),
+):
+    """B6 双控恢复·第二签（auditor 复核）：双签齐→执行（SMT 摘叶+setStatus(1)
+    +新纪元根推链+台账）。admin 到不了本端点（403 角色守卫）——发起人不得
+    自行复核。"""
+    try:
+        return _ok(
+            _svc(session).restore_countersign(
+                request_id=request_id,
+                auditor_username=p.username,
+                countersign_sig_hex=body.sig_hex,
+            )
+        )
+    except RaError as exc:
+        return _deny(exc)
+
+
+@router.get("/restore/requests")
+def restore_requests(
+    session: Session = Depends(get_session), _p=Depends(require_role("admin", "auditor"))
+):
+    """双控恢复请求列表（admin+auditor 双面——机构台可视化面+审计员复核前置：
+    复核人须先看到待复核列表（句柄/理由/发起人）才能拼 FZ-RESTORE-COUNTERSIGN
+    消息签名；pilot 恒 403）。"""
+    return _ok({"items": _svc(session).restore_requests_list()})
+
+
+@router.get("/revoke/by-username/preview")
+def revoke_by_username_preview(
+    username: str,
+    session: Session = Depends(get_session),
+    _p=Depends(require_role("admin")),
+):
+    """按人吊销·两步式第一拍（只读预览，B1 升格配套）：FZ-REVOKE 签名消息须
+    覆盖该用户全部有效凭证句柄串——前端无法预知句柄集，先经本端点取句柄与
+    目标纪元（公示纪元+1），本地拼消息签名后再调 POST /ra/revoke/by-username。
+    只读不落库；用户不存在 404/无有效凭证 409（与正式端点同判）。"""
+    try:
+        return _ok(_svc(session).revoke_preview_by_username(username=username))
+    except RaError as exc:
+        return _deny(exc)
 
 
 class CollabIn(BaseModel):
@@ -305,9 +482,7 @@ class CollabIn(BaseModel):
 
 
 @router.get("/collab/pending")
-def collab_pending(
-    session: Session = Depends(get_session), _p=Depends(require_role("admin"))
-):
+def collab_pending(session: Session = Depends(get_session), _p=Depends(require_role("admin"))):
     """待协作令状列表（F 席改造：机构管理员的核验工作面）——未解锁令状。"""
     from sqlalchemy import select
 

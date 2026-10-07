@@ -21,6 +21,26 @@ CLASS_RULES: dict[int, tuple[int, int]] = {
     1: (120, 1),  # 轻型：真高 120m（条例数值）
 }
 
+# 机型类 → (min_lat, max_lat, min_lon, max_lon)——矩形围栏 4 界（i32×1e7，
+# 负值=南/西半球合法域；二批改动1：TRAIL 电路 4 半平面合规门）。
+# 🔴 权威通道=引擎轨迹绑定签名（FZ-TRAIL-BIND2 扩域——与 alt_max 同款
+# 「证明者不可自报」）；**不并入 policy_params_hash**：已发布政策版本
+# paramsHash 面字节稳定（链上公示版本持续有效——政策表主体=高度/资质；
+# 围栏的授权锚=引擎签名，第三方凭公示公钥离线复核）。
+# 演示围栏=**单一演示空域**（盲审二轮整改 2026-10-04：S4 合成场已迁至 SITL
+# 默认原点近旁——ArduPilot 缺省 home≈35.363S/149.165E（负纬度=电路偏置编码
+# 的实弹路径），S4 合成场（scripts/scenario_S4_trail.py 采样界 lat
+# -345000000+i*11 / lon 1500000000+i*7，i<130）≈34.500S/150.000E，与 SITL
+# home 相距≈1.1°、同在南半球；旧场 39.900N/116.300E 已废）。
+# 批1 改动1.7 曾删跨半球占位，但旧矩形（-36°~40.5°N）仍一张矩形同时罩住
+# 南北两半球两场——地理约束形同虚设；本次收窄为紧贴这片演示空域的单一矩形，
+# 四界对两场采样界半径余量≥0.5°（实测：SITL 纬向南余量 0.54°/经向西 0.57°；
+# S4 纬向北余量 0.55°/经向东 0.55°；纬/经跨度各 1.95°，全矩形不出南半球）。
+FENCE_RECTS: dict[int, tuple[int, int, int, int]] = {
+    0: (-359_000_000, -339_500_000, 1_486_000_000, 1_505_500_000),
+    1: (-359_000_000, -339_500_000, 1_486_000_000, 1_505_500_000),
+}
+
 POLICY_VERSION = "policy-2026-09-v1"
 
 
@@ -49,6 +69,17 @@ def get_rule(class_id: int) -> tuple[int, int]:
             "更严，本系统演示范围=微型/轻型，见范围外声明）",
         )
     return CLASS_RULES[class_id]
+
+
+def get_fence(class_id: int) -> tuple[int, int, int, int]:
+    """机型类围栏查表：返回 (min_lat, max_lat, min_lon, max_lon) i32×1e7；
+    未开放类=fail-closed 拒（与 get_rule 同法——围栏随机型开放面）。"""
+    if class_id not in FENCE_RECTS:
+        raise PolicyError("unsupported_class", f"机型类 {class_id} 未开放（无围栏规则）")
+    rect = FENCE_RECTS[class_id]
+    if rect[0] > rect[1] or rect[2] > rect[3]:
+        raise PolicyError("bad_fence", "政策围栏矩形退化（min 界须 ≤ max 界）")
+    return rect
 
 
 def chain_policy_published(version_hashes) -> bool:

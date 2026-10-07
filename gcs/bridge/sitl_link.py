@@ -23,10 +23,197 @@ import os
 import socket
 import threading
 import time
+from contextlib import contextmanager
+from pathlib import Path
 
-from telemetry import LocalAudit, TokenError, verify_token
+from app.crypto.sm3 import sm3_bytes
+from telemetry import LocalAudit, TokenError, split_token, verify_token
 
 FENCE_BREACH_TEXT = "Max Alt fence breached"
+
+# 参数写入对拍容差（批1-1.2）：float32 量化 + 固件单位换算余量。绝对下限兜
+# 0 值参数（FENCE_MARGIN/DISARM_DELAY）。
+_PARAM_TOL_REL = 1e-3
+_PARAM_TOL_ABS = 1e-3
+
+# 飞行中吊销复查周期（B5 批2）：按采样样本数折算——2Hz × 60 样本 = 每 30s
+# 对 /authz/status 复查一次链上授权状态（armed 后撤销不再无感飞完）。
+_REVOKE_CHECK_EVERY_N = 60
+
+
+def param_delta_ok(expected: float, actual: float) -> bool:
+    """参数值对拍（容差内=一致——截断/钳制/旧值残留级差异必超界）。"""
+    return abs(float(actual) - float(expected)) <= max(
+        _PARAM_TOL_ABS, abs(float(expected)) * _PARAM_TOL_REL
+    )
+
+
+def authz_status_url() -> str:
+    """backend 授权状态预检 URL（批1-1.1；env FZ_AUTHZ_STATUS_URL 可改指）。"""
+    base = os.environ.get("FZ_AUTHZ_STATUS_URL", "http://127.0.0.1:8000")
+    return base.rstrip("/") + "/authz/status"
+
+
+def _post_consume_http(auth_id: int, token_hash_hex: str) -> None:
+    """单次消费回报 POST /authz/consume（X-Engine-Token 携带；失败异常上抛
+    由调用方定性——重试/落队策略不进网络层）。模块级函数：单测可 monkeypatch
+    替身（离线纪律——不发真网请求）。"""
+    import json as _json
+    import os as _os
+    import urllib.request as _ur
+
+    base = _os.environ.get("FZ_AUTHZ_STATUS_URL", "http://127.0.0.1:8000")
+    req = _ur.Request(
+        base.rstrip("/") + "/authz/consume",
+        data=_json.dumps(
+            {"auth_id": int(auth_id), "token_hash_hex": token_hash_hex}
+        ).encode(),
+        headers={
+            "Content-Type": "application/json",
+            "X-Engine-Token": _os.environ.get("FZ_ENGINE_TOKEN", ""),
+        },
+        method="POST",
+    )
+    with _ur.urlopen(req, timeout=5) as r:
+        r.read()
+
+
+def _authz_status_fetch(auth_id: int, token_hash_hex: str) -> dict:
+    """backend GET /authz/status（ARM 预检——批1-1.1）。
+
+    返回归一形态 {"http": <状态码 or 0>, "body": <dict or None>, "error": str?}；
+    http=0=连接失败/超时（fail-closed 判定输入）。桥单测无真 backend——
+    三形态替身（active/revoked/unreachable）经 monkeypatch 本函数注入
+    （既有测试替身范式）。"""
+    import json as _json
+    import urllib.error as _ue
+    import urllib.parse as _up
+    import urllib.request as _ur
+
+    url = authz_status_url() + "?" + _up.urlencode(
+        {"auth_id": int(auth_id), "token_hash_hex": token_hash_hex}
+    )
+    opener = _ur.build_opener(_ur.ProxyHandler({}))  # 回环禁系统代理
+    try:
+        with opener.open(url, timeout=5) as r:
+            return {"http": r.status, "body": _json.loads(r.read().decode())}
+    except _ue.HTTPError as e:
+        try:
+            body = _json.loads(e.read().decode())
+        except Exception:  # noqa: BLE001 —— 非 JSON 错误体=保留状态码丢正文
+            body = None
+        return {"http": e.code, "body": body}
+    except Exception as e:  # noqa: BLE001 —— URLError/TimeoutError/ConnectionError 族
+        return {"http": 0, "body": None, "error": str(e)[:200]}
+
+
+def authz_quota_fetch(token_payload: bytes) -> dict:
+    """授权包配额查询（2026-10-06 多架次拍板）：/arm/status 消费——按令牌
+    (authId, token_hash) 拉 backend /authz/status 的 remaining/sorties 供前端
+    「剩余架次」显示。任何失败/形态不符={"remaining": None, "sorties": None}
+    （前端显示退化——不误报不阻塞，配额执法在闸门预检面 fail-closed）。"""
+    try:
+        tok, _sig, body_raw = split_token(token_payload)
+        r = _authz_status_fetch(int(tok["authId"]), sm3_bytes(body_raw).hex())
+        data = ((r.get("body") or {}).get("data") or {}) if r.get("http") == 200 else {}
+        rem = data.get("remaining")
+        sot = data.get("sorties")
+        return {
+            "remaining": rem if isinstance(rem, int) else None,
+            "sorties": sot if isinstance(sot, int) else None,
+        }
+    except Exception:  # noqa: BLE001 —— 查询面故障不进解锁/显示主径
+        return {"remaining": None, "sorties": None}
+
+
+class GateLockTimeout(RuntimeError):
+    """解锁临界区文件锁忙等超时（范式=backend app/zk/record_lock.py）。"""
+
+
+def _gate_lock_path() -> str:
+    env = os.environ.get("FZ_ARM_LOCK")
+    if env:
+        return env
+    import tempfile
+
+    if os.name == "nt":
+        return str(Path(tempfile.gettempdir()) / "fz_gate_arm.lock")
+    # WSL/Linux 桥宿主：用户目录下私有目录（tmpfs 优先语义）——禁 /mnt/c
+    # （9P 挂载文件锁语义不可靠，backend record_lock 同一教训）。目录不可建
+    # （他用户/受限容器）退回系统临时目录。
+    p = Path(os.path.expanduser("~")) / "fz-prove-tmp" / "fz_gate_arm.lock"
+    try:
+        p.parent.mkdir(parents=True, exist_ok=True)
+        return str(p)
+    except OSError:
+        return str(Path(tempfile.gettempdir()) / "fz_gate_arm.lock")
+
+
+def _flock_try(fd: int) -> bool:
+    if os.name == "nt":
+        import msvcrt
+
+        try:
+            msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+            return True
+        except OSError:
+            return False
+    import fcntl
+
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return True
+    except OSError:
+        return False
+
+
+def _flock_release(fd: int) -> None:
+    if os.name == "nt":
+        import msvcrt
+
+        try:
+            msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+        except OSError:  # pragma: no cover——句柄关闭时内核已释放
+            pass
+    else:
+        import fcntl
+
+        try:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+        except OSError:  # pragma: no cover
+            pass
+
+
+@contextmanager
+def gate_arm_lock(timeout_s: float | None = None):
+    """解锁临界区互斥（跨进程+跨线程——OS 文件锁，批1-1.5）。
+
+    旧实现=threading.Lock：多桥进程（WSL 桥+误双开/备份桥）下
+    「一次性令牌检查→解锁序列」check-then-act 窗重开。文件锁语义：
+    msvcrt（Windows）/fcntl（POSIX）——进程崩溃自动释放，无陈旧锁；
+    同进程内不同 fd 互斥成立（跨线程纪律保持）。"""
+    timeout = (
+        timeout_s if timeout_s is not None else float(os.environ.get("FZ_ARM_LOCK_S", "90"))
+    )
+    path = _gate_lock_path()
+    fd = os.open(path, os.O_CREAT | os.O_RDWR)
+    acquired = False
+    try:
+        deadline = time.monotonic() + timeout
+        while True:
+            if _flock_try(fd):
+                acquired = True
+                break
+            if time.monotonic() >= deadline:
+                raise GateLockTimeout(
+                    f"解锁临界区锁等待超时 {timeout}s（{path}）——另一桥进程/线程正持有"
+                )
+            time.sleep(0.05)
+        yield
+    finally:
+        if acquired:
+            _flock_release(fd)
+        os.close(fd)
 
 
 class LinkError(RuntimeError):
@@ -210,9 +397,44 @@ class SITLLink:
                     if self._last_param is not None:
                         pname, pvalue, ts = self._last_param
                         if pname == name and ts >= t_sent:
+                            # 批1-1.2 写入值对拍：旧实现确认只核参数名不核值——
+                            # 写入被截断/拒绝/残留旧值不会被发现。回读值在容差
+                            # 外=LinkError（fail-closed：安全参数不得带病放行）。
+                            if not param_delta_ok(value, pvalue):
+                                raise LinkError(
+                                    f"飞控参数写入值对拍失败: {name} 飞控确认 {pvalue} ≠ "
+                                    f"请求 {value}（写入被固件拒绝/截断/旧值残留——拒绝放行）"
+                                )
                             return pvalue
             raise LinkError(f"参数确认超时: {name}={value}（3×4s 无 PARAM_VALUE——"
                             "确认被并发 drain 吞掉的修复未生效？）")
+
+    def get_param(self, name: str, timeout_s: float = 4.0) -> float:
+        """参数单点回读（批1-1.2：PARAM_REQUEST_SINGLE → PARAM_VALUE）。
+
+        与 set_param 同一 drain 单消费者纪律（_last_param 轮询，短窗防吞流）；
+        回读原始值交调用方对拍（写后断言/飞行中巡检）——本函数只负责"读到
+        固件存量"。3×timeout_s 重试，全空=LinkError（fail-closed）。"""
+        m = self.connect()
+        with self._lock:
+            for _ in range(3):
+                # pymavlink 方法名勘误②（S1 实弹续）：本方言 PARAM_REQUEST
+                # 族的发送面=经典 param_request_read_send（按名+index=-1）——
+                # param_request_send/_single_send 两名皆不存在。
+                m.mav.param_request_read_send(
+                    m.target_system, m.target_component, name.encode(), -1,
+                )
+                t_sent = time.time()
+                deadline = t_sent + timeout_s
+                while time.time() < deadline:
+                    self.drain(0.05)
+                    if self._last_param is not None:
+                        pname, pvalue, ts = self._last_param
+                        if pname == name and ts >= t_sent:
+                            return pvalue
+        raise LinkError(
+            f"参数回读超时: {name}（3×{timeout_s}s 无 PARAM_VALUE——写后断言/巡检不可盲信缺省）"
+        )
 
     def set_param_background(self, name: str, value: float) -> None:
         """尽力写入（后台 daemon 线程——不阻塞调用方关键路径）。
@@ -545,6 +767,15 @@ def mavutil_type_real32() -> int:
     return mavutil.mavlink.MAV_PARAM_TYPE_REAL32
 
 
+def is_real_link(link: SITLLink) -> bool:
+    """真链路面判定（批1-1.5）：SITLLink 实例且非 FakeLink 替身。
+
+    🔴 FakeLink 是 SITLLink 子类——裸 isinstance(fake, SITLLink) 恒真（既有
+    not_sitl_link 判定在 fake 档形同虚设）。真链路形态专属语义（手工注样
+    结构性封禁/解锁确认超时拒绝/巡检读取）一律以此为准。"""
+    return isinstance(link, SITLLink) and not isinstance(link, FakeLink)
+
+
 class FakeLink(SITLLink):
     """测试替身：参数/指令记录器（闸门逻辑单测——无飞控依赖）。"""
 
@@ -563,6 +794,12 @@ class FakeLink(SITLLink):
         self.params[name] = value
         self.log.append(f"PARAM {name}={value}")
         return value
+
+    def get_param(self, name: str, timeout_s: float = 4.0) -> float:
+        """替身回读=账面值（写后对拍/巡检单测的消费面——漂移测试改账即造）。"""
+        if name not in self.params:
+            raise LinkError(f"FakeLink 无参数 {name}（未写入——替身语义）")
+        return self.params[name]
 
     def arm(self) -> None:
         self.armed = True
@@ -601,18 +838,148 @@ class FlightGate:
     def __init__(self, link: SITLLink, audit: LocalAudit) -> None:
         self.link = link
         self.audit = audit
+        # 解锁互斥（批1-1.5 换代）：threading.Lock → 跨进程文件锁
+        # （gate_arm_lock）。原进程内锁的由来（S4-2 双击竞态根修）不变——
+        # 一次性令牌检查与解锁序列之间的 check-then-act 窗必须互斥；文件锁
+        # 把该保证扩展到多桥进程形态（误双开/备份桥——threading.Lock 失效）。
         self.fence_state: bytes | None = None
         self.is_armed = False  # 授权态（遥测前置的数据源——阶段一）
         self.session_auth_id: int | None = None  # 当前授权会话（重解锁路径消费）
         self.session_alt_max: int | None = None
+        # 信任根收口件2：会话授权窗截止（令牌 t_end 原值——飞行中到期收敛判断键）
+        self.session_t_end: int | None = None
+        # 飞行中吊销复查（B5 批2）：会话令牌哈希（/authz/status 对拍键——与
+        # ARM 预检同源 sm3(token_body)）+ 检出告警闩锁（一旦检出不清除——
+        # 链上撤销是终态，恢复不了）
+        self.session_token_hash_hex: str | None = None
+        # 授权包配额（2026-10-06 多架次拍板）：最近一次 ARM 预检携回的服务端
+        # 配额面 {"remaining", "sorties"}（None=服务端未供/形态不符——按缺省
+        # 配额 1 处理=令牌一次性原语义）。仅同一次 attempt_arm 内消费。
+        self._status_quota: dict = {"remaining": None, "sorties": None}
+        self.revoke_alert: dict | None = None
+        # 信任根收口件2：授权窗到期闩锁（revoke_alert 同款——now>t_end 是本地
+        # 确定性终态，闩锁不清除；与撤销闩锁分离，告警语义可辨）
+        self.expiry_alert: dict | None = None
 
     def disarm(self) -> None:
-        """停转+释放 RC+复位授权态（server /sitl/disarm 改走此处——armed 单源）。"""
+        """停转+释放 RC+复位授权态（server /sitl/disarm 改走此处——armed 单源）。
+
+        🔴 闩锁随会话复位：revoke_alert/expiry_alert 是**本会话**取证显告态
+        （取证正本=审计库，不依赖闩锁存活）；跨会话残留会令下一合法授权被
+        session_converged 停锚门误伤（信任根收口件2 消费面语义正确性）。"""
         self.link.disarm()
         self.link.rc_release()
         self.is_armed = False
+        self.session_auth_id = None
+        self.session_alt_max = None
+        self.session_t_end = None
+        self.session_token_hash_hex = None
+        self.revoke_alert = None
+        self.expiry_alert = None
 
     def attempt_arm(
+        self,
+        token_payload: bytes,
+        plan_hash_hex: str,
+        now: int | None = None,
+        plan_altitude_m: int | None = None,
+    ) -> dict:
+        try:
+            with gate_arm_lock():  # 批1-1.5：跨进程互斥（检查+解锁全程）
+                return self._attempt_arm_locked(token_payload, plan_hash_hex, now, plan_altitude_m)
+        except GateLockTimeout as e:
+            msg = f"{e}——请稍候重试（另一解锁流程进行中）"
+            self.audit.record_denial("arm_lock_busy", msg)
+            return {"ok": False, "code": "arm_lock_busy", "message": msg}
+        finally:
+            # 信任根收口件1：任意 ARM 出口触发消费回报队列重试（锁外 best-effort
+            # ——回报面故障不影响本次 ARM 结果；锁内网络等待会拖长解锁临界区）。
+            try:
+                self._retry_consume_pending()
+            except Exception as e:  # noqa: BLE001 —— fail-safe：重试面故障只日志
+                print(f"[consume-retry] 重试异常（跳过）: {e}", flush=True)
+
+    def _authz_precheck(self, token_payload: bytes, tok: dict, prev) -> dict | None:
+        """链上授权状态预检+一次性令牌服务端对拍（批1-1.1/1.5）。
+
+        令牌五查只证明"签发时有效"——签发后撤销（链上 status 非 0）不回读
+        即照常解锁=飞行面绕过。规则：
+        - mode=fake（演示假链档）→ 放行+显式日志（假链档必须仍可跑）；
+        - status 非 0 → auth_revoked 拒绝；
+        - HTTP 503/连接失败/授权不在链上（404）→ fail-closed 拒绝；
+        - 服务端 token_used=True 而本地账本判"未用过" → token_ledger_mismatch
+          （本地 SQLite 可删重放；服务端 auth_records 登记不可删）。
+        返回 None=放行；dict=拒绝响应。"""
+        body_raw = token_payload.rsplit(b"|", 1)[0]
+        th = sm3_bytes(body_raw).hex()  # 服务端口径=token_hash(body)（auth_records 键）
+        r = _authz_status_fetch(int(tok["authId"]), th)
+        http = r.get("http", 0)
+        body = r.get("body") or {}
+        data = body.get("data") or {}
+        if http == 200 and body.get("ok") and data.get("mode") == "fake":
+            print(
+                "[authz-status] fake 链档——链上授权状态预检跳过"
+                "（演示假链档：无链上撤销面，非真链约束）",
+                flush=True,
+            )
+        elif http != 200 or not (body.get("ok") and isinstance(data, dict)):
+            if http == 404:
+                code = "auth_not_found"
+                msg = (
+                    f"令牌声称的授权号 {tok.get('authId')} 在授权注册表无链上记录"
+                    "——拒绝解锁（fail-closed）"
+                )
+            else:
+                code = "status_unreachable"
+                src = f"HTTP {http}" if http else f"连接失败（{r.get('error', '未知')}）"
+                msg = (
+                    f"授权状态服务不可达（{src}）——按安全策略拒绝解锁（fail-closed）；"
+                    "请确认授权服务在线后重试"
+                )
+            self.audit.record_denial(code, msg)
+            return {"ok": False, "code": code, "message": msg}
+        else:
+            status = data.get("status")
+            if status is None or int(status) != 0:
+                msg = (
+                    f"链上授权状态非有效（status={status}，rev_epoch={data.get('rev_epoch')}）"
+                    "——授权已撤销/不可确认，拒绝解锁"
+                )
+                self.audit.record_denial("auth_revoked", msg)
+                return {"ok": False, "code": "auth_revoked", "message": msg}
+        # 一次性令牌**消费**账本服务端对拍（S1 全流程实弹根修 2026-10-06：
+        # 旧 token_used=在案语义把"已签发未消费"误判已用——正常首次 ARM 必拒
+        # 〔S1 2.2 实弹抓出〕；新语义 token_consumed=仅由 ARM 成功后的
+        # /authz/consume 回报置位。本地判未用而服务端已消费=删库重放形态终拒）。
+        if prev is None and data.get("token_consumed"):
+            msg = (
+                "服务端消费账本显示该令牌已解锁过（token_consumed）而本地账本无"
+                "记录——本地审计库疑被删除/替换（重放形态），拒绝解锁"
+            )
+            self.audit.record_denial("token_consumed", msg)
+            return {"ok": False, "code": "token_consumed", "message": msg}
+        # 授权包配额制（2026-10-06 多架次拍板）：remaining==0=配额耗尽——与
+        # token_consumed 终态同源（最后一次架次回报时共同置位）但独立判定
+        # （防 consumed 置位窗的语义歧义）；>0 时携回配额面供新架次放行判定
+        # （_attempt_arm_locked prev 分支）。remaining 缺省（旧响应/不在案）
+        # =None→不判（退化回 token_consumed 原语义，兼容不破）。
+        rem = data.get("remaining")
+        sot = data.get("sorties")
+        self._status_quota = {
+            "remaining": rem if isinstance(rem, int) else None,
+            "sorties": sot if isinstance(sot, int) else None,
+        }
+        if self._status_quota["remaining"] is not None and self._status_quota["remaining"] <= 0:
+            msg = (
+                f"授权包配额已耗尽（剩余架次 0/"
+                f"{self._status_quota['sorties'] if self._status_quota['sorties'] else '—'}）"
+                "——本授权全部架次已消费，拒绝解锁（fail-closed）"
+            )
+            self.audit.record_denial("quota_exhausted", msg)
+            return {"ok": False, "code": "quota_exhausted", "message": msg}
+        return None
+
+    def _attempt_arm_locked(
         self,
         token_payload: bytes,
         plan_hash_hex: str,
@@ -634,6 +1001,11 @@ class FlightGate:
         if plan_altitude_m is not None and 1 <= int(plan_altitude_m) < effective_alt:
             effective_alt = int(plan_altitude_m)
         prev = self.audit.first_arm(token_payload)
+        # ⓪' 链上授权状态预检（批1-1.1）：verify_token 全过、写围栏前——
+        # 撤销后飞行面不再解锁（fake 档放行留痕；链不可达 fail-closed）。
+        pre = self._authz_precheck(token_payload, tok, prev)
+        if pre is not None:
+            return pre
         # ⓪ 一次性令牌（方案 A，队长拍板）：一次授权对应一次解锁——同令牌二次
         # ARM 拒。**例外=同会话飞控重解锁（2026-09-27 队长实测四根修）**：授权门
         # 已被本令牌打开（is_armed=True）而飞控侧因「地面怠速自动上锁」回落
@@ -657,13 +1029,35 @@ class FlightGate:
                     "fence_state_hex": self.fence_state.hex(),
                     "first_arm": False,
                 }
-            msg = "该授权已使用（一次授权对应一次解锁）——请重新申请出证"
+        # 授权包配额制（2026-10-06 多架次拍板）：新架次放行判定（首次与续架次
+        # 统一执法面）——本地架次计数（sortie_arms 逐新架次落账；token_arms
+        # 缺行而架次账本在=局部删库形态，同样计数）< 登记配额 且 预检携回的
+        # 服务端剩余配额未耗尽（耗尽已在预检面拒绝）⟹ 本次 ARM 合法（每架次
+        # 仍走全闸门序+围栏重写+独立消费回报，零弱化）。配额未知（旧响应）按
+        # 缺省 1 ⟹ 本地已用≥1 恒拒=令牌一次性原语义逐字等价。
+        quota = getattr(self, "_status_quota", None) or {}
+        sorties_total = quota.get("sorties") or 1
+        rem = quota.get("remaining")
+        local_used = max(
+            self.audit.sortie_count(token_payload), 1 if prev is not None else 0
+        )
+        if local_used >= sorties_total or (isinstance(rem, int) and rem <= 0):
+            msg = "该授权已使用（配额已用尽）——请重新申请出证"
             self.audit.record_denial("token_used", msg)
             return {"ok": False, "code": "token_used", "message": msg}
+        # 新架次/首次放行——落入围栏写入+ARM 主径（成功后架次记账+消费回报）。
         # ① 围栏写入（先围栏后 ARM——顺序即安全语义）。
         # 单位契约（S2 定谳+复审[中9]统一）：政策/令牌/固件 FENCE_ALT_MAX=**meters**
         # （链上 FlightAuthRegistry.altMaxM 同单位）；TRAIL 电路=cm（×100 转换
         # 在出证装配面）。
+        try:
+            return self._fence_write_and_arm_locked(token_payload, effective_alt, prev, tok)
+        except LinkError as e:
+            self.audit.record_denial("fc_link_failed", str(e))
+            return {"ok": False, "code": "fc_link_failed", "message": str(e)}
+
+    def _fence_write_and_arm_locked(self, token_payload: bytes, effective_alt: int, prev, tok) -> dict:
+        """围栏写入+ARM 序列（S4-2 互斥内调用）——LinkError 统一在此层转人话拒绝。"""
         _t0 = time.time()
         self.link.set_param("FENCE_ENABLE", 1)
         print(f"[arm-timing] FENCE_ENABLE {time.time()-_t0:.1f}s", flush=True)
@@ -673,6 +1067,22 @@ class FlightGate:
         print(f"[arm-timing] FENCE_TYPE {time.time()-_t0:.1f}s", flush=True)
         self.link.set_param("FENCE_MARGIN", 0)  # breach 判定精确到线（无预刹车余量）
         print(f"[arm-timing] FENCE_MARGIN {time.time()-_t0:.1f}s", flush=True)
+        # 写后回读断言（批1-1.2）：PARAM_VALUE 确认环只证明"写入被确认"，不证明
+        # 固件存量=请求值（截断/钳制/旧值残留）。逐参 PARAM_REQUEST_SINGLE 独立
+        # 回读——任一漂移=LinkError（fail-closed，不进 ARM）。
+        for pname, pexpect in (
+            ("FENCE_ENABLE", 1.0),
+            ("FENCE_ALT_MAX", float(effective_alt)),
+            ("FENCE_TYPE", 3.0),
+            ("FENCE_MARGIN", 0.0),
+        ):
+            got = self.link.get_param(pname)
+            if not param_delta_ok(pexpect, got):
+                raise LinkError(
+                    f"围栏参数写后回读不一致: {pname} 飞控存量 {got} ≠ 请求 {pexpect}"
+                    "（围栏未生效——拒绝解锁）"
+                )
+        print(f"[arm-timing] fence_readback_ok {time.time()-_t0:.1f}s", flush=True)
         # 围栏触发行为：保持固件缺省（2026-09-29 实测改判——FENCE_ACTION=3
         # 预防性刹车会把飞控变成"阻止越线"，永远不触发 breach 事件=违规取证
         # 演示路径死亡；缺省行为=越线后拦截制动+breach 事件+回落清除，与 S1
@@ -714,7 +1124,20 @@ class FlightGate:
         self.is_armed = True
         self.session_auth_id = tok["authId"]
         self.session_alt_max = effective_alt
+        # 信任根收口件2：会话授权窗截止（令牌 t_end 原值——复查循环到期判断键；
+        # verify_token 已强制窗内解锁，飞行中越窗=授权语义终结）
+        self.session_t_end = int(tok["t_end"])
+        # 飞行中吊销复查的对拍键（B5 批2）：sm3(token_body)——与 ARM 预检
+        # `_authz_precheck` 的服务端口径同源（auth_records 键）。
+        self.session_token_hash_hex = sm3_bytes(token_payload.rsplit(b"|", 1)[0]).hex()
         at = self.audit.record_arm(token_payload, tok["authId"])
+        # 架次记账（授权包配额制 2026-10-06）：新架次 ARM 计数+1（本地执法轴
+        # ——回报失败窗内仍封锁超配额；同会话重解锁不达此处=不计架次）。
+        self.audit.record_sortie(token_payload)
+        # 消费回报（S1 根修配套）：ARM 成功→POST /authz/consume（X-Engine-Token
+        # 携带；best-effort×2，失败仅日志+计数——本地账本仍执法，服务端账本
+        # 迟到位只影响删库重放窗，不阻塞飞行）。
+        self._report_consume(tok["authId"])
         return {
             "ok": True,
             "auth_id": tok["authId"],
@@ -724,10 +1147,229 @@ class FlightGate:
             "first_arm_at": at,
         }
 
-    def _confirm_fc_armed(self, timeout_s: float = 3.0) -> None:
+    def _report_consume(self, auth_id: int) -> None:
+        """一次性令牌消费回报（服务端消费账本——删本地库重放的终拒源）。
+
+        信任根收口件1：回报不再「失败即弃」——best-effort×2 失败后把
+        (auth_id, token_hash) 落本地审计库 consume_pending 表（SQLite 与令牌
+        账本同库，进程重启不丢），堵「同令牌双飞」窗：服务端消费账本缺失期间，
+        删本地库重放可绕 token_consumed 终拒。下次任意 ARM（attempt_arm 出口）
+        或采样定时器触发 _retry_consume_pending 重试清空队列；回报成功即删行
+        （含此前失败遗留行）。"""
+        th = getattr(self, "session_token_hash_hex", "")
+        if not th:
+            return
+        import urllib.error as _ue
+
+        for attempt in (1, 2):
+            try:
+                _post_consume_http(auth_id, th)
+            except _ue.HTTPError as e:
+                # 409=服务端结构化拒绝。quota_exhausted=配额耗尽已终态入账——
+                # 弃报（重试无意义且不再入队；授权本身已用尽，下一 ARM 必被
+                # 预检 remaining==0 拒）。其余 409 按失败轴处理。
+                if e.code == 409:
+                    print(
+                        f"[consume-report] 服务端拒绝（HTTP {e.code}）——视为终态弃报"
+                        f"（auth_id={auth_id}）",
+                        flush=True,
+                    )
+                    return
+                if attempt == 2:
+                    print(
+                        f"[consume-report] 回报失败（auth_id={auth_id}）——"
+                        f"落待回报队列（下次 ARM/采样定时重试）: HTTP {e.code}",
+                        flush=True,
+                    )
+                    try:
+                        self.audit.consume_pending_enqueue(auth_id, th)
+                    except Exception as qe:  # noqa: BLE001 —— 落队失败不影响飞行主径
+                        print(f"[consume-report] 待回报队列落库失败: {qe}", flush=True)
+            except (_ue.URLError, OSError, ValueError) as e:
+                if attempt == 2:
+                    print(
+                        f"[consume-report] 回报失败（auth_id={auth_id}）——"
+                        f"落待回报队列（下次 ARM/采样定时重试）: {e}",
+                        flush=True,
+                    )
+                    try:
+                        self.audit.consume_pending_enqueue(auth_id, th)
+                    except Exception as qe:  # noqa: BLE001 —— 落队失败不影响飞行主径
+                        print(f"[consume-report] 待回报队列落库失败: {qe}", flush=True)
+            else:
+                # 成功：清掉本行（含此前失败遗留的待重试行——幂等无害）。
+                # 删行失败≠回报失败——不得走重试/落队（否则下拍重复回报）。
+                try:
+                    self.audit.consume_pending_remove(auth_id, th)
+                except Exception as e:  # noqa: BLE001
+                    print(f"[consume-report] 已回报行删除失败（幂等可重删）: {e}", flush=True)
+                return
+
+    def _retry_consume_pending(self) -> int:
+        """消费回报队列重试（信任根收口件1）：逐行重发 /authz/consume，
+        成功即删行，失败留行下拍再试。fail-safe 纪律：任何异常只日志不抛——
+        调用面=ARM 出口/采样循环，重试面故障不得阻断解锁与取证主径。
+        返回本轮清空行数。"""
+        try:
+            rows = self.audit.consume_pending_all()
+        except Exception as e:  # noqa: BLE001
+            print(f"[consume-retry] 待回报队列不可读（跳过本轮）: {e}", flush=True)
+            return 0
+        import urllib.error as _ue
+
+        cleared = 0
+        for aid, th, _at in rows:
+            try:
+                _post_consume_http(int(aid), str(th))
+            except _ue.HTTPError as e:
+                if e.code == 409:
+                    # quota_exhausted=服务端已终态入账——弃报出队（重试无意义）
+                    try:
+                        self.audit.consume_pending_remove(int(aid), str(th))
+                    except Exception:  # noqa: BLE001
+                        pass
+                    continue
+                print(f"[consume-retry] auth_id={aid} 回报仍失败（留队下拍再试）: HTTP {e.code}",
+                      flush=True)
+                continue
+            except Exception as e:  # noqa: BLE001 —— 单行失败不拦后续行
+                print(f"[consume-retry] auth_id={aid} 回报仍失败（留队下拍再试）: {e}",
+                      flush=True)
+                continue
+            try:
+                self.audit.consume_pending_remove(int(aid), str(th))
+                cleared += 1
+            except Exception as e:  # noqa: BLE001
+                print(f"[consume-retry] 已回报行删除失败（下拍幂等重删）: {e}", flush=True)
+        if cleared:
+            print(f"[consume-retry] 待回报队列清空 {cleared} 行", flush=True)
+        return cleared
+
+    def revoke_recheck_if_due(self, n_samples: int) -> dict | None:
+        """飞行中吊销复查（B5 批2）+授权窗到期收敛（信任根收口件2）：armed 会话
+        每 _REVOKE_CHECK_EVERY_N 样本（2Hz×60=30s）对 /authz/status 复查一次
+        链上授权状态（复用批1 `_authz_status_fetch` 与其 stub 替身范式——单测
+        monkeypatch 注入）。
+
+        - **授权窗到期**（now > session_t_end，本地确定性判断不依赖链路可达）
+          → expiry_alert 闩锁（revoke_alert 同款：检出时刻/auth_id/t_end/建议
+          返航人话）+审计事件+日志。取证事件上链与检查点停锚在 server 消费面
+          （复用 auth_revoked 停锚语义——anchor 端点到期闩锁拒锚）。
+        - status≠0 → revoke_alert 闩锁（结构化：检出时刻/auth_id/链上
+          status/rev_epoch）+审计事件（复用 rogue_arm_detected 的
+          record_denial 通道范式）+**围栏归零联动**（信任根收口件3：检出即
+          FENCE_ALT_MAX=0 写入+独立回读对拍——固件硬停第②层强制）+日志；
+          闩锁不清除——链上撤销是终态。
+        - fake 链档（mode=fake，status=None）→ 跳过不告警（与 ARM 预检
+          同口径：假链档无链上撤销面）。
+        - 不可达/非 200 → fail-safe 仅日志（不炸采样循环、不误报、不闩锁）。
+
+        🔴 诚实边界：检出后本桥**不发任何飞控指令**（不 DISARM 不 RTL 不
+        悬停）——MAVLink 指令收回已授权飞行既不可靠（链路可断）也越权
+        （链上撤销的强制执行属固件/监管面）；本桥只做「检出+取证+显告」+
+        围栏参数归零（固件硬停联动，非飞控指令），不假装能物理停桨。由采样
+        循环（server /telemetry/sitl_sample）按样本数驱动；返回 alert dict=
+        命中（含历史闩锁值；到期优先于撤销返回），None=未命中/未到期/不可达。
+        alert.kind ∈ {"auth_window_expired", "auth_revoked"}——消费面可辨。"""
+        if (
+            not self.is_armed
+            or self.session_auth_id is None
+            or self.session_token_hash_hex is None
+        ):
+            return None
+        if n_samples <= 0 or n_samples % _REVOKE_CHECK_EVERY_N != 0:
+            return None
+        # ── 信任根收口件2：授权窗到期在飞收敛 ──
+        # now > t_end 即告警（本地确定性——链路不可达也必须收敛；令牌窗外
+        # 继续"在飞"=授权语义已终结）。闩锁后每拍照常返回（回放语义同撤销）。
+        if self.session_t_end is not None and int(time.time()) > int(self.session_t_end):
+            if self.expiry_alert is None:
+                self.expiry_alert = {
+                    "kind": "auth_window_expired",
+                    "detected_at": int(time.time()),
+                    "auth_id": int(self.session_auth_id),
+                    "t_end": int(self.session_t_end),
+                }
+                detail = (
+                    f"飞行中授权窗到期检出：auth_id={self.session_auth_id} 授权窗已于 "
+                    f"t_end={self.session_t_end} 截止（now={int(time.time())}）——"
+                    "授权窗已到期——建议返航；取证事件上链+检查点停锚"
+                    "（复用撤销 auth_revoked 停锚语义）；桥不代发飞控指令"
+                    "（控制权收回非桥能力，见注释诚实边界）"
+                )
+                self.audit.record_denial("auth_window_expired", detail)
+                print(f"[expiry-alert] {detail}", flush=True)
+            return self.expiry_alert
+        r = _authz_status_fetch(int(self.session_auth_id), self.session_token_hash_hex)
+        http = r.get("http", 0)
+        body = r.get("body") or {}
+        data = body.get("data") or {}
+        if http == 200 and body.get("ok") and isinstance(data, dict):
+            if data.get("mode") == "fake":
+                return None  # 假链档无撤销面——不告警不扰
+            status = data.get("status")
+            if status is None or int(status) != 0:
+                if self.revoke_alert is None:  # 闩锁——审计只在首检出写一行
+                    self.revoke_alert = {
+                        "kind": "auth_revoked",
+                        "detected_at": int(time.time()),
+                        "auth_id": int(self.session_auth_id),
+                        "status": status,
+                        "rev_epoch": data.get("rev_epoch"),
+                    }
+                    detail = (
+                        f"飞行中吊销检出：auth_id={self.session_auth_id} 链上授权状态"
+                        f" status={status}（rev_epoch={data.get('rev_epoch')}）——"
+                        "已取证并显告；桥不代发飞控指令（控制权收回非桥能力，见注释诚实边界）"
+                    )
+                    self.audit.record_denial("flight_revocation_detected", detail)
+                    print(f"[revoke-alert] {detail}", flush=True)
+                    # ── 信任根收口件3：吊销→围栏归零联动（固件硬停）──
+                    # FENCE_ALT_MAX=0 写入（高度围栏上限归零=任何爬升即刻 breach
+                    # 拦截制动——第②层硬强制不再依赖用户守约）+get_param 独立
+                    # 回读对拍（写后断言同式）。成功=日志+审计事件；失败=仅日志
+                    # （不炸采样循环、不闩锁失败态——下拍闩锁期不再重试，fail-safe）。
+                    try:
+                        self.link.set_param("FENCE_ALT_MAX", 0)
+                        got = self.link.get_param("FENCE_ALT_MAX")
+                        if param_delta_ok(0.0, got):
+                            zeroed = (
+                                "围栏已归零（固件硬停生效）: FENCE_ALT_MAX=0 写入并"
+                                f"独立回读确认（auth_id={self.session_auth_id} 吊销联动）"
+                            )
+                            self.audit.record_denial("fence_zeroed_on_revocation", zeroed)
+                            print(f"[revoke-alert] {zeroed}", flush=True)
+                        else:
+                            print(
+                                f"[revoke-alert] 围栏归零回读不符（固件存量 {got}≠0）"
+                                "——硬停未确认生效（仅记录，不炸采样循环）",
+                                flush=True,
+                            )
+                    except Exception as e:  # noqa: BLE001 —— 归零失败只日志（fail-safe）
+                        print(
+                            f"[revoke-alert] 围栏归零写入失败（仅记录——固件硬停未生效，"
+                            f"取证与显告不受影响）: {e}",
+                            flush=True,
+                        )
+                return self.revoke_alert
+            return None  # 仍有效——不扰
+        src = f"HTTP {http}" if http else f"连接失败（{r.get('error', '未知')}）"
+        print(f"[revoke-alert] 授权状态复查不可达（{src}）——本轮跳过（fail-safe 仅记录）",
+              flush=True)
+        return None
+
+    def session_converged(self) -> bool:
+        """授权会话是否已收敛（信任根收口件2/3 消费面）：撤销闩锁或到期闩锁
+        任一命中即为真——检查点停锚消费面（server /telemetry/anchor 复用
+        auth_revoked 停锚语义：授权终结后不再产生新锚定证词）。"""
+        return self.revoke_alert is not None or self.expiry_alert is not None
+
+    def _confirm_fc_armed(self, timeout_s: float = 1.5) -> None:
         """FC 侧解锁确认：等待 HEARTBEAT 的 SAFETY_ARMED=1（COMMAND_ACK 后仍
         可能立即回落上锁——诚实呈现而非假 armed）。超时仍显式 False=拒绝；
-        无位面（None，测试替身/心跳未达）=放行不阻断。"""
+        无位面（None，心跳未达）：真链路（SITLLink 非 FakeLink）=超时拒绝
+        （批1-1.5——真链路读不到 armed 位即放行=盲飞放行）；FakeLink 替身=
+        放行不阻断（替身无 HEARTBEAT 源——替身语义，非真飞控面）。"""
         import time as _t
 
         deadline = _t.time() + timeout_s
@@ -735,8 +1377,15 @@ class FlightGate:
         while fc is not True and _t.time() < deadline:
             self.link.drain(0.2)  # 短窗（drain 已有截止语义——0.5 长窗无益）
             fc = getattr(self.link, "last_fc_armed", None)
-        if fc is not True and fc is not None:
+        if fc is True:
+            return  # 已确认
+        if fc is None:
+            if not is_real_link(self.link):
+                return  # 测试替身无位面 → 放行不阻断（替身语义保留）
             raise LinkError(
-                "飞控解锁未成功（已自动回落上锁）——请检查 GPS/飞控状态后重试"
+                f"飞控解锁状态无法确认（{timeout_s}s 内未收到 HEARTBEAT armed 位）"
+                "——拒绝解锁（fail-closed：真链路上锁位不可读即不放行）"
             )
-        # fc is True=已确认；fc is None=无位面 → 不阻断
+        raise LinkError(
+            "飞控解锁未成功（已自动回落上锁）——请检查 GPS/飞控状态后重试"
+        )

@@ -1,0 +1,334 @@
+{
+ "schema_version": 1,
+ "run_id": "bbe10d669be4",
+ "suite": "security_chain",
+ "env": {
+  "timestamp": "2026-10-03T10:56:58",
+  "git_commit": "cdaae61",
+  "platform": "Windows-11-10.0.26200-SP0",
+  "python": "3.13.12",
+  "hostname": "蜡笔小新",
+  "cores": 16,
+  "ram_gb": 19.8,
+  "circuit": {
+   "name": "AUTH@2026-10 换代",
+   "constraints": 19578,
+   "proof_bytes": 22675632
+  },
+  "prove_max_concurrent": "1",
+  "chain_mode": ""
+ },
+ "summary": {
+  "total": 8,
+  "passed": 8,
+  "failed": 0,
+  "xfail": 0,
+  "environment_error": 0,
+  "pass_rate": 1.0,
+  "duration_s": 309.6,
+  "verdict": "success",
+  "aborted": false,
+  "abort_reason": "",
+  "attack_success": []
+ },
+ "modules": {
+  "P": {
+   "display": "环境前置断言",
+   "passed": 1,
+   "failed": 0,
+   "xfail": 0,
+   "total": 1,
+   "items": [
+    {
+     "name": "P 环境前置：backend 真链档+桥 SITL+worker [21204, 21664] 在场+/metrics 可达",
+     "verdict": "pass",
+     "expected": "",
+     "actual": "",
+     "defense_ref": "scripts/demo_up.py",
+     "attack_success": false,
+     "latency_ms": null,
+     "detail": {
+      "worker_pids": [
+       21204,
+       21664
+      ],
+      "backend_pids": [
+       25632,
+       39072
+      ],
+      "link": {
+       "mode": "sitl",
+       "conn": "tcp:127.0.0.1:5760",
+       "breach_seen": false,
+       "last_statustext": null
+      },
+      "panel": "real"
+     }
+    }
+   ]
+  },
+  "A": {
+   "display": "机构会话激活",
+   "passed": 1,
+   "failed": 0,
+   "xfail": 0,
+   "total": 1,
+   "items": [
+    {
+     "name": "A-1 种子账户激活+会话（auditor/admin 挑战-应答）",
+     "verdict": "pass",
+     "expected": "",
+     "actual": "",
+     "defense_ref": "scripts/script_auth.py:script_login",
+     "attack_success": false,
+     "latency_ms": null,
+     "detail": {
+      "auditor": "active",
+      "admin": "active"
+     }
+    }
+   ]
+  },
+  "S2": {
+   "display": "挑战一次性+登录限速 429（login|ip|username 键控）",
+   "passed": 6,
+   "failed": 0,
+   "xfail": 0,
+   "total": 6,
+   "items": [
+    {
+     "name": "S2-1 挑战 nonce 重放 → 401 bad_challenge（一次性消费）",
+     "verdict": "pass",
+     "expected": "",
+     "actual": "",
+     "defense_ref": "app/accounts/service.py:login",
+     "attack_success": false,
+     "latency_ms": 5.5,
+     "detail": {
+      "first": 200,
+      "replay": 401,
+      "consumed_ts": "2026-10-03 02:57:01"
+     }
+    },
+    {
+     "name": "S2-1痕迹 重放拒绝落 /metrics(401)",
+     "verdict": "pass",
+     "expected": "",
+     "actual": "",
+     "defense_ref": "app/main.py:obs_middleware",
+     "attack_success": false,
+     "latency_ms": null,
+     "detail": {
+      "delta": 1.0
+     }
+    },
+    {
+     "name": "S2-2 429 限流实弹：10 发 401 后第 11 发触发 429（窗口 300s）",
+     "verdict": "pass",
+     "expected": "",
+     "actual": "",
+     "defense_ref": "app/accounts/service.py:AttemptLimiter",
+     "attack_success": false,
+     "latency_ms": 3.6,
+     "detail": {
+      "trigger_at": 11,
+      "metric429": 1.0
+     }
+    },
+    {
+     "name": "S2-2痕迹 429 落 /metrics(429)",
+     "verdict": "pass",
+     "expected": "",
+     "actual": "",
+     "defense_ref": "app/main.py:obs_middleware",
+     "attack_success": false,
+     "latency_ms": null,
+     "detail": {
+      "delta": 1.0
+     }
+    },
+    {
+     "name": "S2-3 限速键控隔离：limit 用户 429 中，auditor 挑战 200+新用户登录 200",
+     "verdict": "pass",
+     "expected": "",
+     "actual": "",
+     "defense_ref": "app/accounts/router.py:_client_key",
+     "attack_success": false,
+     "latency_ms": null,
+     "detail": {
+      "auditor_challenge": 200,
+      "iso_login": 200
+     }
+    },
+    {
+     "name": "S2-4 300s 窗口恢复：窗口过后续登成功（真等实测）",
+     "verdict": "pass",
+     "expected": "",
+     "actual": "",
+     "defense_ref": "app/accounts/service.py:AttemptLimiter",
+     "attack_success": false,
+     "latency_ms": 36.8,
+     "detail": {}
+    }
+   ]
+  }
+ },
+ "chain_sections": {
+  "s1_matrix": [
+   {
+    "module": "P",
+    "attack": "P 环境前置：backend 真链档+桥 SITL+worker [21204, 21664] 在场+/metrics 可达",
+    "verdict": "pass",
+    "expected": "",
+    "actual": "",
+    "attack_success": false,
+    "defense_ref": "scripts/demo_up.py"
+   },
+   {
+    "module": "A",
+    "attack": "A-1 种子账户激活+会话（auditor/admin 挑战-应答）",
+    "verdict": "pass",
+    "expected": "",
+    "actual": "",
+    "attack_success": false,
+    "defense_ref": "scripts/script_auth.py:script_login"
+   },
+   {
+    "module": "S2",
+    "attack": "S2-1 挑战 nonce 重放 → 401 bad_challenge（一次性消费）",
+    "verdict": "pass",
+    "expected": "",
+    "actual": "",
+    "attack_success": false,
+    "defense_ref": "app/accounts/service.py:login"
+   },
+   {
+    "module": "S2",
+    "attack": "S2-1痕迹 重放拒绝落 /metrics(401)",
+    "verdict": "pass",
+    "expected": "",
+    "actual": "",
+    "attack_success": false,
+    "defense_ref": "app/main.py:obs_middleware"
+   },
+   {
+    "module": "S2",
+    "attack": "S2-2 429 限流实弹：10 发 401 后第 11 发触发 429（窗口 300s）",
+    "verdict": "pass",
+    "expected": "",
+    "actual": "",
+    "attack_success": false,
+    "defense_ref": "app/accounts/service.py:AttemptLimiter"
+   },
+   {
+    "module": "S2",
+    "attack": "S2-2痕迹 429 落 /metrics(429)",
+    "verdict": "pass",
+    "expected": "",
+    "actual": "",
+    "attack_success": false,
+    "defense_ref": "app/main.py:obs_middleware"
+   },
+   {
+    "module": "S2",
+    "attack": "S2-3 限速键控隔离：limit 用户 429 中，auditor 挑战 200+新用户登录 200",
+    "verdict": "pass",
+    "expected": "",
+    "actual": "",
+    "attack_success": false,
+    "defense_ref": "app/accounts/router.py:_client_key"
+   },
+   {
+    "module": "S2",
+    "attack": "S2-4 300s 窗口恢复：窗口过后续登成功（真等实测）",
+    "verdict": "pass",
+    "expected": "",
+    "actual": "",
+    "attack_success": false,
+    "defense_ref": "app/accounts/service.py:AttemptLimiter"
+   }
+  ],
+  "s2_races": [],
+  "s3_rate_limit_429": {
+   "user": "sec_chain_limit_7b0874",
+   "window_s": 300,
+   "max_attempts": 10,
+   "trigger_at": 11,
+   "attempts": [
+    {
+     "n": 1,
+     "status": 401,
+     "code": "auth_failed",
+     "ms": 22.4
+    },
+    {
+     "n": 2,
+     "status": 401,
+     "code": "auth_failed",
+     "ms": 17.9
+    },
+    {
+     "n": 3,
+     "status": 401,
+     "code": "auth_failed",
+     "ms": 30.8
+    },
+    {
+     "n": 4,
+     "status": 401,
+     "code": "auth_failed",
+     "ms": 30.3
+    },
+    {
+     "n": 5,
+     "status": 401,
+     "code": "auth_failed",
+     "ms": 5.7
+    },
+    {
+     "n": 6,
+     "status": 401,
+     "code": "auth_failed",
+     "ms": 25.1
+    },
+    {
+     "n": 7,
+     "status": 401,
+     "code": "auth_failed",
+     "ms": 30.7
+    },
+    {
+     "n": 8,
+     "status": 401,
+     "code": "auth_failed",
+     "ms": 29.1
+    },
+    {
+     "n": 9,
+     "status": 401,
+     "code": "auth_failed",
+     "ms": 17.3
+    },
+    {
+     "n": 10,
+     "status": 401,
+     "code": "auth_failed",
+     "ms": 30.5
+    },
+    {
+     "n": 11,
+     "status": 429,
+     "code": "rate_limited",
+     "ms": 3.6
+    }
+   ],
+   "flood_started": "10:57:01"
+  },
+  "s4_recovery_verdicts": [],
+  "s5_honesty": [
+   "清理账：web_sessions:5; auth_challenges:6; account_pubkey_history:3; accounts:3; disarm:ok。保留项：令状/协作请求/申请/授权（链上锚定审计痕迹，删除即毁痕）；sec_chain_rev 用户凭证按业务真实吊销（撤销面实弹产物）。",
+   "S10 复原 worker 以 FZ_WORKER_LEASE_S=60 拉起（demo 缺省 1200）——测试预算内接管孤儿任务的租约 knob，仅测试窗使用；此后 worker 按该 env 常驻。",
+   "真弹消耗：真出证×2（AUTH 电路真证明）+真链 recordAuth/burnNonce+真 ARM/DISARM+真 429 限速+真进程击杀+真 systemd 桥停起；无任何测试豁免头/旁路标记。"
+  ]
+ }
+}

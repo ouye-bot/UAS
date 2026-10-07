@@ -1,10 +1,17 @@
 """KMS（B2：RA 签名钥域；B4 扩政策/审计/设备域+wrap 落库；S5：Provider 抽象）。
 
 密钥供给三层（S5-d1 Provider 抽象——接口统一，实现按部署档替换）：
-- demo（缺省）：SM3 域派生（幂等锚非生产凭据——B1-d3 纪律），零落盘零硬编码；
+- demo（缺省，仅环回演示档）：SM3 域派生（幂等锚非生产凭据——B1-d3 纪律），
+  零落盘零硬编码；
 - env：FZ_*_SK 环境变量注入（部署密钥分离/轮换的最小形态）；
 - hsm（生产路线，成文不实现）：PKCS#11/HSM Provider——见 docs/生产部署与安全演进.md
   R2 节。私钥仅进程内持有，任何档零硬编码。
+
+批 2-2.3（演示钥退出默认）：production 档（FZ_DEPLOYMENT=production 或绑
+非环回地址，判定见 app/deployment.py）启动时逐钥核查——任一 FZ_*_SK 未
+注入且会落到缺省派生即拒绝启动（人话列出缺哪些 env）。演示档维持现状可跑。
+轮换仪式：scripts/rotate_kms_keys.py（生成新随机钥→输出 env 行+指纹，
+不落库不入 git）。
 """
 
 from __future__ import annotations
@@ -23,6 +30,42 @@ class KeyProvider(Protocol):
 
 
 _DEMO_DOMAIN = b"FZ-KMS|ra-signing"
+
+# 生产档必须 env 注入的密钥面（env 名, 用途人话, 材料形态）——缺任一即拒启。
+# 指纹/轮换面见 scripts/rotate_kms_keys.py（同表同源）。
+PRODUCTION_REQUIRED_KEYS: tuple[tuple[str, str, str], ...] = (
+    ("FZ_RA_SK", "RA 凭证签名私钥", "sk32"),
+    ("FZ_ENGINE_SK", "政策引擎令牌签名私钥", "sk32"),
+    ("FZ_CHAIN_RA_TX_SK", "RA 链上交易签名私钥", "sk32"),
+    ("FZ_CHAIN_ENGINE_TX_SK", "engine 链上交易签名私钥", "sk32"),
+    ("FZ_CHAIN_AUDITOR_TX_SK", "审计方链上交易签名私钥", "sk32"),
+    ("FZ_CHAIN_ADMIN_TX_SK", "治理 admin 链上交易签名私钥（governor owner，批 3.2）", "sk32"),
+    ("FZ_WRAP_KEY", "wrap 对称域主钥（16B）", "key16"),
+    ("FZ_AUDIT_TOKEN", "审计台 API 令牌", "token"),
+    ("FZ_RA_OPS_TOKEN", "RA 运维令牌", "token"),
+    ("FZ_AUTHZ_BINDING_KEY", "授权绑定 HMAC-SM3 服务钥（32B hex）", "key32"),
+)
+
+
+def assert_no_demo_keys_in_production() -> None:
+    """production 档启动断言（fail-closed）：逐钥核查 env 注入——任一缺位
+    （缺省路径会落到 SM3(公开常量) 派生=任何人可推算）即 RuntimeError，人话
+    列出全部缺项。demo 档直接返回（演示可跑不受影响）。"""
+    from app.deployment import is_production
+
+    if not is_production():
+        return
+    missing = [
+        f"{name}（{desc}）"
+        for name, desc, _kind in PRODUCTION_REQUIRED_KEYS
+        if not os.environ.get(name)
+    ]
+    if missing:
+        raise RuntimeError(
+            "生产档 KMS 密钥未注入——拒绝以演示派生钥启动（演示钥=SM3(公开常量)，"
+            "任何人可推算）。请以环境变量注入以下 "
+            f"{len(missing)} 项后重启：\n  - " + "\n  - ".join(missing)
+        )
 
 
 def _derive_priv(label: bytes) -> str:
@@ -111,6 +154,18 @@ def chain_auditor_tx_key() -> str:
 
     sk = os.environ.get("FZ_CHAIN_AUDITOR_TX_SK")
     return sk if sk else _derive_priv(b"FZ-CHAIN-SMOKE|auditor")
+
+
+def chain_admin_tx_key() -> str:
+    """治理 admin 链上交易钥（批 3.2：governor 三 owner 之一——propose/execute
+    仪式面与部署 transferAdmin；不承载任何运行时 API）。
+
+    生产 env FZ_CHAIN_ADMIN_TX_SK 注入（.local_env 同口径）；演示缺省派生
+    FZ-CHAIN-SMOKE|admin（仅环回演示档）。兼容旧名 FZ_CHAIN_ADMIN_SK。"""
+    import os
+
+    sk = os.environ.get("FZ_CHAIN_ADMIN_TX_SK") or os.environ.get("FZ_CHAIN_ADMIN_SK")
+    return sk if sk else _derive_priv(b"FZ-CHAIN-SMOKE|admin")
 
 
 def audit_api_token() -> str:

@@ -42,6 +42,9 @@ input:focus, select:focus, textarea:focus {
   outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft);
 }
 .mono { font-family: var(--font-mono); }
+/* 只读差分（视觉 S 批 S4）：readonly=登记绑定的不可改字段——灰底弱化，
+   与可编辑输入一眼区分（机型类等承诺绑定面） */
+input[readonly] { background: var(--line); color: var(--ink-2); cursor: not-allowed; }
 
 .btn {
   display: inline-flex; align-items: center; justify-content: center; gap: 6px;
@@ -82,6 +85,9 @@ input:focus, select:focus, textarea:focus {
 .tag.bad { color: var(--bad); background: var(--bad-soft); border-color: #f2caca; }
 .tag.gold { color: var(--gold); background: var(--gold-soft); border-color: #e8dcb2; }
 .tag.accent { color: var(--accent-ink); background: var(--accent-soft); border-color: #c9dbfb; }
+/* teal 档（视觉 S 批 S7）：台账「已执行·待结案」对齐审计台 teal 语言——
+   色值=六色令牌 teal 组（fz-badge.teal 同源，非新色相） */
+.tag.teal { color: var(--tone-teal-fg); background: var(--tone-teal-bg); border-color: var(--tone-teal-line); }
 
 .deny {
   border: 1px solid #f2caca; background: var(--bad-soft); color: var(--bad);
@@ -102,6 +108,44 @@ input:focus, select:focus, textarea:focus {
    TrailView 等已有 scoped hover 的不受影响=同值） */
 .tbl tbody tr { transition: background var(--t-fast); }
 .tbl tbody tr:hover { background: rgba(28, 42, 58, 0.02); }
+
+/* 窄屏横向滚动容器（视觉 S 批 S8）：宽表在窄屏不出面板——容器自己滚 */
+.tbl-wrap { overflow-x: auto; }
+
+/* 首拍骨架（视觉 S 批 S2：加载与空态分离——数据未到不撒谎「空」；
+   loaded 旗标翻转后骨架让位给真实内容或空态图标） */
+.fz-skelset { display: grid; gap: 2px; padding: 2px 0; }
+.fz-skel {
+  height: 12px; border-radius: 6px;
+  background: linear-gradient(90deg, var(--line) 25%, var(--panel-2) 45%, var(--line) 65%);
+  background-size: 200% 100%;
+  animation: fz-shimmer 1.5s linear infinite;
+}
+@keyframes fz-shimmer {
+  from { background-position: 200% 0; }
+  to { background-position: -200% 0; }
+}
+
+/* ---- 步进器（丙-2 M1 上移全局单一定义处：此前样式只存在于 FlightView scoped，
+   AuditView 用了 .stepper 类却无样式来源（渲染为裸文本）。飞行屏与审计台
+   同源消费——圆圈+箭头+连接线形态全局一致。全部令牌化。）---- */
+.stepper {
+  display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+  background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
+  padding: 10px 14px;
+}
+.step { display: flex; align-items: center; gap: 6px; color: var(--ink-3); font-size: 13px; }
+.step-n {
+  width: 20px; height: 20px; border-radius: 50%;
+  border: 1.5px solid var(--line-strong);
+  display: inline-flex; align-items: center; justify-content: center;
+  font-size: 11px; font-variant-numeric: tabular-nums;
+}
+.step.active { color: var(--accent-ink); font-weight: 700; }
+.step.active .step-n { border-color: var(--accent); background: var(--accent-soft); }
+.step.done { color: var(--ok); }
+.step.done .step-n { border-color: var(--ok); color: var(--ok); }
+.step-arrow { color: var(--ink-3); margin: 0 2px; }
 
 /* 输入 shake（视觉深化批 C：无效提交一次性 180ms 抖动——DenyBox 出现时
    由组件挂到当前焦点输入；仅 class+animation，零校验逻辑改动） */
@@ -163,11 +207,11 @@ select:focus-visible, textarea:focus-visible, summary:focus-visible {
 .fz-kpi-row { display: flex; gap: 28px; margin-top: 18px; flex-wrap: wrap; }
 .fz-kpi { display: flex; flex-direction: column; gap: 2px; }
 .fz-kpi-n { font-size: 26px; font-weight: 700; font-variant-numeric: tabular-nums; }
-.fz-kpi-n.amber { color: #b7791f; }
-.fz-kpi-n.blue { color: #3b6ea5; }
-.fz-kpi-n.teal { color: #2e8577; }
-.fz-kpi-n.gold { color: #8a6d2f; }
-.fz-kpi-n.red { color: #a33; }
+.fz-kpi-n.amber { color: var(--tone-amber-fg); }
+.fz-kpi-n.blue { color: var(--tone-blue-fg); }
+.fz-kpi-n.teal { color: var(--tone-teal-fg); }
+.fz-kpi-n.gold { color: var(--tone-gold-fg); }
+.fz-kpi-n.red { color: var(--tone-red-fg); }
 .fz-kpi-l { font-size: 12px; color: var(--ink-3); }
 
 .fz-badge {
@@ -194,12 +238,12 @@ select:focus-visible, textarea:focus-visible, summary:focus-visible {
 .fz-badge.amber::before, .fz-badge.blue::before, .fz-badge.teal::before {
   animation: fz-pulse 2.4s infinite;
 }
-.fz-badge.amber { color: #b7791f; background: #faf3e3; }
-.fz-badge.blue { color: #3b6ea5; background: #ecf3fb; }
-.fz-badge.teal { color: #2e8577; background: #e8f4f1; }
-.fz-badge.gold { color: #8a6d2f; background: #f7f1e2; }
-.fz-badge.red { color: #a33; background: #faeaea; }
-.fz-badge.gray { color: var(--ink-3); background: var(--panel); border: 1px solid var(--line); }
+.fz-badge.amber { color: var(--tone-amber-fg); background: var(--tone-amber-bg); }
+.fz-badge.blue { color: var(--tone-blue-fg); background: var(--tone-blue-bg); }
+.fz-badge.teal { color: var(--tone-teal-fg); background: var(--tone-teal-bg); }
+.fz-badge.gold { color: var(--tone-gold-fg); background: var(--tone-gold-bg); }
+.fz-badge.red { color: var(--tone-red-fg); background: var(--tone-red-bg); }
+.fz-badge.gray { color: var(--tone-gray-fg); background: var(--tone-gray-bg); border: 1px solid var(--tone-gray-line); }
 
 .fz-pill {
   font-size: 11.5px;
@@ -207,11 +251,11 @@ select:focus-visible, textarea:focus-visible, summary:focus-visible {
   border-radius: 999px;
   border: 1px solid transparent;
 }
-.fz-pill.amber { color: #b7791f; background: #faf3e3; border-color: #ecd9ae; }
-.fz-pill.blue { color: #3b6ea5; background: #ecf3fb; border-color: #c9dbf3; }
-.fz-pill.teal { color: #2e8577; background: #e8f4f1; border-color: #bfe0d9; }
-.fz-pill.gold { color: #8a6d2f; background: #f7f1e2; border-color: #e3d4ae; }
-.fz-pill.gray { color: var(--ink-3); background: var(--panel); border-color: var(--line); }
+.fz-pill.amber { color: var(--tone-amber-fg); background: var(--tone-amber-bg); border-color: var(--tone-amber-line); }
+.fz-pill.blue { color: var(--tone-blue-fg); background: var(--tone-blue-bg); border-color: var(--tone-blue-line); }
+.fz-pill.teal { color: var(--tone-teal-fg); background: var(--tone-teal-bg); border-color: var(--tone-teal-line); }
+.fz-pill.gold { color: var(--tone-gold-fg); background: var(--tone-gold-bg); border-color: var(--tone-gold-line); }
+.fz-pill.gray { color: var(--tone-gray-fg); background: var(--tone-gray-bg); border-color: var(--tone-gray-line); }
 
 /* ---- 仪表角标刻度（视觉深化批 A：取景框 L 形四角——挂 fz-hero-band/
    证书卡等关键面板；纯 ::before/::after 双元素画四角，零 DOM 增量）---- */
@@ -242,3 +286,58 @@ select:focus-visible, textarea:focus-visible, summary:focus-visible {
 /* hero-band 挂 fz-ticks 时用暖金描角（司法感） */
 .fz-hero-band.fz-ticks::before { border-color: #b89a55; }
 .fz-hero-band.fz-ticks::after { border-color: #b89a55; }
+
+/* .panel 挂 fz-ticks 时（丙-2 M6：链上留痕卡迁移全局面板）——::before 被
+   角标占用，顶部内高光改由 inset 阴影承担（玻璃层叠质感不丢） */
+.panel.fz-ticks { box-shadow: var(--shadow-1), inset 0 1px 0 var(--hi-top); }
+.panel.fz-ticks:hover { box-shadow: var(--shadow-2), inset 0 1px 0 var(--hi-top); }
+
+/* ---- 双控双签汇流视觉时刻（丙-2 M3 头号叙事）——单发动画共享定义处 ---- */
+/* 金色合流脉冲：批准成功瞬间卡片一次 ≤400ms 单发（色相=--gold × 透明度分层，
+   令牌 --gold-pulse 见 tokens.css；无 fill-mode——终了即回归原貌） */
+@keyframes fz-converge {
+  0% { box-shadow: 0 0 0 0 var(--gold-pulse); border-color: var(--gold); }
+  100% { box-shadow: 0 0 0 12px transparent; }
+}
+.fz-converge { animation: fz-converge 400ms var(--ease) 1; }
+
+/* 左条流光：状态流转到 executed 时一次 400ms 单发扫过（teal=已执行档同色） */
+.fz-sheen { position: relative; overflow: hidden; }
+.fz-sheen::after {
+  content: "";
+  position: absolute;
+  left: 0; top: 0; bottom: 0;
+  width: 3px;
+  background: linear-gradient(180deg, transparent, var(--teal), transparent);
+  transform: translateY(-100%);
+  animation: fz-sheen-run 400ms var(--ease) 1;
+  pointer-events: none;
+}
+@keyframes fz-sheen-run {
+  0% { transform: translateY(-100%); opacity: 0; }
+  25% { opacity: 1; }
+  100% { transform: translateY(100%); opacity: 0; }
+}
+
+/* ---- 打印形态（视觉 X 批 X3）：证书卡入纸——隐顶栏导航与交互控件、
+   褪装饰底纹与阴影，只留证据本体（kv 表/命令行） ---- */
+@media print {
+  header.top,
+  .btn,
+  button,
+  .fz-particles,
+  .fz-skelset {
+    display: none !important;
+  }
+  body {
+    background: #fff;
+    background-image: none;
+  }
+  .panel {
+    box-shadow: none;
+    border-color: #ccc;
+    break-inside: avoid;
+  }
+  .kv dd { overflow-wrap: break-word; }
+  a { color: inherit; text-decoration: none; }
+}

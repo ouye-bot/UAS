@@ -126,6 +126,38 @@ def binding_pred_id(plan_hash_hex, nonce_hex, policy_version):
     return f"{plan_hash_hex}|{nonce_hex}|{policy_version}"
 
 
+def server_sn_hash_hex(session: Session, sub_cred_hash_hex: str) -> str:
+    """SN 绑定换代（2026-10-06）：服务端权威 sn_hash——sub_cred_hash →
+    sub_credentials → credentials.serial_hex 解析原文后自算 SM3 全 32B
+    （零客户端自报）。健全性链：sub_cred_hash=SM3(M_A′) 已由受理门核对 ⟹
+    本行解析到的凭证=签发 M_A′ 的同一凭证（RA 签名面）；电路第 5 组
+    digest(sn_witness)==实例 25 + SM3 抗碰撞 ⟹ 证明者私知 serial 原文。
+    历史凭证（serial_hex=NULL）fail-closed 人话拒绝（重新登记后申请）。"""
+    from sqlalchemy import select
+
+    from app.ra.models import Credential, SubCredential
+
+    sub = session.scalar(
+        select(SubCredential).where(
+            SubCredential.sub_cred_hash_hex == sub_cred_hash_hex.lower()
+        )
+    )
+    if sub is None:
+        raise AuthzError("sub_cred_unknown", "子凭证不在库（无法解析序列号溯源）", 404)
+    cred = session.get(Credential, sub.credential_id)
+    if cred is None or not cred.serial_hex:
+        raise AuthzError(
+            "sn_unresolved",
+            "凭证序列号溯源缺失（历史凭证无 sn 溯源——重新登记后申请）",
+            409,
+        )
+    try:
+        serial = bytes.fromhex(cred.serial_hex)
+    except ValueError as e:
+        raise AuthzError("sn_unresolved", "凭证序列号形态非法", 409) from e
+    return sm3_bytes(serial).hex()
+
+
 def admission_gate(
     session: Session,
     deps: AuthzDeps,
@@ -142,8 +174,20 @@ def admission_gate(
     rev_root_hex: str,
     t_start: int = 0,
     t_end: int = 0,
+    case_id: str = "",
+    sorties: int = 1,
 ) -> Application:
-    """受理门控序（四步廉价检查→入队）。全部通过=返回已入队申请。"""
+    """受理门控序（四步廉价检查→入队）。全部通过=返回已入队申请。
+
+    case_id（批 4-1 服务端权威归属）：非空时执行案卷绑定门——首个申请把
+    case_id 与 (sub_cred_hash, nonce, session_pk) 材料绑定落库；此后携同
+    case_id 的申请材料一致=幂等受理（原申请原回执直接返回，不重复入队）、
+    不一致=409 case_taken。空值（直呼门控的测试/工具面）不参与绑定。
+    sorties（2026-10-06 授权包配额制）：本授权覆盖架次数 1~5，缺省 1=
+    与令牌一次性历史语义逐字等价；越界=400 bad_sorties（fail-closed）。"""
+    # ⓪ 授权包配额形检（廉价先于昂贵——门控序最前）
+    if not (1 <= int(sorties) <= 5):
+        raise AuthzError("bad_sorties", "架次配额须 1~5（授权包多架次上限）")
     # ① 会话公钥格式（128 hex——ECIES 取件目标）
     spk = session_pk_hex.lower()
     if len(spk) != 128 or not all(c in "0123456789abcdef" for c in spk):
@@ -176,6 +220,29 @@ def admission_gate(
         raise AuthzError(
             "sub_cred_hash_mismatch",
             "子凭证哈希与报文不符（重算不一致——拒绝受理）", 409)
+    # ⓪' 出证案卷归属门（批 4-1 服务端权威——置于服务器权威哈希重算之后，
+    # 材料比对全部用服务器侧权威值）：case_id 是桥端出证任务产物目录号——
+    # 此前客户端可给定任意已存在案卷目录触发验证与授权登记（抢注面）。现：
+    # 首个申请绑定 case_id↔材料；后续携同 case_id——材料一致=幂等受理（原
+    # 申请原回执，重试/网络重发安全）；材料不一致=409 case_taken（该出证
+    # 案卷已归属其他申请）。跨案卷的子凭证/nonce 一次性判决（409
+    # sub_cred_used/nonce_used）原样保留，不因本门放松。
+    if case_id:
+        bound = session.scalar(select(Application).where(Application.case_id == case_id))
+        if bound is not None:
+            same_material = (
+                bound.sub_cred_hash_hex == sub_hash_recomputed
+                and bound.nonce_hex == nonce_hex.lower()
+                and bound.session_pk_hex == session_pk_hex.lower()
+            )
+            if not same_material:
+                raise AuthzError(
+                    "case_taken",
+                    "该出证案卷已归属其他申请（case_id 已绑定在案的受理材料与本次不一致）"
+                    "——请使用自己的出证任务号重新申请",
+                    409,
+                )
+            return bound
     # ③ nonce 链上查重（cheap——链客户端 view call）
     nonce = bytes.fromhex(nonce_hex)
     if len(nonce) != 16:
@@ -222,8 +289,8 @@ def admission_gate(
             inst = _json.load(f).get("instances")
     except (OSError, ValueError) as e:
         raise AuthzError("instances_missing", f"公开实例文件缺失/损坏: {e}", 400) from e
-    if not isinstance(inst, list) or len(inst) < 25:
-        raise AuthzError("instances_malformed", "公开实例文件形态非法（需 >=25 项）", 400)
+    if not isinstance(inst, list) or len(inst) < 26:
+        raise AuthzError("instances_malformed", "公开实例文件形态非法（需 >=26 项）", 400)
 
     def _expect(idx, want_hex, name):
         got = inst[idx]
@@ -246,6 +313,14 @@ def admission_gate(
     _expect(22, _fe_be32_hex_from_u64(required), "required_level")
     _expect(24, _fe_be32_hex_from_u64(class_id), "class_id")
     _expect(23, _fe_be32_hex_from_bytes32(bytes.fromhex(rev_root_hex)), "rev_root")
+    # SN 绑定换代（2026-10-06）：实例 25=sn_hash——权威=服务端从
+    # sub_cred_hash→sub_credentials→credentials 解析 sn 后自算 SM3 全 32B
+    #（零客户端自报）。**词折叠口径（prove 窗 e2e ⑤ 实弹定谳）**：电路第 5 组
+    # digest 词根环与 SMT 根环同族=fold_words_be（w0 最低权——序列化后呈词序
+    # 倒排），非真 BE 整数折叠；故用 _fe_be32_hex_from_bytes32（与实例 23
+    # rev_root 同式），曾误用 _fe_be32_hex_from_digest 被 e2e 逐位对拍抓出。
+    server_sn_hex = server_sn_hash_hex(session, sub_cred_hash_hex)
+    _expect(25, _fe_be32_hex_from_bytes32(bytes.fromhex(server_sn_hex)), "sn_hash")
     if t_start <= 0 or t_end <= t_start:
         raise AuthzError("bad_window", "授权窗口非法（t_end 须大于 t_start）", 400)
     # 授权窗上限（S5 安全修复）：t_end 须 ≤ t_start+政策窗（缺省 6h）——
@@ -267,6 +342,22 @@ def admission_gate(
         raise AuthzError(
             "stale_t_epoch",
             f"授权窗起点偏离服务时间超过 {slack}s（时间锚过期/超前——重新出证）",
+            409,
+        )
+    # ⑥ 凭证有效期覆盖核对（S6 安全闭环 2026-10-04）：AUTH 电路语句只证
+    # exp_u ≥ t_epoch（实例 21=t_start=出证时刻）——「exp_u=now+1min 的合法
+    # 子凭证（RA 签名为真）申请满 6h 授权窗」形态电路为真、上述各门全过，
+    # 令牌却覆盖凭证死后近 6 小时。宿主面补核对：授权窗整体必须被凭证有效
+    # 期覆盖（exp_u ≥ t_end）。取舍依据=规划裁决取强语义（整窗覆盖）：弱语义
+    # （exp_u ≥ t_start）与电路重复、防线空转；诚实流不受伤——RA 子凭证
+    # TTL=24h（ra/service.py SUB_CRED_TTL_HOURS）＞ 政策窗上限 6h。
+    # exp_u 明文在已验签报文 M_A′ 内：布局 160B 前缀+4B exp+1B par=165B
+    # （ra/credential.py build_message），即 msg[160:164] BE u32。
+    exp_u = int.from_bytes(msg[160:164], "big")
+    if exp_u < t_end:
+        raise AuthzError(
+            "cred_expired_window",
+            "凭证有效期不覆盖申请的授权窗——请重新登记后申请",
             409,
         )
 
@@ -292,7 +383,13 @@ def admission_gate(
     _n = int(default_ecc_table["n"], 16)
     e_hex = format(int.from_bytes(e, "big") % _n, "064x")
     app_row = Application(
+        case_id=(case_id or None),  # 批 4-1：案卷唯一归属（空=直呼门控不绑定）
         e_hex=e_hex,
+        # 绑定挑战快照（2026-10-07 prove 窗根修）：落**本门⑤刚钉过实例 19** 的
+        # 同一值——worker 复验消费库值与验证同源，不再按各自进程 env 重建钥控
+        # HMAC（两进程 FZ_AUTHZ_BINDING_KEY 漂移曾致真案卷实例 19 假拒，实测
+        # e2e_auth_full ⑥）。公开值：绑定面已下发客户端，无新增暴露面。
+        challenge_hex=challenge_hex,
         session_pk_hex=session_pk_hex.lower(),
         sub_sig_hex=sub_sig_hex,
         sub_cred_hash_hex=sub_cred_hash_hex,
@@ -305,6 +402,8 @@ def admission_gate(
         rev_root_hex=rev_root_hex,
         t_start=t_start,
         t_end=t_end,
+        sorties=int(sorties),
+        exp_u=exp_u,  # S6 闭环归档源：worker 写判决件 expected.exp_u
         status="pending",
     )
     session.add(app_row)
@@ -318,14 +417,35 @@ def admission_gate(
     return app_row
 
 
+def _reject_code_of(reason: str) -> str:
+    """reject_reason 前缀折算稳定业务码（B3 人话化）：`rev_root_moved: …` →
+    `rev_root_moved`——前端按码分流专属判词。非 `snake_code: ` 形态的自由
+    文本（zkc 退出日志/transient 尾巴等）统一归 `verify_rejected`，不伪造
+    业务语义。"""
+    head = reason.split(":", 1)[0].strip() if reason else ""
+    if head and all(c.isalnum() and not c.isupper() or c == "_" for c in head) and "_" in head:
+        return head
+    return "verify_rejected"
+
+
 def receipt_of(session: Session, code_hex: str) -> dict:
-    """回执取件：waiting（验证中）/ready+令牌密文/failed。"""
+    """回执取件：waiting（验证中）/ready+令牌密文/failed+拒绝理由（B3）。
+
+    failed 态新增 reject_reason（Application.reject_reason 原文）与
+    reject_code（前缀稳定码，_reject_code_of 折算）——被吊销飞手在回执
+    取件面直接看到「吊销已生效」而非裸「验证拒绝」；ready/waiting 响应
+    形态零变化（加字段不破既有）。"""
     r = session.scalar(select(Receipt).where(Receipt.code_hex == code_hex))
     if r is None:
         raise AuthzError("receipt_not_found", "回执码不存在", 404)
     out: dict = {"status": r.status}
     if r.status == "ready" and r.token_cipher is not None:
         out["token_cipher_hex"] = r.token_cipher.hex()
+    if r.status == "failed":
+        app_row = session.get(Application, r.application_id)
+        reason = (app_row.reject_reason if app_row is not None else "") or ""
+        out["reject_reason"] = reason
+        out["reject_code"] = _reject_code_of(reason)
     return out
 
 
@@ -340,8 +460,14 @@ TOKEN_FIELDS = (
     "nonce",
     "policy_version",
 )
-# B4-d7：sn_hash 不入令牌（设备绑定由证明内 sn_h 等值钉承担——链上+令牌双零
-# 设备信息；D9 机制升级记录在案）
+# B4-d7 历史口径：sn_hash 曾不入令牌（链上+令牌双零设备信息；D9 机制升级
+# 记录在案）——⑥代（2026-10-06）起令牌载荷含 sn_hash（见 build_token）。
+# 🔴→✅ 口径换代（2026-10-06 ⑥代交付）：下方历史披露「电路内无 sn_h 等值钉、
+# 解锁面一证多机无事前拦截、令牌级设备绑定须 vendor 电路换代——已挂账未
+# 实施」已过时。现状：AUTH 电路公开实例 25=sn_hash（服务端权威 SM3(serial)，
+# 词折叠 fold_words_be），build_token 载荷含 sn_hash（engine 签名域覆盖），
+# 桥第 6 查 sn_mismatch 拒解锁——一证多机拦截全链闭环；签发面原像认证+
+# 事后设备交叉审计（audit/device_check.py）保留为纵深防线。残余=真机 SE。
 
 
 def build_token(
@@ -353,7 +479,11 @@ def build_token(
     t_end: int,
     nonce_hex: str,
     policy_version: str,
+    sn_hash_hex: str = "",
 ) -> str:
+    """SN 绑定换代（2026-10-06）：载荷增 sn_hash（服务端权威 SM3(serial) 全
+    32B hex）——入 body ⟹ engine 签名域覆盖（sign_token 对 body 原文签名）；
+    桥第 6 查=SM3(本机 SN)==token.sn_hash（sitl_link/telemetry，不符=sn_mismatch）。"""
     body = json.dumps(
         {
             "authId": auth_id,
@@ -363,6 +493,7 @@ def build_token(
             "t_end": t_end,
             "nonce": nonce_hex,
             "policy_version": policy_version,
+            "sn_hash": sn_hash_hex,
         },
         separators=(",", ":"),
         sort_keys=True,

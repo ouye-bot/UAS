@@ -11,6 +11,17 @@ jobs:
       - run: pip install "gmssl==3.2.2" "fastapi>=0.115,<1" "uvicorn[standard]>=0.30" "httpx>=0.27" "pytest>=8.3" "ruff==0.16.5"
       - run: ruff check app tests && ruff format --check app tests
       - run: python -m pytest -q -m "not slow"
+  bridge:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - run: pip install pymavlink==2.5.0 pytest==8.3.0
+      - run: python -m pytest gcs/bridge/test_bridge_core.py -q
+        env:
+          PYTHONPATH: backend
+
   zksvc:
     runs-on: ubuntu-latest
     defaults: { run: { working-directory: zksvc } }

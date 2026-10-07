@@ -1,22 +1,28 @@
-/** 密钥库（P1-A1/A2）：私钥静态加密——localStorage 零明文私钥。
+/** 密钥库（P1-A1/A2；2026-10-04 批 2 密码底座升档）：私钥静态加密——localStorage 零明文私钥。
  *
- * 形态 v2：{v:2, pk, enc(密码KEK 密封), rec(恢复码KEK 密封)}——任一因子解封。
- * KDF：SM3 迭代链（h0=SM3(pass‖salt)；h_i=SM3(h_{i-1}‖pass)；KEK=h_N[0:16]）
- * ——无国密 PBKDF2 标准，自建构造公开可审计；迭代数=OWASP 2023 密码哈希
- *   指南对齐值（21000 轮 SM3 迭代链，纯 JS 约 3.5s——安全/可用性平衡点，
- *   2026-09-28 密码评审 P0-2 对齐：此前头注宣称 60000 与常量不符）。
+ * 形态 v2：{v:2, pk, enc(密码KEK 密封), rec(恢复码KEK 密封)}——任一因子解封
+ * （本机缓存遗留形态，KDF 保留旧链不动——存量可解）。
+ * 形态 v3（legacy）：{v:3, pk, enc}——账户单因子信封旧口径，KDF=SM3 迭代链
+ *   21000（保留不删：存量密封件版本分派可解+惰性重封升级）。
+ * 形态 v4（现行）：{v:4, pk, enc{kdf,iter,…}}——KDF=PBKDF2-HMAC-SM3
+ *   （RFC 8018 标准构造，hash-wasm createSM3 WASM 引擎），迭代数缺省 600000
+ *   （OWASP 2023 档；iter 随信封落盘——服务端调档不影响存量可解性）。
  * 加密封装：SM4-GCM（crypto/sm4gcm，RFC 8998 对拍锚），AAD 绑定槽位与版本。
  * 明文私钥仅存在于调用方内存变量（模块缓存），刷新即失——解锁 UX 的依据。
  */
+import { createSM3, pbkdf2 } from "hash-wasm";
 import { sm3 } from "sm-crypto";
 import { randHex } from "./api";
 import { GcmAuthError, hexToBytes, sm4GcmDecrypt, sm4GcmEncrypt } from "../crypto/sm4gcm";
 
-export const KDF_ITERATIONS = 21_000; // OWASP 2023 对齐——21000 轮 SM3 ≈ 3.5s（纯 JS），安全/可用性平衡
+export const KDF_ITERATIONS_V4 = 600_000; // OWASP 2023 PBKDF2 口径（与后端 KDF_ITERATIONS_DEFAULT 同源）
+export const KDF_LEGACY_V3_ITERATIONS = 21_000; // v3 legacy 旧链固定值（兼容面专用）
+export const KDF_NAME_V4 = "pbkdf2-sm3"; // v4 信封 enc.kdf 标记（与后端 accounts/kdf.py 同源）
 const KEK_LEN = 16;
 const AAD_PASS = new TextEncoder().encode("FZ-KEYSTORE-v2|pass");
 const AAD_REC = new TextEncoder().encode("FZ-KEYSTORE-v2|recovery");
 const RECOVERY_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"; // 去易混字符（0/1/I/O）
+const ACTIVATE_INFO_V1 = new TextEncoder().encode("FZ-ACTIVATE-VERIFY|v1"); // 激活核对子独立派生域
 
 export class KeystoreError extends Error {}
 
@@ -39,8 +45,9 @@ function concat(...arrs: Uint8Array[]): Uint8Array {
   return out;
 }
 
-/** SM3 迭代链 KDF：返回 16B KEK（hex 32 字符）。确定性：同密码同盐同输出。 */
-export function deriveKek(passphrase: string, saltHex: string, iterations: number = KDF_ITERATIONS): string {
+/** v3 legacy SM3 迭代链 KDF：返回 16B KEK（hex 32 字符）。确定性：同密码同盐同输出。
+ * 批 2 起为兼容面专用（v2 本机信封/存量 v3 密封件/旧种子激活分派）；新密封一律 v4。 */
+export function deriveKek(passphrase: string, saltHex: string, iterations: number = KDF_LEGACY_V3_ITERATIONS): string {
   if (iterations < 1) throw new KeystoreError("KDF 迭代数须 ≥1");
   const pass = utf8(passphrase);
   const salt = hexToBytes(saltHex);
@@ -50,6 +57,42 @@ export function deriveKek(passphrase: string, saltHex: string, iterations: numbe
     h = sm3(Array.from(concat(hBytes(), pass)));
   }
   return h.slice(0, KEK_LEN * 2);
+}
+
+/** v4 现行 KDF（RFC 8018 PBKDF2-HMAC-SM3，WASM 引擎）：返回 16B KEK（hex 32 字符）。
+ * 与后端 app/accounts/kdf.py:derive_kek 逐字节一致（JS↔Python 对拍锚）。
+ * 盐必须按字节传入（hexToBytes）——hash-wasm 对 string 入参按 UTF-8 解释，
+ * hex 串直传会派生出完全不同的 KEK（对拍排障定谳）。 */
+export async function deriveKekV4(
+  passphrase: string,
+  saltHex: string,
+  iterations: number = KDF_ITERATIONS_V4,
+): Promise<string> {
+  if (iterations < 1) throw new KeystoreError("KDF 迭代数须 ≥1");
+  return pbkdf2({
+    password: utf8(passphrase),
+    salt: hexToBytes(saltHex),
+    iterations,
+    hashLength: KEK_LEN,
+    hashFunction: createSM3(),
+  });
+}
+
+/** 激活核对子（v1 独立派生域——与 KEK 域分离，info 前缀入盐；与后端
+ * app/accounts/kdf.py:derive_activation_verifier 逐字节一致）。 */
+export async function deriveActivationVerifier(
+  passphrase: string,
+  saltHex: string,
+  iterations: number = KDF_ITERATIONS_V4,
+): Promise<string> {
+  if (iterations < 1) throw new KeystoreError("KDF 迭代数须 ≥1");
+  return pbkdf2({
+    password: utf8(passphrase),
+    salt: concat(ACTIVATE_INFO_V1, hexToBytes(saltHex)),
+    iterations,
+    hashLength: KEK_LEN,
+    hashFunction: createSM3(),
+  });
 }
 
 interface SealedSlot {
@@ -242,6 +285,8 @@ export function isLegacyKeystore(obj: unknown): obj is LegacyKeystore {
 
 const AAD_PASS_V3 = new TextEncoder().encode("FZ-KEYSTORE-v3|pass");
 const AAD_PROFILE_V3 = new TextEncoder().encode("FZ-KEYSTORE-v3|profile");
+const AAD_PASS_V4 = new TextEncoder().encode("FZ-KEYSTORE-v4|pass");
+const AAD_PROFILE_V4 = new TextEncoder().encode("FZ-KEYSTORE-v4|profile");
 
 export interface KeystoreV3 {
   v: 3;
@@ -249,7 +294,22 @@ export interface KeystoreV3 {
   enc: SealedSlot;
 }
 
-/** v3 密封：密码单因子（AAD 与 v2 pass 槽分域——两代信封不可互解）。 */
+/** v4 信封（现行）：enc 槽带 kdf 标记+迭代数落盘（解封按信封内 iter 复算
+ * ——服务端 FZ_KDF_ITERATIONS 调档不影响存量可解性）。 */
+export interface SealedSlotV4 extends SealedSlot {
+  kdf: typeof KDF_NAME_V4;
+  iter: number;
+}
+
+export interface KeystoreV4 {
+  v: 4;
+  pk: string;
+  enc: SealedSlotV4;
+}
+
+export type AccountKeystore = KeystoreV3 | KeystoreV4;
+
+/** v3 密封（legacy 兼容面——仅惰性重封前构造测试/迁移面使用；新密封走 v4）。 */
 export function sealKeystoreV3(skHex: string, pkHex: string, passphrase: string): KeystoreV3 {
   if (!passphrase) throw new KeystoreError("密码不可为空");
   return { v: 3, pk: pkHex, enc: seal(skHex, passphrase, AAD_PASS_V3) };
@@ -261,28 +321,49 @@ export function openKeystoreV3(env: KeystoreV3, passphrase: string): string {
   return unseal(env.enc, passphrase, AAD_PASS_V3);
 }
 
-/** 身份资料密封槽（{cred,form}——零明文 PIII 落服务器，同导出件纪律）。 */
-export function sealProfileSlot(data: unknown, passphrase: string): SealedSlot {
-  return sealRaw(utf8(JSON.stringify(data)), passphrase, AAD_PROFILE_V3);
+/** v4 密封（现行——PBKDF2-HMAC-SM3，iter 落盘）。 */
+export async function sealKeystoreV4(
+  skHex: string,
+  pkHex: string,
+  passphrase: string,
+  iterations: number = KDF_ITERATIONS_V4,
+): Promise<KeystoreV4> {
+  if (!passphrase) throw new KeystoreError("密码不可为空");
+  if (iterations < 1) throw new KeystoreError("KDF 迭代数须 ≥1");
+  const salt = randHex(16);
+  const nonce = randHex(12);
+  const kek = hexToBytes(await deriveKekV4(passphrase, salt, iterations));
+  const { ciphertext, tag } = sm4GcmEncrypt(kek, hexToBytes(nonce), hexToBytes(skHex), AAD_PASS_V4);
+  return {
+    v: 4,
+    pk: pkHex,
+    enc: {
+      salt,
+      nonce,
+      ct: Array.from(ciphertext, (b) => b.toString(16).padStart(2, "0")).join(""),
+      tag: Array.from(tag, (b) => b.toString(16).padStart(2, "0")).join(""),
+      kdf: KDF_NAME_V4,
+      iter: iterations,
+    },
+  };
 }
 
-export function unsealProfileSlot<T = unknown>(slot: SealedSlot, passphrase: string): T {
-  try {
-    const raw = sm4GcmDecrypt(
-      hexToBytes(deriveKek(passphrase, slot.salt)),
-      hexToBytes(slot.nonce),
-      hexToBytes(slot.ct),
-      hexToBytes(slot.tag),
-      AAD_PROFILE_V3,
-    );
-    return JSON.parse(new TextDecoder().decode(raw)) as T;
-  } catch (e) {
-    if (e instanceof GcmAuthError) throw new KeystoreError("身份资料解封失败（密码不匹配）");
-    throw e;
-  }
+/** v4 解封（按信封内 iter 复算——形态门 fail-closed：kdf 标记/iter 非法即拒）。 */
+export async function openKeystoreV4(env: KeystoreV4, passphrase: string): Promise<string> {
+  if (!env || env.v !== 4 || !env.enc) throw new KeystoreError("密封件形态不符（v4）");
+  if (env.enc.kdf !== KDF_NAME_V4) throw new KeystoreError("密封件 KDF 标记不符（v4）");
+  if (!Number.isInteger(env.enc.iter) || env.enc.iter < 1) throw new KeystoreError("密封件 KDF 迭代数非法");
+  return unsealV4(env.enc, passphrase, AAD_PASS_V4, env.enc.iter);
 }
 
-export function parseKeystoreV3(text: string): KeystoreV3 {
+/** 版本分派解封（v3→旧链 / v4→PBKDF2）——存量 v3 密封件仍可解，不删旧链。 */
+export async function openKeystore(env: AccountKeystore, passphrase: string): Promise<string> {
+  if (env?.v === 4) return openKeystoreV4(env, passphrase);
+  return openKeystoreV3(env as KeystoreV3, passphrase);
+}
+
+/** 密封件解析（严格形态校验 v3/v4——人话拒绝，不静默兼容）。 */
+export function parseKeystoreBlob(text: string): AccountKeystore {
   let obj: unknown;
   try {
     obj = JSON.parse(text);
@@ -290,17 +371,85 @@ export function parseKeystoreV3(text: string): KeystoreV3 {
     throw new KeystoreError("密封件不是有效 JSON");
   }
   const o = obj as Record<string, unknown>;
-  if (o?.v !== 3 || typeof o.pk !== "string" || !o.enc) {
-    throw new KeystoreError("密封件形态不符（v3）");
+  if ((o?.v !== 3 && o?.v !== 4) || typeof o.pk !== "string" || !o.enc) {
+    throw new KeystoreError("密封件形态不符（v3/v4）");
   }
-  return o as unknown as KeystoreV3;
+  return o as unknown as AccountKeystore;
+}
+
+/** 身份资料密封槽（{cred,form}——零明文 PIII 落服务器，同导出件纪律）。
+ * v4 现行：槽带 kdf/iter 标记（unseal 按标记分派——旧槽无标记走旧链）。 */
+export async function sealProfileSlot(
+  data: unknown,
+  passphrase: string,
+  iterations: number = KDF_ITERATIONS_V4,
+): Promise<SealedSlotV4> {
+  const salt = randHex(16);
+  const nonce = randHex(12);
+  const kek = hexToBytes(await deriveKekV4(passphrase, salt, iterations));
+  const { ciphertext, tag } = sm4GcmEncrypt(
+    kek, hexToBytes(nonce), utf8(JSON.stringify(data)), AAD_PROFILE_V4,
+  );
+  return {
+    salt,
+    nonce,
+    ct: Array.from(ciphertext, (b) => b.toString(16).padStart(2, "0")).join(""),
+    tag: Array.from(tag, (b) => b.toString(16).padStart(2, "0")).join(""),
+    kdf: KDF_NAME_V4,
+    iter: iterations,
+  };
+}
+
+export function unsealProfileSlot<T = unknown>(slot: SealedSlot, passphrase: string): Promise<T> {
+  const doUnseal = async (): Promise<T> => {
+    const v4 = (slot as SealedSlotV4).kdf === KDF_NAME_V4;
+    const raw = await sm4GcmDecryptAsync(
+      v4
+        ? hexToBytes(await deriveKekV4(passphrase, slot.salt, (slot as SealedSlotV4).iter))
+        : hexToBytes(deriveKek(passphrase, slot.salt)),
+      hexToBytes(slot.nonce),
+      hexToBytes(slot.ct),
+      hexToBytes(slot.tag),
+      v4 ? AAD_PROFILE_V4 : AAD_PROFILE_V3,
+    );
+    return JSON.parse(new TextDecoder().decode(raw)) as T;
+  };
+  return doUnseal().catch((e) => {
+    if (e instanceof GcmAuthError || e instanceof KeystoreError) {
+      throw new KeystoreError("身份资料解封失败（密码不匹配）");
+    }
+    throw e;
+  });
+}
+
+/** sm4GcmDecrypt 的 Promise 化薄壳（同步实现抛异常→rejected，统一 await 面）。 */
+function sm4GcmDecryptAsync(
+  key: Uint8Array, nonce: Uint8Array, ct: Uint8Array, tag: Uint8Array, aad: Uint8Array,
+): Promise<Uint8Array> {
+  try {
+    return Promise.resolve(sm4GcmDecrypt(key, nonce, ct, tag, aad));
+  } catch (e) {
+    return Promise.reject(e);
+  }
+}
+
+/** v4 槽解封内核（AAD+KDF 由调用方按信封版本传入）。 */
+async function unsealV4(slot: SealedSlot, passphrase: string, aad: Uint8Array, iterations: number): Promise<string> {
+  try {
+    const kek = hexToBytes(await deriveKekV4(passphrase, slot.salt, iterations));
+    const pt = sm4GcmDecrypt(kek, hexToBytes(slot.nonce), hexToBytes(slot.ct), hexToBytes(slot.tag), aad);
+    return Array.from(pt, (b) => b.toString(16).padStart(2, "0")).join("");
+  } catch (e) {
+    if (e instanceof GcmAuthError) throw new KeystoreError("解封失败（密码错误或密文被篡改）");
+    throw e;
+  }
 }
 
 // ---- 存储与会话缓存（明文私钥只在模块内存——刷新即失，解锁 UX 依据） ----
 const STORAGE_KEY = "fzUserKeypair";
 let cachedSk: string | null = null;
 
-export function loadKeystore(): KeystoreV2 | KeystoreV3 | { sk: string; pk: string } | null {
+export function loadKeystore(): KeystoreV2 | AccountKeystore | { sk: string; pk: string } | null {
   const raw = localStorage.getItem(STORAGE_KEY);
   if (!raw) return null;
   try {
@@ -310,8 +459,8 @@ export function loadKeystore(): KeystoreV2 | KeystoreV3 | { sk: string; pk: stri
   }
 }
 
-/** 本地密钥缓存落盘（v2/v3 信封皆可——账户批后新登记一律 v3）。 */
-export function storeKeystore(env: KeystoreV2 | KeystoreV3): void {
+/** 本地密钥缓存落盘（v2/v3/v4 信封皆可——账户批后新登记一律 v4）。 */
+export function storeKeystore(env: KeystoreV2 | AccountKeystore): void {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(env));
   cachedSk = null; // 旧缓存作废
 }

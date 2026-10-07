@@ -82,3 +82,37 @@ def test_cursor_start_from_max_block():
 
 from app.telemetry.indexer import next_cursor  # noqa: E402
 from app.telemetry.models import ChainEvent as ChainEventRow  # noqa: E402
+
+
+def test_seen_set_windowed_near_cursor(monkeypatch):
+    """seen 集合近窗（2026-10-04 内存线性涨根治）：只回看游标前
+    FZ_INDEXER_SEEN_BACK_BLOCKS 块。去重键含 block——跨块本就不可能同键，
+    seen 集合只在「同块重扫」时生效（增量索引游标只前进，重扫仅发生在游标
+    附近=必在窗内）⟹ 近窗对一切可达路径语义零变化，内存不再随 chain_events
+    线性涨。"""
+    monkeypatch.setenv("FZ_INDEXER_SEEN_BACK_BLOCKS", "10")
+    from app.telemetry.indexer import _seen_back_blocks
+
+    assert _seen_back_blocks() == 10
+    s = _session()
+    blocks = {100: [{"hash": "0xtx1", "to": ANCHOR}]}
+    index_events(
+        s,
+        fetch_block_txs=lambda b: blocks.get(b, []),
+        decode_tx=_decode,
+        start=100,
+        end=100,
+        anchor_address=ANCHOR,
+    )
+    # 窗内同块重扫：幂等（去重仍生效——窗必覆盖游标附近的重扫面）
+    n2 = index_events(
+        s,
+        fetch_block_txs=lambda b: blocks.get(b, []),
+        decode_tx=_decode,
+        start=100,
+        end=100,
+        anchor_address=ANCHOR,
+    )
+    assert n2 == 0 and len(s.scalars(select(ChainEventRow)).all()) == 1
+    monkeypatch.delenv("FZ_INDEXER_SEEN_BACK_BLOCKS")
+    assert _seen_back_blocks() == 10000, "缺省近窗宽=10000 块"

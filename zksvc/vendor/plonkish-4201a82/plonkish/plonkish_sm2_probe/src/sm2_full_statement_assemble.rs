@@ -377,7 +377,11 @@ pub fn assemble_full_statement_with_hooks_bound(
     // B-batch3：实例面 22→23（θ=22 消费式——仅承诺数值档路径消费；schema_id
     // 实例 23 已删（定谳二次），容量随删收敛；默认档 instances[0].len() 由
     // 既有 22 冻结断言保证不变）。
-    let bld_capacity = if pc_cfg_ref.as_ref().map(|c| c.auth.is_some()).unwrap_or(false) { 25 } else if pred_commit_salt().is_some() { 23 } else { 22 };
+    // SN 绑定换代（2026-10-06）：AUTH 档 25→26（索引 25=sn_hash——SM3(sn) 全
+    // 32B BE 折叠进 Fp，fold_digest_fp 口径；钉定=LUT 档第 5 组查表门 digest
+    // 词根环大折叠 pin.bind）。legacy（SM3_LUT=0）auth 路径实例 25 不设置
+    //（部署恒 LUT=1——zksvc assemble_auth 钉定）。
+    let bld_capacity = if pc_cfg_ref.as_ref().map(|c| c.auth.is_some()).unwrap_or(false) { 26 } else if pred_commit_salt().is_some() { 23 } else { 22 };
     let mut bld = Builder::<FpSM2>::new(bld_capacity);
 
     // ══════════ PLAN 相（全部 alloc 先于首条款束 —— 冻结守卫纪律）══════════
@@ -398,10 +402,48 @@ pub fn assemble_full_statement_with_hooks_bound(
     let mut c_blk: Option<[u8; 64]> = None;
     let mut c_circ: Option<crate::sm3_lookup_block::BlockCircuit> = None;
     let mut c_shadow: Option<([[usize; 8]; 8], [usize; 8])> = None;
+    // SN 绑定换代（2026-10-06）：第 5 组=SN 单块（sn 定宽 64B 填充块——serial
+    // 1..=55B，pad=0x80@len、be64(8·len)@56；fresh IV 单组电路）。组序：三体 0..2
+    //→C 块 3→SN 块 4→SMT 5..（SMT 织入 offset 随动 4→5）。
+    let mut sn_blk: Option<[u8; 64]> = None;
+    let mut sn_circ: Option<crate::sm3_lookup_block::BlockCircuit> = None;
+    let sn_groups = if lut_on
+        && pc_cfg_ref.as_ref().map(|c| c.auth.is_some()).unwrap_or(false)
+    {
+        let serial = &pc_cfg_ref
+            .as_ref()
+            .and_then(|c| c.auth.as_ref())
+            .expect("auth 档原像在场")
+            .serial;
+        assert!(
+            !serial.is_empty() && serial.len() <= 55,
+            "SN 绑定：序列号须 1..=55B（单块填充域）——实得 {}B",
+            serial.len()
+        );
+        sn_blk = Some(sn_block64(serial));
+        sn_circ = sn_blk
+            .as_ref()
+            .map(|b| crate::sm3_lookup_weave::chain_circuit(std::slice::from_ref(b)));
+        1
+    } else {
+        0
+    };
     // θ/class 读数源环（LUT 档专用二元环；legacy=走 plan_z_rings 消息环）。
     let mut c_gate_rings: (Option<usize>, Option<usize>) = (None, None);
     // C 组 16 词根表（LUT 档 pc 分支填——约束相 msg recomp 锚）。
     let mut c_msg_roots: Option<[(usize, usize); 16]> = None;
+    // SN 绑定换代（2026-10-06）：第 5 组钉定面（WIRES 相填，EMIT 相消费）——
+    // (16 词根, dgw 8 列, 摘要影子 bank, 影子 recomp 选择器, 折叠值列, pin
+    // 选择器, sn 行)。
+    let mut sn_pin: Option<(
+        [(usize, usize); 16],
+        [usize; 8],
+        [[usize; 8]; 8],
+        [usize; 8],
+        usize,
+        usize,
+        usize,
+    )> = None;
     let mut smt_emit: Option<(
         crate::smt_weave::SmtWiring,
         crate::smt_weave::SmtPlan,
@@ -430,14 +472,6 @@ pub fn assemble_full_statement_with_hooks_bound(
         c_circ = c_blk
             .as_ref()
             .map(|b| crate::sm3_lookup_weave::chain_circuit(std::slice::from_ref(b)));
-        // 组数 3+smt → 4+smt（第 4 组=C 块，msg-limb 桥接面随组）；pconst
-        // 单列复用（三体列——消息无关性守卫测试钉死）。
-        lut_plan = Some(crate::sm3_lookup_weave::weave_alloc(
-            &mut bld,
-            3 + smt_groups + if c_circ.is_some() { 1 } else { 0 },
-            3 + if c_circ.is_some() { 1 } else { 0 },
-            &lut_circ.as_ref().expect("LUT 电路").pconst,
-        ));
         None
     } else {
         Some(plan_chained_parts(&mut bld, ChainEcho::Fold { cols: dgw_cols, row: row_ae }))
@@ -506,6 +540,48 @@ pub fn assemble_full_statement_with_hooks_bound(
             _ => (pad_col, pad_rows[j - 9]),
         }),
     ];
+    // ── ⑦代（2026-10-06）：LUT PLAN——组列共享+查表通道合并（lane 带复用）。
+    // 全部 SM3 电路（三体 0..2 / C 块 3 / SN 块 4 / SMT 5..）进同一 pack；
+    // msg 词根行表=msg-limb 桥列 packing 的行去重条件（三体行=msg_roots 行；
+    // C/SN 行=词根 rank 公式，单一事实源 commit_root_row/row_mapping()[25]）。
+    if lut_on {
+        let sn_row_lut = crate::sm3_compress::row_mapping()[25];
+        let is_auth_cfg = pc_cfg_ref.as_ref().map(|c| c.auth.is_some()).unwrap_or(false);
+        let mut msg_rows: Vec<[usize; 16]> = Vec::new();
+        for b in 0..3usize {
+            msg_rows.push(std::array::from_fn(|j| msg_roots[b][j].1));
+        }
+        if c_circ.is_some() {
+            msg_rows.push(std::array::from_fn(|j| commit_root_row(is_auth_cfg, j)));
+        }
+        if sn_groups == 1 {
+            msg_rows.push([sn_row_lut; 16]);
+        }
+        let mut lut_circs: Vec<crate::sm3_lookup_weave::PackCircuit<'_>> = Vec::new();
+        lut_circs.push(crate::sm3_lookup_weave::PackCircuit {
+            base: 0,
+            circ: lut_circ.as_ref().expect("LUT 电路"),
+        });
+        let mut next_base = 3usize;
+        if let Some(cc) = c_circ.as_ref() {
+            lut_circs.push(crate::sm3_lookup_weave::PackCircuit { base: next_base, circ: cc });
+            next_base += 1;
+        }
+        if let Some(sc) = sn_circ.as_ref() {
+            lut_circs.push(crate::sm3_lookup_weave::PackCircuit { base: next_base, circ: sc });
+            next_base += 1;
+        }
+        if let Some((sc, ..)) = smt_circ.as_ref() {
+            lut_circs.push(crate::sm3_lookup_weave::PackCircuit { base: next_base, circ: sc });
+        }
+        lut_plan = Some(crate::sm3_lookup_weave::weave_alloc(
+            &mut bld,
+            &lut_circs,
+            &msg_rows,
+            row_ae,
+            &lut_circ.as_ref().expect("LUT 电路").pconst,
+        ));
+    }
     if lut_on {
         crate::sm3_lookup_weave::weave_wires(
             &mut bld,
@@ -522,7 +598,7 @@ pub fn assemble_full_statement_with_hooks_bound(
             let smt_plan = crate::smt_weave::weave_smt_alloc_cols(
                 &mut bld,
                 lut_plan.as_ref().expect("LUT PLAN"),
-                4,
+                4 + sn_groups, // SN 绑定换代：SN 块占组 4，SMT 续接 5..
                 mw,
             );
             let wiring = crate::smt_weave::SmtWiring {
@@ -548,7 +624,7 @@ pub fn assemble_full_statement_with_hooks_bound(
                 &mut bld,
                 smt_c,
                 lut_plan.as_ref().expect("LUT PLAN"),
-                4,
+                4 + sn_groups, // SN 绑定换代：同 alloc offset
                 &wiring,
                 &smt_plan,
                 mw,
@@ -616,22 +692,21 @@ pub fn assemble_full_statement_with_hooks_bound(
         });
         // (S7) 消息根表:pred=词 0..3 salt、4..11=attrs_true、12..15=padding；
         // auth=词 0..3 salt、4..13=原像、14..15=padding（3820 内承诺根带）。
+        // ⑦代：行公式经 commit_root_row 单一事实源（PLAN 相 weave_alloc 的
+        // msg-limb packing 行表同源——错位即 packing 撞行 panic，fail-closed）。
         let mut roots = [[(0usize, 0usize); 16]; 1];
         for j in 0..16usize {
             let (col, row) = if is_auth {
                 match j {
-                    0..=3 => (salt_cols[j], crate::sm3_compress::point_at_rank(3800 + j)),
-                    4..=13 => (
-                        true_cols_v[j - 4],
-                        crate::sm3_compress::point_at_rank(3804 + j),
-                    ),
-                    _ => (pad_cols_v[j - 14], crate::sm3_compress::point_at_rank(3804 + j)),
+                    0..=3 => (salt_cols[j], commit_root_row(is_auth, j)),
+                    4..=13 => (true_cols_v[j - 4], commit_root_row(is_auth, j)),
+                    _ => (pad_cols_v[j - 14], commit_root_row(is_auth, j)),
                 }
             } else {
                 match j {
-                    0..=3 => (salt_cols[j], crate::sm3_compress::point_at_rank(3800 + j)),
-                    4..=11 => (true_cols[j - 4], crate::sm3_compress::point_at_rank(3804 + j)),
-                    _ => (pad_cols[j - 12], crate::sm3_compress::point_at_rank(3812 + j)),
+                    0..=3 => (salt_cols[j], commit_root_row(is_auth, j)),
+                    4..=11 => (true_cols[j - 4], commit_root_row(is_auth, j)),
+                    _ => (pad_cols[j - 12], commit_root_row(is_auth, j)),
                 }
             };
             roots[0][j] = (col, row);
@@ -692,6 +767,70 @@ pub fn assemble_full_statement_with_hooks_bound(
                 c_gate_rings.1 = Some(bld.begin_relay_col(
                     true_cols[1],
                     crate::sm3_compress::point_at_rank(3809),
+                ));
+            }
+            // ── SN 绑定换代（2026-10-06，第 5 组）：SN 单块织入 ──
+            // 与 C 块同构（weave_commit_block_wires 通用面，组号 4）：16 词根=
+            // sn 定宽块见证列 @sn_row（秩 3850——3800..=3839 承诺根带之外，
+            // LUT 档专用）；摘要出口影子 recomp 绑 sn_dgw 词；EMIT 相再叠
+            // 大折叠 pin（Σ2^{32k}·dgw_k == fold@sn_row == 实例 25）。
+            if sn_circ.is_some() {
+                // 钉行=实例 25 的格行（ctx_tag/pred_id/T/θ/class 全家族同式：
+                // pin.bind 读 q_inst@row_mapping()[ordinal]——折叠/钉/词根同行，
+                // 独立秩带会与实例格行错位（mock 审计当场红，首跑定谳）。
+                let sn_row = crate::sm3_compress::row_mapping()[25];
+                let blk = sn_blk.expect("sn_blk 与 sn_circ 同生");
+                let sn_word_cols: [usize; 16] = std::array::from_fn(|_| bld.alloc_col());
+                let sn_dgw_cols: [usize; 8] = std::array::from_fn(|_| bld.alloc_col());
+                let sn_fold_col = bld.alloc_col();
+                let sn_pin_sel = bld.alloc_selector(&[]);
+                let (ssh_cols, ssh_sels): ([[usize; 8]; 8], [usize; 8]) = (
+                    std::array::from_fn(|_| std::array::from_fn(|_| bld.alloc_col())),
+                    std::array::from_fn(|_| bld.alloc_selector(&[])),
+                );
+                let sn_roots: [(usize, usize); 16] =
+                    std::array::from_fn(|j| (sn_word_cols[j], sn_row));
+                // 词根见证：sn 填充块 16 BE 词（与 sn_blk64 单一事实源）。
+                for (j, root) in sn_roots.iter().enumerate() {
+                    let wv = u32::from_be_bytes(
+                        blk[4 * j..4 * j + 4].try_into().expect("界内"),
+                    );
+                    bld.set_cell_u32(root.0, root.1, wv);
+                }
+                // 摘要词根见证：SM3(serial) 8 BE 词（c_cols@row_c 同款——影子
+                // recomp 的被绑端；缺种子=recomp 违约，mock 审计红）。
+                let serial_w = &pc_cfg_ref
+                    .as_ref()
+                    .and_then(|c| c.auth.as_ref())
+                    .expect("SN 组在场 ⟹ auth 原像在场")
+                    .serial;
+                let d_sn = crate::sm3_native_ref::hash(serial_w);
+                for k in 0..8usize {
+                    bld.set_cell_u32(
+                        sn_dgw_cols[k],
+                        sn_row,
+                        u32::from_be_bytes(
+                            d_sn[4 * k..4 * k + 4].try_into().expect("界内"),
+                        ),
+                    );
+                }
+                crate::sm3_lookup_weave::weave_commit_block_wires(
+                    &mut bld,
+                    sn_circ.as_ref().expect("SN 单组电路"),
+                    lut_plan.as_ref().expect("LUT PLAN"),
+                    4,
+                    &sn_roots,
+                    &ssh_cols,
+                    sn_row,
+                );
+                sn_pin = Some((
+                    sn_roots,
+                    sn_dgw_cols,
+                    ssh_cols,
+                    ssh_sels,
+                    sn_fold_col,
+                    sn_pin_sel,
+                    sn_row,
                 ));
             }
         } else {
@@ -1658,6 +1797,49 @@ pub fn assemble_full_statement_with_hooks_bound(
                 sh_sels,
             );
         }
+        // ── SN 绑定换代（2026-10-06，第 5 组 EMIT）：digest(sn_witness)==sn_hash ──
+        // ① weave_commit_block_constraints（与 C 块同构）：8 摘要影子 recomp 绑
+        //   sn_dgw 词 @sn_row + 16 msg recomp + 4 门 + 8 查表通道；
+        // ② E7 大折叠同式：Σ2^{32k}·sn_dgw_k == sn_fold@sn_row；
+        // ③ pin.bind：sn_fold@sn_row == 实例 25（SM3(sn) 全 32B BE 折叠）。
+        // 健全性链：SN 块电路（fresh IV 单块）⟹ 摘要词=SM3(serial)；recomp/
+        //   折叠/钉三段 ⟹ 证明者私知 serial 的 SM3 摘要 == 公开实例 25。
+        if let (Some(sc), Some((roots, dgw, sh, shs, fold_col, pin_sel, row))) =
+            (sn_circ.as_ref(), sn_pin.as_ref())
+        {
+            crate::sm3_lookup_weave::weave_commit_block_constraints(
+                &mut bld,
+                sc,
+                lut_plan.as_ref().expect("LUT PLAN"),
+                4,
+                roots,
+                dgw,
+                *row,
+                sh,
+                shs,
+            );
+            let serial = &pc_cfg_ref
+                .as_ref()
+                .and_then(|c| c.auth.as_ref())
+                .expect("SN 组在场 ⟹ auth 原像在场")
+                .serial;
+            let d = crate::sm3_native_ref::hash(serial);
+            let dg_words: [u32; 8] = std::array::from_fn(|k| {
+                u32::from_be_bytes([d[4 * k], d[4 * k + 1], d[4 * k + 2], d[4 * k + 3]])
+            });
+            let sn_hash_fp = fold_digest_fp(&dg_words);
+            bld.extend_selector(*pin_sel, &[*row]);
+            let mut efold = Expression::<FpSM2>::zero();
+            for (k, &c) in dgw.iter().enumerate() {
+                efold = efold
+                    + Expression::<FpSM2>::Constant(crate::sm2_params::f_pow2(32 * k))
+                        * bld.q(c, Rotation::cur());
+            }
+            bld.emit_assert_zero(*pin_sel, efold - bld.q(*fold_col, Rotation::cur()));
+            bld.set_cell_f(*fold_col, *row, sn_hash_fp);
+            bld.emit_pin_val_only(*pin_sel, *fold_col, 25);
+            bld.set_instance(25, sn_hash_fp);
+        }
         // 链间态宿主补算（hooks 消费；LUT 形态下同一 native 数学）
         let s1 = ntv(&crate::sm3_native_ref::IV, &host.blocks[0]);
         let s2 = ntv(&s1, &host.blocks[1]);
@@ -1994,26 +2176,24 @@ pub fn assemble_full_statement_with_hooks_bound(
     // B3b（飞证）：SMT EMIT 段（叶 recomb+根折叠+实例 24——零分配）
     if let Some((wiring, sp, kb, mw, oc)) = smt_emit.as_ref() {
         crate::smt_weave::weave_smt_emit(&mut bld, mw, wiring, sp);
-        // R2-SMT 修复（2026-09-23）：proto 查表门全量翻译——SMT 链 64 组的
-        // 4 约束/组 + 8 lookup/组进 Builder（此前仅翻译环+值，压缩函数电路内
-        // 零强制：auth_smt_forged_root_vacuity_red 红线测试实锤后封堵）。
-        // TRAIL 同构先例：n=128 全 1,024 通道逐块约束。
-        if smt_circ.is_some() {
-            let (sc, _dg, _mw, _oc, _dgs) = smt_circ.as_ref().expect("SMT 电路");
+        // R2-SMT 修复（2026-09-23）→ ⑦代收编（2026-10-06）：SMT 链 64 组的
+        // 压缩函数电路内强制（4 约束/组 + 8 lookup/组）原先经
+        // weave_proto_gates per-group 逐条翻译发射；换代后 SMT 组的行槽与
+        // 三体/C/SN 组错开共享同一批 lane band 列组，其约束/查表强制由
+        // weave_constraints 内 emit_lane_gates 的 **lane×band 全局发射**统一
+        // 承载（并集语义）——per-group 发射点删除（列/通道重复占用消灭）。
+        // 红线守卫不变：auth_smt_forged_root_vacuity_red（假兄弟+真根的
+        // 环类改写攻击）继续钉死该强制在案。
+        let _ = smt_circ.as_ref().map(|(sc, ..)| {
             let lp = lut_plan.as_ref().expect("LUT PLAN");
             let g = sc.wit_u64.len() / crate::sm3_lookup_block::NUM_W;
-            let sub = crate::sm3_lookup_weave::LutPlan {
-                prep_globals: lp.prep_globals.clone(),
-                pconst_global: lp.pconst_global,
-                // R3-3.1：SMT 组续接三体+C 组=4..4+g（C 块占组 3）。
-                advice: lp.advice[4..4 + g].to_vec(),
-                msg_limb_cols: Vec::new(),
-                msg_sels: Vec::new(),
-                dgw_shadow_cols: lp.dgw_shadow_cols,
-                dgw_sels: lp.dgw_sels,
-            };
-            crate::sm3_lookup_weave::weave_proto_gates(&mut bld, sc, &sub);
-        }
+            // SMT 组占全语句组序 4+sn_groups..4+sn_groups+g——pack 覆盖对账
+            //（weave_smt_wires 的 base=同一 offset，错位在此即爆）。
+            assert!(
+                4 + sn_groups + g <= lp.pack.n_groups(),
+                "SMT 组序越出 pack 总组数（offset 对账失败）"
+            );
+        });
     }
     let asm = finish_verify_assembly(bld, led, pl);
     (asm, hooks)
@@ -2248,6 +2428,10 @@ pub struct AuthCPreimage {
     pub class_id: u8,
     pub id_number: [u8; 18],
     pub sn_h: [u8; 16],
+    /// SN 绑定换代（2026-10-06，a246e7a 挂账清偿）：无人机序列号原文（1..=55B）
+    /// ——第 5 组 SM3 查表门见证源：digest(sn_witness)==sn_hash 钉到公开实例 25
+    ///（SM3 全 32B 折叠）。sn_h（16B 截断）仍进 C 原像（B4 布局冻结）。
+    pub serial: Vec<u8>,
     /// B3b：撤销累加器非成员见证——32 兄弟子树根（叶→根序）+树根。
     pub smt_siblings: Option<[[u8; 32]; 32]>,
     pub smt_root: Option<[u8; 32]>,
@@ -2283,6 +2467,28 @@ fn m64_extend_auth(out: &mut Vec<u8>, ap: &AuthCPreimage) {
     out.extend_from_slice(&ap.sn_h);
 }
 
+/// ⑦代（2026-10-06）：(S7) 承诺块词 j 根行——rank 公式单一事实源（PLAN 相
+/// weave_alloc 的 msg-limb packing 行表与 roots 构造共用，错位即撞行 panic）。
+fn commit_root_row(is_auth: bool, j: usize) -> usize {
+    crate::sm3_compress::point_at_rank(commit_root_rank(is_auth, j))
+}
+/// `commit_root_row` 的裸 rank（auth：词 0..3=salt@3800+j、4..15=原像/pad@
+/// 3804+j；pred：词 4..11=attrs_true@3804+j、12..15=pad@3812+j）。
+fn commit_root_rank(is_auth: bool, j: usize) -> usize {
+    if is_auth {
+        match j {
+            0..=3 => 3800 + j,
+            _ => 3804 + j,
+        }
+    } else {
+        match j {
+            0..=3 => 3800 + j,
+            4..=11 => 3804 + j,
+            _ => 3812 + j,
+        }
+    }
+}
+
 /// R3-3.1（2026-09-24）：承诺 C 单块 64B 填充块（auth=55B 原像/pred=48B 原像
 /// 的 SM3 填充）——PLAN 相 c_circ 见证与 EMIT 相根格见证同源单一事实源
 /// （auth：pad=0x80@55、be64(440)@56；pred：pad=0x80@48、be64(384)@56）。
@@ -2304,6 +2510,22 @@ fn commit_block64(salt: &[u8; 16], auth: Option<&AuthCPreimage>, attrs_u: &[u8; 
             b[56..].copy_from_slice(&384u64.to_be_bytes());
         }
     }
+    b
+}
+
+/// SN 绑定换代（2026-10-06）：sn 定宽 64B 填充块——serial（1..=55B）‖0x80‖
+/// 0‖be64(8·len)。摘要=SM3(serial) 全 32B（标准填充语义，与 C 块同款单一
+/// 事实源式：块即电路见证、摘要即钉定值）。
+fn sn_block64(serial: &[u8]) -> [u8; 64] {
+    assert!(
+        !serial.is_empty() && serial.len() <= 55,
+        "SN 填充域：序列号须 1..=55B（单块），实得 {}B",
+        serial.len()
+    );
+    let mut b = [0u8; 64];
+    b[..serial.len()].copy_from_slice(serial);
+    b[serial.len()] = 0x80;
+    b[56..].copy_from_slice(&((serial.len() as u64) * 8).to_be_bytes());
     b
 }
 
@@ -4674,8 +4896,10 @@ mod tests {
                 "[gate2] legacy: lookups={lk_l} constraints={c_l} | lut: lookups={lk_u} constraints={c_u}"
             );
             assert_eq!(lk_l, 4, "legacy 查表面（2026-10-01 实测钉：旧锚 0 在 db0bbb3 实测已漂移至 4——历史批次 LUT 化未回写；与 phase3_census 同源）");
-            // R3-3.1（2026-09-24）：C 单块查表组入列 ⟹ 8×3+8=32 通道。
-            assert_eq!(lk_u, 36, "LUT 查表面（2026-10-01 实测钉：旧钉 32[8×3 三体+8 C 单组] 在 db0bbb3 实测已漂移至 36——历史批次通道新增未回写）");
+            // ⑦代（2026-10-06）：SM3 组列共享+查表通道合并——4 组（三体 3+C
+            // 1）按 lane×band 合并：XOR2 2+XOR3 2+MAJ 1+CH 1+S1 2+S3 3+ADD 2×2
+            //=15 通道 +窗 4 = 19（旧钉 36=per-group 8×4+窗——⑦代实测换代）。
+            assert_eq!(lk_u, 19, "LUT 查表面（⑦代 2026-10-06 实测钉：lane×band 通道合并 4 组→15+窗 4）");
             assert_eq!(inst_l, inst_u, "差分门 2：同见证 LUT/legacy 实例面逐位相同（语句语义不变）");
             assert_ne!(c_l, c_u, "约束数应不同（布尔体 vs 查表体）");
         }

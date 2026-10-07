@@ -66,9 +66,16 @@ fn c(v: u64) -> Expression<Fr> {
     Expression::Constant(Fr::from(v))
 }
 
-// 原生仿射 EC（SM2 曲线 a = p−3 已入倍点斜率）
+// 原生仿射 EC（SM2 曲线 a = p−3 已入倍点斜率）。
+// 2026-10-06 缺陷 B 同根完备化（与 sm2_ec_window_gadget::affine_row_slope 同源）：
+// 零避数字重编码的构造性等值（低位数字 (16,1) ⟹ 相邻两窗选点同为 16·16^i·G，
+// 每随机标量 ≈0.435%）使累加链出现 P=Q 行——仿射加法按倍点完备化，P=−Q（O）
+// 原型不承载、精确报错。
 pub fn ec_add((x1, y1): (Fr, Fr), (x2, y2): (Fr, Fr)) -> (Fr, Fr) {
-    assert!(x1 != x2, "distinct-x 假设（原型）");
+    if x1 == x2 {
+        assert_eq!(y1, y2, "P+(−P)=O：原型不承载无穷远点");
+        return ec_double((x1, y1));
+    }
     let lam = (y2 - y1) * (x2 - x1).invert().unwrap();
     let x3 = lam * lam - x1 - x2;
     (x3, lam * (x1 - x3) - y1)
@@ -239,7 +246,18 @@ pub fn build(k: u64, g: (Fr, Fr)) -> WindowCircuit {
         if r == 1 {
             acc = pt;
         } else {
-            let lam = (pt.1 - acc.1) * (pt.0 - acc.0).invert().expect("distinct-x");
+            // 缺陷 B 同根完备化（2026-10-06）：P=Q 行（零避重编码构造性等值）取
+            // 倍点斜率——原型七约束在 λ=λ_d、(sx,sy)=2P 处自洽（与 gadget 同式
+            // 逐式核验）；P=−Q 行 O 无表示、精确报错。
+            let lam = if pt.0 != acc.0 {
+                (pt.1 - acc.1) * (pt.0 - acc.0).invert().expect("distinct-x")
+            } else if pt.1 == acc.1 {
+                let a = -Fr::from(3u64);
+                ((pt.0 * pt.0 + pt.0 * pt.0 + pt.0 * pt.0) + a)
+                    * (pt.1 + pt.1).invert().expect("2y≠0（奇阶曲线）")
+            } else {
+                panic!("累加行遇 P+(−P)=O（原型不承载 O）")
+            };
             wit[W_LAM][at(r)] = lam;
             acc = ec_add(acc, pt);
         }

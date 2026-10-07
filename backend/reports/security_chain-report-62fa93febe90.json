@@ -1,0 +1,193 @@
+{
+ "schema_version": 1,
+ "run_id": "62fa93febe90",
+ "suite": "security_chain",
+ "env": {
+  "timestamp": "2026-10-03T10:56:28",
+  "git_commit": "cdaae61",
+  "platform": "Windows-11-10.0.26200-SP0",
+  "python": "3.13.12",
+  "hostname": "蜡笔小新",
+  "cores": 16,
+  "ram_gb": 19.8,
+  "circuit": {
+   "name": "AUTH@2026-10 换代",
+   "constraints": 19578,
+   "proof_bytes": 22675632
+  },
+  "prove_max_concurrent": "1",
+  "chain_mode": ""
+ },
+ "summary": {
+  "total": 5,
+  "passed": 5,
+  "failed": 0,
+  "xfail": 0,
+  "environment_error": 0,
+  "pass_rate": 1.0,
+  "duration_s": 18.8,
+  "verdict": "success",
+  "aborted": false,
+  "abort_reason": "",
+  "attack_success": []
+ },
+ "modules": {
+  "P": {
+   "display": "环境前置断言",
+   "passed": 1,
+   "failed": 0,
+   "xfail": 0,
+   "total": 1,
+   "items": [
+    {
+     "name": "P 环境前置：backend 真链档+桥 SITL+worker [21204, 21664] 在场+/metrics 可达",
+     "verdict": "pass",
+     "expected": "",
+     "actual": "",
+     "defense_ref": "scripts/demo_up.py",
+     "attack_success": false,
+     "latency_ms": null,
+     "detail": {
+      "worker_pids": [
+       21204,
+       21664
+      ],
+      "backend_pids": [
+       30620,
+       35052
+      ],
+      "link": {
+       "mode": "sitl",
+       "conn": "tcp:127.0.0.1:5760",
+       "breach_seen": false,
+       "last_statustext": null
+      },
+      "panel": "real"
+     }
+    }
+   ]
+  },
+  "A": {
+   "display": "机构会话激活",
+   "passed": 1,
+   "failed": 0,
+   "xfail": 0,
+   "total": 1,
+   "items": [
+    {
+     "name": "A-1 种子账户激活+会话（auditor/admin 挑战-应答）",
+     "verdict": "pass",
+     "expected": "",
+     "actual": "",
+     "defense_ref": "scripts/script_auth.py:script_login",
+     "attack_success": false,
+     "latency_ms": null,
+     "detail": {
+      "auditor": "active",
+      "admin": "active"
+     }
+    }
+   ]
+  },
+  "S11": {
+   "display": "启动守卫（纪元漂移自愈）——单测层引用+真栈收敛态",
+   "passed": 3,
+   "failed": 0,
+   "xfail": 0,
+   "total": 3,
+   "items": [
+    {
+     "name": "S11-1 单测层启动守卫全绿（引用 tests/test_ra_align.py 结论）",
+     "verdict": "pass",
+     "expected": "",
+     "actual": "",
+     "defense_ref": "app/ra/align.py:startup_align_guard",
+     "attack_success": false,
+     "latency_ms": null,
+     "detail": {
+      "pytest": "6 passed, 1 warning in 1.15s"
+     }
+    },
+    {
+     "name": "S11-2 真栈守卫收敛态：链上 revRoot==本地撤销镜像根（漂移=0，启动对齐在案）",
+     "verdict": "pass",
+     "expected": "",
+     "actual": "",
+     "defense_ref": "app/ra/align.py:startup_align_guard",
+     "attack_success": false,
+     "latency_ms": null,
+     "detail": {
+      "root": "4035cafe40392aa6"
+     }
+    },
+    {
+     "name": "S11-3 --destructive backend 重启→启动守卫自检执行，纪元根保持一致",
+     "verdict": "pass",
+     "expected": "",
+     "actual": "",
+     "defense_ref": "app/main.py:create_app(startup_align_guard)",
+     "attack_success": false,
+     "latency_ms": null,
+     "detail": {}
+    }
+   ]
+  }
+ },
+ "chain_sections": {
+  "s1_matrix": [
+   {
+    "module": "P",
+    "attack": "P 环境前置：backend 真链档+桥 SITL+worker [21204, 21664] 在场+/metrics 可达",
+    "verdict": "pass",
+    "expected": "",
+    "actual": "",
+    "attack_success": false,
+    "defense_ref": "scripts/demo_up.py"
+   },
+   {
+    "module": "A",
+    "attack": "A-1 种子账户激活+会话（auditor/admin 挑战-应答）",
+    "verdict": "pass",
+    "expected": "",
+    "actual": "",
+    "attack_success": false,
+    "defense_ref": "scripts/script_auth.py:script_login"
+   },
+   {
+    "module": "S11",
+    "attack": "S11-1 单测层启动守卫全绿（引用 tests/test_ra_align.py 结论）",
+    "verdict": "pass",
+    "expected": "",
+    "actual": "",
+    "attack_success": false,
+    "defense_ref": "app/ra/align.py:startup_align_guard"
+   },
+   {
+    "module": "S11",
+    "attack": "S11-2 真栈守卫收敛态：链上 revRoot==本地撤销镜像根（漂移=0，启动对齐在案）",
+    "verdict": "pass",
+    "expected": "",
+    "actual": "",
+    "attack_success": false,
+    "defense_ref": "app/ra/align.py:startup_align_guard"
+   },
+   {
+    "module": "S11",
+    "attack": "S11-3 --destructive backend 重启→启动守卫自检执行，纪元根保持一致",
+    "verdict": "pass",
+    "expected": "",
+    "actual": "",
+    "attack_success": false,
+    "defense_ref": "app/main.py:create_app(startup_align_guard)"
+   }
+  ],
+  "s2_races": [],
+  "s3_rate_limit_429": {},
+  "s4_recovery_verdicts": [],
+  "s5_honesty": [
+   "清理账：disarm:ok。保留项：令状/协作请求/申请/授权（链上锚定审计痕迹，删除即毁痕）；sec_chain_rev 用户凭证按业务真实吊销（撤销面实弹产物）。",
+   "S10 复原 worker 以 FZ_WORKER_LEASE_S=60 拉起（demo 缺省 1200）——测试预算内接管孤儿任务的租约 knob，仅测试窗使用；此后 worker 按该 env 常驻。",
+   "真弹消耗：真出证×2（AUTH 电路真证明）+真链 recordAuth/burnNonce+真 ARM/DISARM+真 429 限速+真进程击杀+真 systemd 桥停起；无任何测试豁免头/旁路标记。"
+  ]
+ }
+}
