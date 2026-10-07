@@ -310,6 +310,7 @@ def stage0() -> tuple[list, threading.Event, subprocess.Popen | None, subprocess
          f"RAYON_NUM_THREADS={os.environ.get('RAYON_NUM_THREADS', '6')} "
          "FZ_SITL_CONN=tcp:127.0.0.1:5760 "
          f"FZ_DEVICE_SERIAL={SN} "
+         f"FZ_PROVE_MIN_AVAIL_GIB={os.environ.get('FZ_PROVE_MIN_AVAIL_GIB', '8.5')} "
          f"PYTHONPATH={m}/backend:{m}/gcs/bridge "
          "FZ_API_BASE=http://127.0.0.1:8000 "
          f"FZ_ZKSVC_DIR={m}/zksvc "

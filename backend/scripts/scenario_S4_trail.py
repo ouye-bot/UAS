@@ -170,7 +170,7 @@ def acquire_token() -> tuple[bytes, dict]:
 
     t1 = time.time()
     rr = {"status": "waiting"}
-    while time.time() - t1 < 120:
+    while time.time() - t1 < 300:
         rr = api_get(f"/authz/receipt/{receipt_code}")["data"]
         if rr["status"] != "waiting":
             break

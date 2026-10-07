@@ -729,15 +729,25 @@ def engine_pub():
     global _engine_pub_cache
     if _engine_pub_cache:
         return {"engine_pub_hex": _engine_pub_cache, "device_serial": _SERIAL}
-    try:
-        r = _post_engine("/authz/engine/pub", {}) if False else _get_backend("/authz/engine/pub")
-        d = r.get("data") or r
-        _engine_pub_cache = d["engine_pub_hex"]
-        return {"engine_pub_hex": _engine_pub_cache, "device_serial": _SERIAL}
-    except Exception as e:  # noqa: BLE001
-        from fastapi import HTTPException
+    # S1 编排期瞬态 503 根修（2026-10-07）：缓存仅成功后落位 ⟹ backend 刚起
+    # 未完全就绪（监听未 accept/回环瞬断）时**首次**代理即 503 且无重试——
+    # S1 stage0 钥域断言单发必崩（f_s1.log stage0:333）。/authz/engine/pub 为
+    # 幂等 GET：有界重试 3 次×2s 退避（非幂等 POST 不在此列），任一次成功即
+    # 缓存收口；3 次仍失败才 503——fail-closed 语义不变，仅消除瞬态误报。
+    last_err: Exception | None = None
+    for attempt in range(3):
+        try:
+            r = _get_backend("/authz/engine/pub")
+            d = r.get("data") or r
+            _engine_pub_cache = d["engine_pub_hex"]
+            return {"engine_pub_hex": _engine_pub_cache, "device_serial": _SERIAL}
+        except Exception as e:  # noqa: BLE001
+            last_err = e
+            if attempt < 2:
+                time.sleep(2)
+    from fastapi import HTTPException
 
-        raise HTTPException(status_code=503, detail=f"引擎公钥暂不可达: {e}") from e
+    raise HTTPException(status_code=503, detail=f"引擎公钥暂不可达: {last_err}") from last_err
 
 
 @app.get("/audit")
