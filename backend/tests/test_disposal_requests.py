@@ -147,32 +147,61 @@ def _seed_executable_chain(c, auth_id: int) -> str:
     gen = c.app.dependency_overrides[get_session]()
     sess = next(gen)
     try:
-        sess.add(Application(
-            session_pk_hex=blob(auth_id + 10), sub_sig_hex="00" * 32, sub_cred_hash_hex=sub_hex,
-            nonce_hex=f"{auth_id + 20:032x}", plan_hash_hex="99" * 32, class_id=1,
-            policy_version="v-dsp", rev_root_hex="55" * 32, e_hex="22" * 32,
-            t_start=1790000000, t_end=1790003600, status="approved", auth_id=auth_id,
-        ))
+        sess.add(
+            Application(
+                session_pk_hex=blob(auth_id + 10),
+                sub_sig_hex="00" * 32,
+                sub_cred_hash_hex=sub_hex,
+                nonce_hex=f"{auth_id + 20:032x}",
+                plan_hash_hex="99" * 32,
+                class_id=1,
+                policy_version="v-dsp",
+                rev_root_hex="55" * 32,
+                e_hex="22" * 32,
+                t_start=1790000000,
+                t_end=1790003600,
+                status="approved",
+                auth_id=auth_id,
+            )
+        )
         sess.flush()
-        sess.add(AuthRecord(auth_id=auth_id, application_id=1, token_hash_hex=blob(auth_id + 30),
-                            proof_digest_hex=blob(auth_id + 40), tx_hash=f"0x{auth_id:x}"))
+        sess.add(
+            AuthRecord(
+                auth_id=auth_id,
+                application_id=1,
+                token_hash_hex=blob(auth_id + 30),
+                proof_digest_hex=blob(auth_id + 40),
+                tx_hash=f"0x{auth_id:x}",
+            )
+        )
         u = User(username=f"dc-pilot-{auth_id}", pub_key_hex="00" * 128)
         sess.add(u)
         sess.flush()
         envelope = f"dc-pilot-{auth_id}|110101199001{auth_id:04d}|hdl-{auth_id}".encode()
         cred = Credential(
-            user_id=u.id, id_cipher=b"", id_store_cipher=wrap_secret(envelope),
-            sn_hash_hex=blob(auth_id + 50), cert_level=3, class_id=1,
-            commitment_hex=blob(auth_id + 60), master_cred_hash_hex=cred_hex,
-            expires_at=dt.datetime(2030, 1, 1), status=1,
+            user_id=u.id,
+            id_cipher=b"",
+            id_store_cipher=wrap_secret(envelope),
+            sn_hash_hex=blob(auth_id + 50),
+            cert_level=3,
+            class_id=1,
+            commitment_hex=blob(auth_id + 60),
+            master_cred_hash_hex=cred_hex,
+            expires_at=dt.datetime(2030, 1, 1),
+            status=1,
         )
         sess.add(cred)
         sess.flush()
-        sess.add(SubCredential(
-            holder_pub_hex="00" * 128, expires_at=dt.datetime(2030, 1, 1),
-            sub_cred_hash_hex=sub_hex, credential_id=cred.id,
-            message_hex="00" * 330, sig_hex="00" * 128,
-        ))
+        sess.add(
+            SubCredential(
+                holder_pub_hex="00" * 128,
+                expires_at=dt.datetime(2030, 1, 1),
+                sub_cred_hash_hex=sub_hex,
+                credential_id=cred.id,
+                message_hex="00" * 330,
+                sig_hex="00" * 128,
+            )
+        )
         sess.commit()
     finally:
         gen.close()
@@ -235,7 +264,13 @@ def test_verified_close_creates_disposal_todo(dsp):
     it = items[0]
     # 契约面逐字锚（前端并行开发）：恰此七字段，无多余
     assert set(it.keys()) == {
-        "id", "case_no", "username", "conclusion", "created_ts", "status", "resolved_note",
+        "id",
+        "case_no",
+        "username",
+        "conclusion",
+        "created_ts",
+        "status",
+        "resolved_note",
     }, it
     assert it["case_no"] == "DSP-V1"
     assert it["username"] == "dc-pilot-9101"  # 解锁实名（unlocked 数据回填）

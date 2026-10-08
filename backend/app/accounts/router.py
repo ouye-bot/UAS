@@ -146,7 +146,9 @@ def challenge_route(username: str, request: Request, session: Session = Depends(
         nonce = issue_challenge(session, username)
     except AccountError as exc:
         return _err(exc)
-    return JSONResponse(status_code=200, content={"code": "ok", "message": "", "data": {"nonce_hex": nonce}})
+    return JSONResponse(
+        status_code=200, content={"code": "ok", "message": "", "data": {"nonce_hex": nonce}}
+    )
 
 
 @router.post("/activate")
@@ -156,7 +158,9 @@ def activate_route(body: ActivateIn, request: Request, session: Session = Depend
         activate(session, body.username, body.verifier_hex, body.pubkey_hex, body.sealed_blob)
     except AccountError as exc:
         return _err(exc)
-    return JSONResponse(status_code=200, content={"code": "ok", "message": "激活成功——请继续登录", "data": None})
+    return JSONResponse(
+        status_code=200, content={"code": "ok", "message": "激活成功——请继续登录", "data": None}
+    )
 
 
 @router.post("/login")
@@ -213,7 +217,9 @@ def profile_route(
         )
     except AccountError as exc:
         return _err(exc)
-    return JSONResponse(status_code=200, content={"code": "ok", "message": "凭证已签发并上链", "data": out})
+    return JSONResponse(
+        status_code=200, content={"code": "ok", "message": "凭证已签发并上链", "data": out}
+    )
 
 
 @router.post("/profile/keep")

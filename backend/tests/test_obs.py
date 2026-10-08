@@ -53,3 +53,26 @@ def test_request_id_persists_in_log_record(client, caplog):
     with caplog.at_level(logging.INFO, logger="fz.http"):
         client.get("/healthz")
     assert any("rid=" in r.getMessage() for r in caplog.records)
+
+
+def test_worker_gauges_merge_from_share_file(client, monkeypatch, tmp_path):
+    """worker gauges 跨进程合并（乙5）：FZ_ZK_CASES_DIR/worker_gauges.json 在场且
+    60s 新鲜窗内 ⟹ /metrics 渲染合并其键；过期=worker 离线，陈旧 gauge 不渲染。
+
+    回归钉（2026-10-08）：obs.py 曾漏 import os——_load_worker_gauges 每次
+    NameError 被兜底 except 吞掉静默返空，合并路径产品死码（ruff F821 抓出，
+    根修后本测试先绿钉死语义）。"""
+    import json as _json
+    import time as _time
+
+    d = tmp_path / "cases"
+    d.mkdir()
+    monkeypatch.setenv("FZ_ZK_CASES_DIR", str(d))
+    fresh = {"ts": _time.time(), "gauges": {"fz_worker_pending": 3.0}}
+    (d / "worker_gauges.json").write_text(_json.dumps(fresh), encoding="utf-8")
+    m = client.get("/metrics").text
+    assert "fz_worker_pending 3.0" in m
+    stale = {"ts": _time.time() - 61, "gauges": {"fz_worker_pending": 9.0}}
+    (d / "worker_gauges.json").write_text(_json.dumps(stale), encoding="utf-8")
+    m2 = client.get("/metrics").text
+    assert "fz_worker_pending 9.0" not in m2

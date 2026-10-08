@@ -253,10 +253,15 @@ def spawn_worker(lease_s: int | None = None) -> subprocess.Popen:
 
 
 def bridge_stop() -> None:
+    # SIGKILL 先行（systemctl kill——不经优雅关停，在途证明/keep-alive 不拖停）；
+    # stop 收尾清 unit；不再用 pkill 自匹配模式（bash -c 命令行含同串会被
+    # pkill -f 连父 shell 一起杀——rc=15 形态）。outer 180s（S10 杀 worker 后
+    # 的 WSL 高压窗内会话启动可慢——2026-10-08 实弹两次 60s 超时在此）。
     subprocess.run(
         ["wsl", "-u", "root", "bash", "-c",
-         "systemctl stop fz-bridge 2>/dev/null; pkill -f 'uvicorn server:app' 2>/dev/null; true"],
-        capture_output=True, timeout=60)
+         "systemctl kill -s SIGKILL fz-bridge 2>/dev/null; "
+         "systemctl stop fz-bridge 2>/dev/null; true"],
+        capture_output=True, timeout=180)
 
 
 def bridge_start() -> None:
@@ -301,12 +306,23 @@ def inst_sessions():
     return aud, adm
 
 
+def bridge_serial() -> str:
+    """桥本机序列号（SN 单源——/engine_pub 与第 6 查同源读数）。"""
+    st, r, _, _ = bget("/engine_pub", timeout=15)
+    if st != 200 or not (r or {}).get("device_serial"):
+        raise RuntimeError(f"bridge serial 不可得: {st} {str(r)[:120]}")
+    return r["device_serial"]
+
+
 def ra_register(username: str) -> tuple[dict, str, str]:
     """HTTP 登记承诺（当前纪元服务端域钥封装）。返回 (cred, sk, pk)。"""
     from app.crypto.sm2 import generate_keypair
 
     sk, pk = generate_keypair()
-    sn = "FZ-SEC-" + secrets.token_hex(3).upper()
+    # SN 单源（⑥代桥第 6 查：token.sn_hash=SM3(登记 SN) vs SM3(桥本机序列号)
+    # ——随机 SN 在 ⑥代后与桥必不符=ARM sn_mismatch。与网页端 6466458 根修
+    # 同款：登记一律取桥 /engine_pub 的本机序列号。
+    sn = bridge_serial()
     # 证件号逐轮随机（18 字）：B7 重注册禁入（0019 批）——S8 撤销后固定证件号
     # 入黑名单，二次运行必 409 id_revoked_before（非契约错误）。签发/出证面
     # 逐级携带同号（issue_sub/full_prove/S8-4）——同凭证生命周期同号。
@@ -346,7 +362,9 @@ def dummy_case() -> str:
     d.mkdir(parents=True, exist_ok=True)
     (d / "proof.bin").write_bytes(b"sec-chain-dummy")
     (d / "verifier_param.bin").write_bytes(b"sec-chain-dummy")
-    (d / "instances.json").write_text(json.dumps({"instances": ["00" * 32] * 25}), encoding="utf-8")
+    # 26 项（⑥代 SN 绑定实例 25 → 公开实例面 26；25 项会被⑤门前置形检
+    # instances_malformed 400 先拦——2026-10-08 实弹定谳的过代形态）
+    (d / "instances.json").write_text(json.dumps({"instances": ["00" * 32] * 26}), encoding="utf-8")
     return case_id
 
 
@@ -843,14 +861,18 @@ def s4_token_one_time(caseA, holder_sk, holder_pk, plan_hex):
     st, r3, ms3, _ = bpost("/arm", {"token_payload_hex": token_payload_hex,
                                     "plan_hash_hex": plan_hex}, timeout=120)
     arms3 = _bridge_audit_snapshot()
-    used_denials = [d for d in arms3.get("denials", []) if len(d) > 1 and d[1] == "token_used"]
-    if r3.get("ok") is False and r3.get("code") == "token_used" and used_denials:
-        m.pass_("S4-3 二次 ARM → token_used 拒（一次授权一次解锁）",
-                defense_ref="gcs/bridge/sitl_link.py:FlightGate.attempt_arm(token_used)",
+    used_denials = [d for d in arms3.get("denials", []) if len(d) > 1
+                    and d[1] in ("token_used", "quota_exhausted")]
+    # 授权包配额制（2026-10-06 拍板）：二次 ARM 的拒绝由 quota_exhausted 门先命中
+    # （remaining==0 与 token_used 同源置位、同样 fail-closed）——拒绝码换代，
+    # 一次性语义不变（2026-10-08 实弹定谳）。
+    if r3.get("ok") is False and r3.get("code") in ("token_used", "quota_exhausted") and used_denials:
+        m.pass_("S4-3 二次 ARM → 配额/一次性门拒（一次授权一次解锁，拒绝码随配额制换代）",
+                defense_ref="gcs/bridge/sitl_link.py:FlightGate.attempt_arm(quota_exhausted)",
                 latency_ms=round(ms3, 1), detail={"denial_rows": len(used_denials)})
     else:
-        m.fail("S4-3 二次 ARM", expected="token_used", actual=str(r3)[:120],
-               defense_ref="gcs/bridge/sitl_link.py:FlightGate.attempt_arm(token_used)",
+        m.fail("S4-3 二次 ARM", expected="token_used|quota_exhausted", actual=str(r3)[:120],
+               defense_ref="gcs/bridge/sitl_link.py:FlightGate.attempt_arm(quota_exhausted)",
                attack_success=r3.get("ok") is True)
     # 状态复位：SITL 落地解锁（恢复飞行态——恢复验证轴）
     st, dis, _, _ = bpost("/sitl/disarm", {}, timeout=30)
@@ -877,8 +899,11 @@ def s6_nonce_burn(caseA, fly):
     m = RB.module("S6", "nonce 烧毁——链级重放 409+并发重放竞态")
     holder_pk = fly["pk"]
     sub_replay, _sk, _pk = issue_sub(fly["cred"], fly["sn"])
+    # 案卷号用全新假案卷（dummy_case，S7 同款）——批 4-1 案卷归属门（case_taken）
+    # 先于 nonce 门命中：携原 case_id+异材料会在 ⓪′ 被拦（防线正确、断言路径
+    # 过代 2026-10-08 实弹定谳）。新案卷+同 nonce=nonce 门③的真正攻击路径。
     replay = apply_body(sub_replay, holder_pk, caseA["plan_hash_hex"], caseA["nonce_hex"],
-                        caseA["case_id"], caseA["t_epoch"], rev_root_now())
+                        dummy_case(), caseA["t_epoch"], rev_root_now())
     b = metrics()
     st, r, ms, _ = post("/authz/apply", replay, timeout=60)
     a = metrics()

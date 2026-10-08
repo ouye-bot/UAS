@@ -27,8 +27,8 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker
 
 import app.audit.router as audit_router_mod
-import app.telemetry.models  # noqa: F401 —— checkpoint_anchors 注册进共享 Base
 import app.ra.router as ra_router_mod
+import app.telemetry.models  # noqa: F401 —— checkpoint_anchors 注册进共享 Base
 from app.audit.models import CollabIssued
 from app.crypto.sm3 import sm3_bytes
 from app.db import get_session
@@ -152,13 +152,18 @@ def test_dual_control_full_flow(dc):
     # 批准（异步化）——即返回 approved；后台执行到终态
     r2 = c.admin_client.post(
         f"/admin/collab-requests/{req['id']}/approve",
-        json={"sig_hex": sign_canonical(c.admin_sk, f"FZ-COLLAB-REQ|v1|{wh}|核实超限事件当事人实名")},
+        json={
+            "sig_hex": sign_canonical(c.admin_sk, f"FZ-COLLAB-REQ|v1|{wh}|核实超限事件当事人实名")
+        },
     )
     # 响应状态=批准瞬间的快照——匿名令状后台执行极快，快照可能已是终态
     # （良性竞态：批准本身必成功，终态由下方轮询断言；executing=租约认领后
     # 执行中的新中间态——批 2-2.5③ 状态链 pending→approved→executing→executed）
     assert r2.status_code == 200 and r2.json()["data"]["status"] in (
-        "approved", "executing", "executed", "execute_failed",
+        "approved",
+        "executing",
+        "executed",
+        "execute_failed",
     ), r2.text
     assert r2.json()["data"]["admin_username"] == ADM
     assert r2.json()["data"]["auditor_fp"] and r2.json()["data"]["req_fp"]
@@ -217,7 +222,6 @@ def test_role_boundaries(dc):
     # 审计员不能批准（机构职权）
     r = _file(c, wh, note="y")
     req_id = r.json()["data"]["id"]
-    gen = c.app.dependency_overrides[get_session]
     # 用第二个无 Cookie 客户端以 auditor 身份打 /admin 面=403
     c2 = TestClient(c.app)
     sk2 = register_and_login(c2, "auditor_dc2", "auditor", AUD_PW)
@@ -238,14 +242,19 @@ def test_reject_path(dc):
     r = _file(c, wh, note="依据不足，请补充")
     req_id = r.json()["data"]["id"]
     # 无理由驳回=拒
-    r2 = c.admin_client.post(f"/admin/collab-requests/{req_id}/reject", json={"reason": "", "sig_hex": "00" * 64})
+    r2 = c.admin_client.post(
+        f"/admin/collab-requests/{req_id}/reject",
+        json={"reason": "", "sig_hex": "00" * 64},
+    )
     assert r2.status_code == 422
     reason = "立案依据不充分——请补充材料后重新发起"
     r3 = c.admin_client.post(
         f"/admin/collab-requests/{req_id}/reject",
         json={
             "reason": reason,
-            "sig_hex": sign_canonical(c.admin_sk, f"FZ-COLLAB-REJECT|v1|{wh}|依据不足，请补充|{reason}"),
+            "sig_hex": sign_canonical(
+                c.admin_sk, f"FZ-COLLAB-REJECT|v1|{wh}|依据不足，请补充|{reason}"
+            ),
         },
     )
     assert r3.status_code == 200, r3.text
@@ -267,7 +276,6 @@ def test_pending_uniqueness_and_unlocked_reject(dc):
     from app.audit.models import Warrant
 
     gen, sess = None, None
-    from app.db import SessionLocal as _SL
 
     # 依赖覆盖的会话工厂直接置解锁态（append-only 面外的测试种子）
     ov = c.app.dependency_overrides[get_session]
@@ -327,32 +335,61 @@ def _seed_executable_chain(c, auth_id: int) -> str:
     gen = c.app.dependency_overrides[get_session]()
     sess = next(gen)
     try:
-        sess.add(Application(
-            session_pk_hex=blob(auth_id + 10), sub_sig_hex="00" * 32, sub_cred_hash_hex=sub_hex,
-            nonce_hex=f"{auth_id + 20:032x}", plan_hash_hex="99" * 32, class_id=1,
-            policy_version="v-dc", rev_root_hex="55" * 32, e_hex="22" * 32,
-            t_start=1790000000, t_end=1790003600, status="approved", auth_id=auth_id,
-        ))
+        sess.add(
+            Application(
+                session_pk_hex=blob(auth_id + 10),
+                sub_sig_hex="00" * 32,
+                sub_cred_hash_hex=sub_hex,
+                nonce_hex=f"{auth_id + 20:032x}",
+                plan_hash_hex="99" * 32,
+                class_id=1,
+                policy_version="v-dc",
+                rev_root_hex="55" * 32,
+                e_hex="22" * 32,
+                t_start=1790000000,
+                t_end=1790003600,
+                status="approved",
+                auth_id=auth_id,
+            )
+        )
         sess.flush()
-        sess.add(AuthRecord(auth_id=auth_id, application_id=1, token_hash_hex=blob(auth_id + 30),
-                            proof_digest_hex=blob(auth_id + 40), tx_hash=f"0x{auth_id:x}"))
+        sess.add(
+            AuthRecord(
+                auth_id=auth_id,
+                application_id=1,
+                token_hash_hex=blob(auth_id + 30),
+                proof_digest_hex=blob(auth_id + 40),
+                tx_hash=f"0x{auth_id:x}",
+            )
+        )
         u = User(username=f"dc-pilot-{auth_id}", pub_key_hex="00" * 128)
         sess.add(u)
         sess.flush()
         envelope = f"dc-pilot-{auth_id}|110101199001{auth_id:04d}|hdl-{auth_id}".encode()
         cred = Credential(
-            user_id=u.id, id_cipher=b"", id_store_cipher=wrap_secret(envelope),
-            sn_hash_hex=blob(auth_id + 50), cert_level=3, class_id=1,
-            commitment_hex=blob(auth_id + 60), master_cred_hash_hex=cred_hex,
-            expires_at=dt.datetime(2030, 1, 1), status=1,
+            user_id=u.id,
+            id_cipher=b"",
+            id_store_cipher=wrap_secret(envelope),
+            sn_hash_hex=blob(auth_id + 50),
+            cert_level=3,
+            class_id=1,
+            commitment_hex=blob(auth_id + 60),
+            master_cred_hash_hex=cred_hex,
+            expires_at=dt.datetime(2030, 1, 1),
+            status=1,
         )
         sess.add(cred)
         sess.flush()
-        sess.add(SubCredential(
-            holder_pub_hex="00" * 128, expires_at=dt.datetime(2030, 1, 1),
-            sub_cred_hash_hex=sub_hex, credential_id=cred.id,
-            message_hex="00" * 330, sig_hex="00" * 128,
-        ))
+        sess.add(
+            SubCredential(
+                holder_pub_hex="00" * 128,
+                expires_at=dt.datetime(2030, 1, 1),
+                sub_cred_hash_hex=sub_hex,
+                credential_id=cred.id,
+                message_hex="00" * 330,
+                sig_hex="00" * 128,
+            )
+        )
         sess.commit()
     finally:
         gen.close()
@@ -420,8 +457,10 @@ def test_close_and_retry_semantics(dc):
     msg = f"FZ-COLLAB-REQ|v1|{wh}|结案链路验证"
     import time as _time
 
-    r2 = c.admin_client.post(f"/admin/collab-requests/{req_id}/approve",
-                             json={"sig_hex": sign_canonical(c.admin_sk, msg)})
+    r2 = c.admin_client.post(
+        f"/admin/collab-requests/{req_id}/approve",
+        json={"sig_hex": sign_canonical(c.admin_sk, msg)},
+    )
     assert r2.status_code == 200, r2.text
     rows = c.get("/audit/collab-requests").json()["data"]["items"]
     final = next(x for x in rows if x["id"] == req_id)
@@ -443,8 +482,10 @@ def test_close_and_retry_semantics(dc):
     assert data["conclusion"] == "verified" and "实名已核实" in data["conclusion_text"]
     assert data["closed_ts"] and len(data["case_archive_fp_hex"]) == 64, data
     # 已结案再批=拒
-    r3 = c.admin_client.post(f"/admin/collab-requests/{req_id}/approve",
-                             json={"sig_hex": sign_canonical(c.admin_sk, msg)})
+    r3 = c.admin_client.post(
+        f"/admin/collab-requests/{req_id}/approve",
+        json={"sig_hex": sign_canonical(c.admin_sk, msg)},
+    )
     assert r3.status_code == 409
     # 重复结案=409（条件 UPDATE 输家——终态一次性）
     rc3 = c.post(
@@ -644,8 +685,10 @@ def test_startup_recovery_and_reapprove_guard(dc):
     r = _file(c, wh, note="恢复验证")
     req_id = r.json()["data"]["id"]
     msg = f"FZ-COLLAB-REQ|v1|{wh}|恢复验证"
-    c.admin_client.post(f"/admin/collab-requests/{req_id}/approve",
-                        json={"sig_hex": sign_canonical(c.admin_sk, msg)})
+    c.admin_client.post(
+        f"/admin/collab-requests/{req_id}/approve",
+        json={"sig_hex": sign_canonical(c.admin_sk, msg)},
+    )
     for _ in range(50):
         rows = c.get("/audit/collab-requests").json()["data"]["items"]
         cur = next(x for x in rows if x["id"] == req_id)
@@ -654,16 +697,19 @@ def test_startup_recovery_and_reapprove_guard(dc):
         _time.sleep(0.1)
     assert cur["status"] == "execute_failed"
     # ①execute_failed 重批=409（仅 pending 可批——垃圾签名/重复批准不再倒带状态）
-    r2 = c.admin_client.post(f"/admin/collab-requests/{req_id}/approve",
-                             json={"sig_hex": sign_canonical(c.admin_sk, msg)})
+    r2 = c.admin_client.post(
+        f"/admin/collab-requests/{req_id}/approve",
+        json={"sig_hex": sign_canonical(c.admin_sk, msg)},
+    )
     assert r2.status_code == 409 and "不可批准" in r2.json()["message"], r2.text
     # ②启动恢复：造一条 approved 残留 → recover → execute_failed
     wh2 = _warrant(c, "DC-RECOVER2", target=None)
     r3 = _file(c, wh2, note="残留验证")
     req3 = r3.json()["data"]["id"]
     msg3 = f"FZ-COLLAB-REQ|v1|{wh2}|残留验证"
-    c.admin_client.post(f"/admin/collab-requests/{req3}/approve",
-                        json={"sig_hex": sign_canonical(c.admin_sk, msg3)})
+    c.admin_client.post(
+        f"/admin/collab-requests/{req3}/approve", json={"sig_hex": sign_canonical(c.admin_sk, msg3)}
+    )
     # 立刻恢复（后台线程可能已把它推到 execute_failed——两种都算通过前提）
     n = collab_svc.recover_interrupted()
     rows = c.get("/audit/collab-requests").json()["data"]["items"]
@@ -725,8 +771,8 @@ def test_verify_request_sigs_survives_rekey(dc):
     # 指纹不漂移：列表视图的 auditor_fp 仍=纪元 1 公钥前缀（换钥不改历史行）
     rows = c.get("/audit/collab-requests").json()["data"]["items"]
     cur = next(x for x in rows if x["id"] == req_id)
-    from app.accounts.service import pubkey_at
     from app.accounts.models import CollabRequest as _CR
+    from app.accounts.service import pubkey_at
 
     s = SessionLocal()
     try:
@@ -793,7 +839,8 @@ def test_execution_lease_single_winner(dc):
         row = sess1.get(CollabRequest, req_id)
         sess1.refresh(row)
         assert row.status == "executing" and row.locked_by == "worker-A"
-        assert row.lease_until is not None and row.lease_until > datetime.utcnow() - timedelta(seconds=1)
+        assert row.lease_until is not None
+        assert row.lease_until > datetime.utcnow() - timedelta(seconds=1)
     finally:
         gen1.close()
         gen2.close()

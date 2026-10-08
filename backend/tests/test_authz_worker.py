@@ -620,12 +620,23 @@ def test_worker_canonical_sanitized_for_forbid_gate(tmp_path, monkeypatch):
     exe.write_bytes(b"")  # 存在性哨（真 zkc 不跑——subprocess 打桩）
     canonical = zksvc / "tests" / "auth_canonical_spec.json"
     canonical.parent.mkdir(parents=True)
-    canonical.write_text(_json.dumps({
-        "profile": "auth", "reps": 16, "log_rate": 1,
-        "binding": {"challenge_hex": "ff" * 32},
-        "input": {"kind": "auth", "holder_sk_hex": "ab" * 32,
-                  "holder_pk_hex": "cd" * 64, "sig_hex": "ef" * 64},
-    }), encoding="utf-8")
+    canonical.write_text(
+        _json.dumps(
+            {
+                "profile": "auth",
+                "reps": 16,
+                "log_rate": 1,
+                "binding": {"challenge_hex": "ff" * 32},
+                "input": {
+                    "kind": "auth",
+                    "holder_sk_hex": "ab" * 32,
+                    "holder_pk_hex": "cd" * 64,
+                    "sig_hex": "ef" * 64,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
     (tmp_path / "instances.json").write_text("{}", encoding="utf-8")
 
     captured: dict = {}
@@ -641,6 +652,7 @@ def test_worker_canonical_sanitized_for_forbid_gate(tmp_path, monkeypatch):
             returncode = 0
             stdout = ""
             stderr = ""
+
         return _R()
 
     monkeypatch.setattr(w.subprocess, "run", _fake_run)
@@ -653,5 +665,6 @@ def test_worker_canonical_sanitized_for_forbid_gate(tmp_path, monkeypatch):
     san = captured.get("FZ_AUTH_CANONICAL_SPEC", "")
     assert san and san != str(canonical), "必须指向脱敏副本而非仓内原件"
     assert captured.get("FZ_ZK_HOLDER_SK_HEX") == "ab" * 32, "夹具钥必须走 env"
-    assert _json.loads(captured["_san_content"])["input"]["holder_sk_hex"] == "",         "副本必须零私钥字节"
+    san_content = _json.loads(captured["_san_content"])
+    assert san_content["input"]["holder_sk_hex"] == "", "副本必须零私钥字节"
     assert not _os.path.exists(san), "脱敏副本须用毕即焚"

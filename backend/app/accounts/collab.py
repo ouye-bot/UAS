@@ -301,19 +301,23 @@ def approve_and_execute(
     # 状态原子迁移（2026-09-30 评审 P1：ORM 读-改-写三步非原子——垃圾签名重批
     # 可把 executed 打回 execute_failed/并发双执行/approve-reject 竞态。条件
     # UPDATE 让数据库仲裁：仅 pending 可迁 approved，输家拿到 409 而非错态。）
-    _verify_action_sig(admin.pubkey_hex, REQ_MSG_PREFIX + r.warrant_hash_hex + "|" + r.note, sig_hex)
-    rowcount = session.query(CollabRequest).filter(
-        CollabRequest.id == request_id, CollabRequest.status == "pending"
-    ).update(
-        {
-            "status": "approved",
-            "admin_username": admin.username,
-            "admin_sig_hex": sig_hex,
-            "decided_ts": _utcnow(),
-            "locked_by": None,
-            "lease_until": None,
-        },
-        synchronize_session=False,
+    _verify_action_sig(
+        admin.pubkey_hex, REQ_MSG_PREFIX + r.warrant_hash_hex + "|" + r.note, sig_hex
+    )
+    rowcount = (
+        session.query(CollabRequest)
+        .filter(CollabRequest.id == request_id, CollabRequest.status == "pending")
+        .update(
+            {
+                "status": "approved",
+                "admin_username": admin.username,
+                "admin_sig_hex": sig_hex,
+                "decided_ts": _utcnow(),
+                "locked_by": None,
+                "lease_until": None,
+            },
+            synchronize_session=False,
+        )
     )
     session.commit()
     if rowcount == 0:
@@ -388,17 +392,19 @@ def close_request(
         raise CollabError("no_key", "签名人账户未生成密钥（未激活）", 409)
     if not sm2_verify(pk, close_msg_of(r.req_hash_hex, conclusion, text).encode(), sig_hex):
         raise CollabError("bad_sig", "签名验证失败——结案内容与签名不匹配", 401)
-    rowcount = session.query(CollabRequest).filter(
-        CollabRequest.id == request_id, CollabRequest.status == "executed"
-    ).update(
-        {
-            "status": "closed",
-            "conclusion": conclusion,
-            "conclusion_text": text or None,
-            "conclusion_sig_hex": sig_hex,
-            "closed_ts": now,
-        },
-        synchronize_session=False,
+    rowcount = (
+        session.query(CollabRequest)
+        .filter(CollabRequest.id == request_id, CollabRequest.status == "executed")
+        .update(
+            {
+                "status": "closed",
+                "conclusion": conclusion,
+                "conclusion_text": text or None,
+                "conclusion_sig_hex": sig_hex,
+                "closed_ts": now,
+            },
+            synchronize_session=False,
+        )
     )
     session.commit()
     if rowcount == 0:
@@ -471,10 +477,7 @@ def recover_interrupted() -> int:
                 (CollabRequest.status == "approved")
                 | (
                     (CollabRequest.status == "executing")
-                    & (
-                        (CollabRequest.lease_until.is_(None))
-                        | (CollabRequest.lease_until < now)
-                    )
+                    & ((CollabRequest.lease_until.is_(None)) | (CollabRequest.lease_until < now))
                 )
             )
         ).all()
@@ -492,13 +495,17 @@ def recover_interrupted() -> int:
 def _renew_lease(session: Session, worker: str, request_id: int) -> int:
     """一轮租约续期：仅本领取人名下且仍 executing 的行推进 lease_until。
     返回续到行数；0=已离开 executing（终态/被接管）——心跳使命结束。"""
-    rc = session.query(CollabRequest).filter(
-        CollabRequest.id == request_id,
-        CollabRequest.locked_by == worker,
-        CollabRequest.status == "executing",
-    ).update(
-        {"lease_until": _utcnow() + dt.timedelta(seconds=_lease_seconds())},
-        synchronize_session=False,
+    rc = (
+        session.query(CollabRequest)
+        .filter(
+            CollabRequest.id == request_id,
+            CollabRequest.locked_by == worker,
+            CollabRequest.status == "executing",
+        )
+        .update(
+            {"lease_until": _utcnow() + dt.timedelta(seconds=_lease_seconds())},
+            synchronize_session=False,
+        )
     )
     session.commit()
     return rc
@@ -535,18 +542,22 @@ def finalize_executed(session: Session, request_id: int, worker: str) -> None:
     """终态落定（executing→executed，领取人守卫）：条件 UPDATE 仅认本领取人
     名下的 executing 行——租约被接管/已离开 executing 后，旧线程不得覆写
     结果（0 行=CollabError 409）。"""
-    rc = session.query(CollabRequest).filter(
-        CollabRequest.id == request_id,
-        CollabRequest.status == "executing",
-        CollabRequest.locked_by == worker,
-    ).update(
-        {
-            "status": "executed",
-            "executed_ts": _utcnow(),
-            "locked_by": None,
-            "lease_until": None,
-        },
-        synchronize_session=False,
+    rc = (
+        session.query(CollabRequest)
+        .filter(
+            CollabRequest.id == request_id,
+            CollabRequest.status == "executing",
+            CollabRequest.locked_by == worker,
+        )
+        .update(
+            {
+                "status": "executed",
+                "executed_ts": _utcnow(),
+                "locked_by": None,
+                "lease_until": None,
+            },
+            synchronize_session=False,
+        )
     )
     session.commit()
     if rc == 0:
@@ -558,16 +569,20 @@ def finalize_executed(session: Session, request_id: int, worker: str) -> None:
 def claim_execution(session: Session, request_id: int, worker: str) -> None:
     """执行认领（approved→executing 条件 UPDATE——数据库仲裁）：恰一胜者；
     输家 CollabError(409)——多副本同抢不再双执行（结构性竞窗根除）。"""
-    rc = session.query(CollabRequest).filter(
-        CollabRequest.id == request_id,
-        CollabRequest.status == "approved",
-    ).update(
-        {
-            "status": "executing",
-            "locked_by": worker,
-            "lease_until": _utcnow() + dt.timedelta(seconds=_lease_seconds()),
-        },
-        synchronize_session=False,
+    rc = (
+        session.query(CollabRequest)
+        .filter(
+            CollabRequest.id == request_id,
+            CollabRequest.status == "approved",
+        )
+        .update(
+            {
+                "status": "executing",
+                "locked_by": worker,
+                "lease_until": _utcnow() + dt.timedelta(seconds=_lease_seconds()),
+            },
+            synchronize_session=False,
+        )
     )
     session.commit()
     if rc == 0:
@@ -634,9 +649,7 @@ def _execute_worker(request_id: int) -> None:
                 _execute(s, r=r, worker=worker)
             except Exception as exc:  # noqa: BLE001  后台线程兜底：任何失败都落 execute_failed
                 try:
-                    _fail_execution(
-                        request_id, worker, f"{type(exc).__name__}: {exc}"
-                    )
+                    _fail_execution(request_id, worker, f"{type(exc).__name__}: {exc}")
                 except Exception:  # noqa: BLE001  落库自身失败=日志面（演示形态）
                     import logging
 
@@ -676,17 +689,19 @@ def reject_request(
         REJECT_MSG_PREFIX + r.warrant_hash_hex + "|" + r.note + "|" + reason.strip(),
         sig_hex,
     )
-    rowcount = session.query(CollabRequest).filter(
-        CollabRequest.id == request_id, CollabRequest.status == "pending"
-    ).update(
-        {
-            "status": "rejected",
-            "admin_username": admin.username,
-            "admin_sig_hex": sig_hex,
-            "reject_reason": reason.strip(),
-            "decided_ts": _utcnow(),
-        },
-        synchronize_session=False,
+    rowcount = (
+        session.query(CollabRequest)
+        .filter(CollabRequest.id == request_id, CollabRequest.status == "pending")
+        .update(
+            {
+                "status": "rejected",
+                "admin_username": admin.username,
+                "admin_sig_hex": sig_hex,
+                "reject_reason": reason.strip(),
+                "decided_ts": _utcnow(),
+            },
+            synchronize_session=False,
+        )
     )
     session.commit()
     if rowcount == 0:
@@ -703,11 +718,11 @@ def _execute(session: Session, *, r: CollabRequest, worker: str) -> dict:
     密码学上不可达，如实呈现）。终态迁移带领取人守卫：租约被接管后旧
     线程不得覆写结果。"""
     # ① RA 出函（FZC2 函-令状-凭证三方绑定+出具台账）——复用 ra/router 原逻辑
+    from app.audit.router import _deps as audit_deps
+    from app.audit.service import AuditError, AuditService
     from app.ra.collab import collab_fingerprint, open_collab_v2, seal_collab_v2
     from app.ra.scope import resolve_cred_for_auth
     from app.ra.service import RaError
-    from app.audit.service import AuditError, AuditService
-    from app.audit.router import _deps as audit_deps
 
     w_row = session.execute(
         select(Warrant).where(Warrant.warrant_hash_hex == r.warrant_hash_hex)

@@ -71,9 +71,13 @@ def _pin_block() -> dict:
     except Exception:
         pass
     match = (local_hex == chain_hex) if (local_hex and chain_hex) else None
-    return {"local_str": local_str, "local_digest_hex": local_hex,
-            "chain_digest_hex": chain_hex, "chain_contract": "PolicyRegistry.circuitPin",
-            "match": match}
+    return {
+        "local_str": local_str,
+        "local_digest_hex": local_hex,
+        "chain_digest_hex": chain_hex,
+        "chain_contract": "PolicyRegistry.circuitPin",
+        "match": match,
+    }
 
 
 @router.get("/verify/api/checks")

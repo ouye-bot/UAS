@@ -80,6 +80,7 @@ def _default_zk_cache_dir(env: dict[str, str]) -> str:
         return os.path.join(zksvc, "cache")
     return ""
 
+
 # pinned 档必须显式齐备的构型键（零隐式——缺一即拒）
 _PINNED_REQUIRED = (
     "FZ_ZK_ALLOW_AUTH",
@@ -144,8 +145,7 @@ def describe(profile: str | None = None) -> str:
     if name == "release-demo":
         circuit = " ".join(f"{k}={v}" for k, v in _RELEASE_CIRCUIT.items())
         return (
-            "zk_profile=release-demo "
-            f"({circuit} MASK=on RAYON=12 STACK=512MiB forbid_spec_key=1)"
+            f"zk_profile=release-demo ({circuit} MASK=on RAYON=12 STACK=512MiB forbid_spec_key=1)"
         )
     if name == "dev":
         return "zk_profile=dev (allow flags forced; 构型旋钮尊重显式 env; RAYON=4 缺省)"

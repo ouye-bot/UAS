@@ -697,9 +697,7 @@ class RaService:
         # 仅主凭证句柄可恢复（撤销集还含 pk′.x 子钥传播叶——摘子钥叶=解锁他人
         # 出示钥，越出「凭证恢复」语义；持有者重置身份钥即可换新，无需恢复）
         if (
-            self._s.scalar(
-                select(Credential.id).where(Credential.master_cred_hash_hex == h)
-            )
+            self._s.scalar(select(Credential.id).where(Credential.master_cred_hash_hex == h))
             is None
         ):
             raise RaError("not_restorable", "仅主凭证句柄可恢复（子钥传播叶不可恢复）", 409)

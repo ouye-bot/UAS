@@ -90,7 +90,8 @@ def test_golden_vector_smt_witness():
         sib = siblings[g * 32 : (g + 1) * 32]
         blk = cur + sib if bits[g] == 0 else sib + cur
         cur = sm3_bytes(blk)
-    assert cur.hex() == data["smt_root_hex"], "SMT 链头重算漂移"
+    assert cur.hex() == data["smt_root_hex"], "SMT 链头重算漂移"
+
 
 def test_golden_vector_v7_public_instances():
     """v7 证明级期望锚（⑥ SN→⑦ pack→双 vendor 根修 cdc7cec 真实 prove 实测）：
@@ -116,9 +117,10 @@ def test_golden_vector_v7_public_instances():
     assert inst[3] + inst[4] == data["ra_pub_hex"]
     # C₁=[r]G（v5 challenge 派生 r——恒 [2]G 消除：12/13 ≠ 9/10 防回退）
     n = int(default_ecc_table["n"], 16)
-    r = int.from_bytes(
-        sm3_bytes(b"FZ-AUTH-R|v1|" + bytes.fromhex(data["challenge_hex"])), "big"
-    ) % n
+    r = (
+        int.from_bytes(sm3_bytes(b"FZ-AUTH-R|v1|" + bytes.fromhex(data["challenge_hex"])), "big")
+        % n
+    )
     c1 = sm2mod._c(data["ra_priv_hex"], data["ra_pub_hex"])._kg(r, sm2mod._G)
     assert c1[:64] == inst[12] and c1[64:] == inst[13], "C₁=[r]G 重算漂移"
     assert inst[12] != inst[9], "C₁ 恒常回退（[2]G 时代 12/13==9/10）"
@@ -144,12 +146,8 @@ def test_golden_vector_v7_proof_digest_pin():
     data = json.loads(_VEC.read_text(encoding="utf-8"))
     assert re.fullmatch(r"[0-9a-f]{64}", data["proof_sm3_hex"])
     assert data["proof_bytes"] == 16_063_712, "⑦代交织档 proof 尺寸换代"
-    assert re.fullmatch(
-        r"SM3\([0-9a-f]{7}\|[0-9a-f]{64}\)", data["zk_pin_fingerprint"]
+    assert re.fullmatch(r"SM3\([0-9a-f]{7}\|[0-9a-f]{64}\)", data["zk_pin_fingerprint"])
+    manifest = json.loads((_VEC.parents[1] / "build_manifest.json").read_text(encoding="utf-8"))
+    assert data["zk_pin_fingerprint"].startswith(f"SM3({manifest['pinned_commit_short']}|"), (
+        "vendor 代与指纹不符（换代未同步）"
     )
-    manifest = json.loads(
-        (_VEC.parents[1] / "build_manifest.json").read_text(encoding="utf-8")
-    )
-    assert data["zk_pin_fingerprint"].startswith(
-        f"SM3({manifest['pinned_commit_short']}|"
-    ), "vendor 代与指纹不符（换代未同步）"

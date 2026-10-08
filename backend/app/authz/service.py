@@ -138,9 +138,7 @@ def server_sn_hash_hex(session: Session, sub_cred_hash_hex: str) -> str:
     from app.ra.models import Credential, SubCredential
 
     sub = session.scalar(
-        select(SubCredential).where(
-            SubCredential.sub_cred_hash_hex == sub_cred_hash_hex.lower()
-        )
+        select(SubCredential).where(SubCredential.sub_cred_hash_hex == sub_cred_hash_hex.lower())
     )
     if sub is None:
         raise AuthzError("sub_cred_unknown", "子凭证不在库（无法解析序列号溯源）", 404)
@@ -218,8 +216,8 @@ def admission_gate(
     sub_hash_recomputed = sm3_bytes(msg).hex()
     if sub_cred_hash_hex.lower() != sub_hash_recomputed:
         raise AuthzError(
-            "sub_cred_hash_mismatch",
-            "子凭证哈希与报文不符（重算不一致——拒绝受理）", 409)
+            "sub_cred_hash_mismatch", "子凭证哈希与报文不符（重算不一致——拒绝受理）", 409
+        )
     # ⓪' 出证案卷归属门（批 4-1 服务端权威——置于服务器权威哈希重算之后，
     # 材料比对全部用服务器侧权威值）：case_id 是桥端出证任务产物目录号——
     # 此前客户端可给定任意已存在案卷目录触发验证与授权登记（抢注面）。现：
@@ -315,7 +313,7 @@ def admission_gate(
     _expect(23, _fe_be32_hex_from_bytes32(bytes.fromhex(rev_root_hex)), "rev_root")
     # SN 绑定换代（2026-10-06）：实例 25=sn_hash——权威=服务端从
     # sub_cred_hash→sub_credentials→credentials 解析 sn 后自算 SM3 全 32B
-    #（零客户端自报）。**词折叠口径（prove 窗 e2e ⑤ 实弹定谳）**：电路第 5 组
+    # （零客户端自报）。**词折叠口径（prove 窗 e2e ⑤ 实弹定谳）**：电路第 5 组
     # digest 词根环与 SMT 根环同族=fold_words_be（w0 最低权——序列化后呈词序
     # 倒排），非真 BE 整数折叠；故用 _fe_be32_hex_from_bytes32（与实例 23
     # rev_root 同式），曾误用 _fe_be32_hex_from_digest 被 e2e 逐位对拍抓出。

@@ -89,10 +89,20 @@ def test_cookie_explicit_env_secure(tmp_path, monkeypatch):
     assert "Secure" in set_cookie, set_cookie
 
 
-@pytest.mark.parametrize("raw,expect", [
-    ("true", True), ("1", True), ("yes", True), ("on", True), ("TRUE", True),
-    ("false", False), ("0", False), ("no", False), ("", False),
-])
+@pytest.mark.parametrize(
+    "raw,expect",
+    [
+        ("true", True),
+        ("1", True),
+        ("yes", True),
+        ("on", True),
+        ("TRUE", True),
+        ("false", False),
+        ("0", False),
+        ("no", False),
+        ("", False),
+    ],
+)
 def test_cookie_secure_unit_matrix(monkeypatch, raw, expect):
     """单元矩阵：env 显式值优先（大小写不敏感；空串=未设定→按部署档）。"""
     monkeypatch.delenv("FZ_DEPLOYMENT", raising=False)

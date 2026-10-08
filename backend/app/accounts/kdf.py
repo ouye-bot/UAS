@@ -51,9 +51,7 @@ def derive_kek(passphrase: str, salt_hex: str, iterations: int | None = None) ->
     n = iterations if iterations is not None else kdf_iterations()
     if n < 1:
         raise ValueError("KDF 迭代数须 ≥1")
-    return pbkdf2_hmac_sm3(
-        passphrase.encode(), bytes.fromhex(salt_hex), n, KEK_LEN
-    ).hex()
+    return pbkdf2_hmac_sm3(passphrase.encode(), bytes.fromhex(salt_hex), n, KEK_LEN).hex()
 
 
 def derive_activation_verifier(

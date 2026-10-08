@@ -56,7 +56,9 @@ def create_app() -> FastAPI:
 
     @app.exception_handler(Exception)
     async def unhandled_to_json(request: Request, exc: Exception):
-        rid = getattr(request.state, "fz_rid", None) or new_request_id(request.headers.get("X-Request-ID"))
+        rid = getattr(request.state, "fz_rid", None) or new_request_id(
+            request.headers.get("X-Request-ID")
+        )
         logging.getLogger("fz.http").error(
             f"unhandled {type(exc).__name__}: {exc} rid={rid} path={request.url.path}"
         )
@@ -140,7 +142,10 @@ def create_app() -> FastAPI:
 
         _n = recover_interrupted()
         if _n:
-            print(f"[FZ-STARTUP] 双控执行恢复：{_n} 条 approved 残留已转 execute_failed（可重试）", flush=True)
+            print(
+                f"[FZ-STARTUP] 双控执行恢复：{_n} 条 approved 残留已转 execute_failed（可重试）",
+                flush=True,
+            )
     except Exception as _e:  # noqa: BLE001
         _log.getLogger("fz.startup").warning(f"双控启动恢复跳过（{_e}）")
 

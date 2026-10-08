@@ -2,7 +2,8 @@
 
 覆盖：
 - GET /authz/status 三形态（real-active / real-revoked / chain-unreachable 503 /
-  auth_not_found 404 / fake 档如实自报）+ token_consumed 服务端消费账本标志（S1 根修语义：签发≠消费）；
+  auth_not_found 404 / fake 档如实自报）+ token_consumed 服务端消费账本标志
+  （S1 根修语义：签发≠消费）；
 - 演示围栏收窄（1.7+盲审二轮整改 2026-10-04）：FENCE_RECTS=单一演示空域
   （S4 合成场已迁至 SITL 原点近旁——同在南半球）、四界对两场余量 ≥0.5°、
   纬/经界各自同半球（矩形不再横跨赤道）。
@@ -74,8 +75,20 @@ class _StubBinding:
             if aid not in self.statuses:
                 raise ChainError("VM exe error: bad authId")  # 合约 require 形态
             # 12 元组（授权包配额制：末位 remaining——链上权威配额值）
-            return [b"\x11" * 32, b"\x22" * 16, 0, 50, 1, 2,
-                    b"\x33" * 32, b"\x44" * 32, self.statuses[aid], 0, 1790000000, 1]
+            return [
+                b"\x11" * 32,
+                b"\x22" * 16,
+                0,
+                50,
+                1,
+                2,
+                b"\x33" * 32,
+                b"\x44" * 32,
+                self.statuses[aid],
+                0,
+                1790000000,
+                1,
+            ]
         if fn == "revEpoch":
             return [self.rev_epoch]
         raise AssertionError(f"stub 未脚本化的调用: {fn}")
@@ -161,8 +174,8 @@ SITL_HOME = (-353_632_620, 1_491_652_370)
 # 近旁 -34.5°/150.0°E，同在南半球、相距≈1.1°；旧北半球场 39.900N/116.300E 已废）
 S4_FIELD_MAX = (-344_998_581, 1_500_000_903)
 MARGIN_1E7 = 5_000_000  # 0.5° 半径余量（1e-7°/unit——5_000_000×1e-7=0.5°，
-                        # 换代前误写 500_000=0.05°，与本文件及 policy.py 声明的
-                        # 「≥0.5°」口径不符；现按声明语义实钉）
+# 换代前误写 500_000=0.05°，与本文件及 policy.py 声明的
+# 「≥0.5°」口径不符；现按声明语义实钉）
 
 
 def test_policy_fence_rects_cover_demo_fields_with_margin():
@@ -220,9 +233,7 @@ def test_authz_consume_endpoint_ledger(client):
 
     _seed_auth_record("9a" * 32, auth_id=77)
     # ① 无引擎令牌=401
-    r0 = client.post(
-        "/authz/consume", json={"auth_id": 77, "token_hash_hex": "9a" * 32}
-    )
+    r0 = client.post("/authz/consume", json={"auth_id": 77, "token_hash_hex": "9a" * 32})
     assert r0.status_code == 401
     # ② 带令牌首报=first=True 且配额归零（缺省 1=终态）
     _os.environ["FZ_ENGINE_TOKEN"] = "test-engine-tok"
@@ -318,4 +329,6 @@ def test_authz_status_issued_not_consumed(client):
     消费 ⟹ token_consumed=False——正常首次 ARM 不再被误拒。"""
     _seed_auth_record("5c" * 32, auth_id=78)  # 默认 consumed=False
     r = client.get("/authz/status", params={"auth_id": 78, "token_hash_hex": "5c" * 32})
-    assert r.json()["data"]["token_consumed"] is False, "在案未消费=未消费（旧语义此处置 True 致首 ARM 必拒）"
+    assert r.json()["data"]["token_consumed"] is False, (
+        "在案未消费=未消费（旧语义此处置 True 致首 ARM 必拒）"
+    )

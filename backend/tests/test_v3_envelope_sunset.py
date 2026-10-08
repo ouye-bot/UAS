@@ -39,7 +39,9 @@ PASS = "Test-Pass-8"
 _V3_CUTOFF_MSG = "旧版密钥封装已过截止期——请联系机构重置凭证"
 _STOCK_MARKER = "存量 v3 密封信封账户"
 
-# 复用既有测试事实源：v3 legacy 信封构造 / production 档 env 基座（KMS 钥注入）
+# 复用既有测试事实源：v3 legacy 信封构造 / production 档 env 基座（KMS 钥注入）。
+# _prod_env_base 是 pytest fixture（导入即注册）——下方两测试以其为参数消费，
+# 参数名必须与 fixture 同名；ruff F811 对此模式的同名参数误报，noqa 有据。
 from tests.test_accounts import _sealed_blob_v3_legacy  # noqa: E402
 from tests.test_production_startup_gate import _prod_env_base  # noqa: E402,F401
 
@@ -166,7 +168,10 @@ def test_v3_login_lazy_upgrade_with_cutoff_zero(client, monkeypatch):
     assert r.status_code == 200, r.text
     ks = client.get("/auth/keystore/pilot_lazy0").json()["data"]
     assert json.loads(ks["sealed_blob"])["v"] == 3
-    up = client.post("/auth/keystore/upgrade", json={"sealed_blob": reseal_v4(ks["sealed_blob"], PASS, iterations=4096)})
+    up = client.post(
+        "/auth/keystore/upgrade",
+        json={"sealed_blob": reseal_v4(ks["sealed_blob"], PASS, iterations=4096)},
+    )
     assert up.status_code == 200, up.text
     ks2 = client.get("/auth/keystore/pilot_lazy0").json()["data"]
     assert json.loads(ks2["sealed_blob"])["v"] == 4
@@ -249,7 +254,12 @@ def _prod_scan_env(monkeypatch, tmp_path, rows: list[Account]) -> sessionmaker:
     return TestSession
 
 
-def test_production_startup_warns_on_v3_stock(_prod_env_base, monkeypatch, tmp_path, capsys):
+def test_production_startup_warns_on_v3_stock(
+    _prod_env_base,  # noqa: F811
+    monkeypatch,
+    tmp_path,
+    capsys,
+):
     """production+v3 存量：启动打印显式告警（数量+掩码+处置指引，不拒启）；
     账户全名不进日志。"""
     sk, pk = generate_keypair()
@@ -272,7 +282,12 @@ def test_production_startup_warns_on_v3_stock(_prod_env_base, monkeypatch, tmp_p
     assert "不阻断启动" in out
 
 
-def test_production_startup_silent_without_v3_stock(_prod_env_base, monkeypatch, tmp_path, capsys):
+def test_production_startup_silent_without_v3_stock(
+    _prod_env_base,  # noqa: F811
+    monkeypatch,
+    tmp_path,
+    capsys,
+):
     """production 无 v3 存量（v4 账户+未激活空密封件行）：不打印存量告警。"""
     sk, pk = generate_keypair()
     from app.accounts.envelope import seal_envelope_v4

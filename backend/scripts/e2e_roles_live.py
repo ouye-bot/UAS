@@ -171,8 +171,15 @@ def main() -> int:
     t_ap = time.time()
     rc, ap_r = _post_sess(adm, API, f"/admin/collab-requests/{req_id}/approve",
                           {"sig_hex": _sign(adm.sk, req_hash_msg)})
-    expect(rc == 200 and ap_r["data"]["status"] == "approved",
-           f"C.2 批准即返回（{time.time() - t_ap:.1f}s）→ approved（后台执行）", f"rc={rc} {str(ap_r)[:120]}")
+    # 响应=批准瞬间快照：后台执行线程可能在序列化前已认领（executing）甚至完成
+    # （executed）——竞态窗三态均算批准成功，终态正确性由 C.3 _poll_terminal 钉死
+    # （2026-10-08 实弹定谳 flake：本机链写极快时 approved 快照已过时，与
+    # test_collab_dual_control 同款注释口径）。
+    _snap_ok = rc == 200 and ap_r.get("data", {}).get("status") in (
+        "approved", "executing", "executed")
+    expect(_snap_ok,
+           f"C.2 批准即返回（{time.time() - t_ap:.1f}s）→ 批准态快照（竞态窗三态）",
+           f"rc={rc} {str(ap_r)[:120]}")
 
     final = _poll_terminal(aud, API, req_id, 180)
     expect(final is not None and final["status"] == "executed",

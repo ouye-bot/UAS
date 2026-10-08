@@ -10,7 +10,7 @@ from __future__ import annotations
 import os
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
@@ -265,9 +265,7 @@ def violations(
     # 可立案口径与 create_warrant 同源（2026-09-30 评审 P0 根修：聚合面
     # （chain_events）与校验面（auth_records）分裂曾致收件箱 20/20 立案被拒
     # ——“死收件箱”。fileable=授权记录在案；不在案=历史线索，立案必拒。）
-    fileable_ids = set(
-        session.execute(select(AuthRecord.auth_id)).scalars().all()
-    )
+    fileable_ids = set(session.execute(select(AuthRecord.auth_id)).scalars().all())
     agg: dict[int, dict] = {}
     for ev in rows:
         item = agg.setdefault(
@@ -345,9 +343,11 @@ def create_warrant(
     except ChainError as exc:
         return JSONResponse(
             status_code=503,
-            content={"code": "chain_unreachable",
-                     "message": f"链不可达——令状未登记（无半截状态，请稍后重试）：{exc}",
-                     "data": None},
+            content={
+                "code": "chain_unreachable",
+                "message": f"链不可达——令状未登记（无半截状态，请稍后重试）：{exc}",
+                "data": None,
+            },
         )
     except RaError as exc:
         return JSONResponse(
@@ -434,6 +434,7 @@ def unlock(
 
 # ---- 双控协作请求（2026-09-29 账户批 B3）：审计发函→机构批准→自动执行 ----
 
+
 class CollabReqIn(BaseModel):
     warrant_hash_hex: str = Field(min_length=64, max_length=64)
     note: str = Field(min_length=1, max_length=2000)
@@ -449,17 +450,18 @@ def create_collab_request(
     _p=Depends(require_role("auditor")),
 ):
     from app.accounts import collab as collab_svc
-    from app.accounts.deps import principal_from
-    from app.accounts.service import get_account
-
     from app.accounts.deps import principal_from as _pf
+    from app.accounts.service import get_account
 
     p = _pf(request, session)
     acc = get_account(session, p.username)
     try:
         row = collab_svc.create_request(
-            session, auditor=acc, warrant_hash_hex=body.warrant_hash_hex,
-            note=body.note, sig_hex=body.sig_hex,
+            session,
+            auditor=acc,
+            warrant_hash_hex=body.warrant_hash_hex,
+            note=body.note,
+            sig_hex=body.sig_hex,
         )
     except collab_svc.CollabError as exc:
         return JSONResponse(

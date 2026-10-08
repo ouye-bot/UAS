@@ -227,10 +227,7 @@ def trail_binding(
             "拒绝出具轨迹绑定（先完成飞行留痕锚定）",
         )
     head = chain_head_hex.lower()
-    msg = (
-        f"FZ-TRAIL-BIND2|{auth_id}|{alt_max_cm}|{head}|"
-        f"{min_lat}|{max_lat}|{min_lon}|{max_lon}"
-    )
+    msg = f"FZ-TRAIL-BIND2|{auth_id}|{alt_max_cm}|{head}|{min_lat}|{max_lat}|{min_lon}|{max_lon}"
     sk, engine_pub = engine_signing_keypair()
     sig = sign_digest(sk, sm3_bytes(msg.encode()))
     anchor_evidence = {

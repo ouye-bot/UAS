@@ -125,8 +125,14 @@ def test_http_challenge_429_verdict(tmp_path, monkeypatch):
         gen = _sess()
         s = next(gen)
         try:
-            s.add(Account(username="u_http_rl", role="pilot", status="pending_profile",
-                          pubkey_hex="ab" * 64))
+            s.add(
+                Account(
+                    username="u_http_rl",
+                    role="pilot",
+                    status="pending_profile",
+                    pubkey_hex="ab" * 64,
+                )
+            )
             s.commit()
         finally:
             gen.close()

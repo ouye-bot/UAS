@@ -95,7 +95,8 @@ class CollabRequest(Base):
     legal_basis_text: Mapped[str | None] = mapped_column(Text, nullable=True)
     note: Mapped[str] = mapped_column(Text, default="")
     req_hash_hex: Mapped[str] = mapped_column(String(64))
-    status: Mapped[str] = mapped_column(String(16), default="pending")  # pending/approved/executing/rejected/executed/execute_failed
+    # 生命周期全集：pending/approved/executing/rejected/executed/execute_failed
+    status: Mapped[str] = mapped_column(String(16), default="pending")
     # 执行租约（批 2-2.5③ 多副本失效面）：approved→executing 条件 UPDATE 时
     # 落领取人+租约到期；执行线程心跳续租；重启恢复只回收 approved 与
     # executing 中租约已过期者（活租约=他副本在途，不误杀）。
@@ -131,6 +132,7 @@ class CaseLedger(Base):
     驳回都强制理由+签名）。本表让案件终局逐笔留痕：req_hash+结论+审计员签名
     +实名哈希+案卷指纹——collab_requests 行之外的独立复核锚（台账行永不
     删除/改写）。"""
+
     __tablename__ = "case_ledger"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
@@ -180,7 +182,8 @@ class AccountAdminLog(Base):
     action: Mapped[str] = mapped_column(String(48))  # password_reset / reseed_pending
     username: Mapped[str] = mapped_column(String(64), index=True)
     operator: Mapped[str] = mapped_column(String(64))  # 动作发起者（offline_seed_script）
-    detail: Mapped[str | None] = mapped_column(Text, nullable=True)  # 结构化补充（如被关闭的纪元号）
+    # 结构化补充（如被关闭的纪元号）
+    detail: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
 class RateLimitBucket(Base):

@@ -97,9 +97,8 @@ def _seed_sn_chain(session, msg: bytes):
     Credential.serial_hex 的服务端溯源链（诚实流=RA 签发落库；门控测试直插行）。"""
     import datetime as _dt
 
-    from app.ra.models import Credential, SubCredential, User
-
     from app.crypto.sm3 import sm3_bytes as _sm3b
+    from app.ra.models import Credential, SubCredential, User
 
     user = User(username="gate-sn-" + secrets.token_hex(6), pub_key_hex="11" * 64)
     session.add(user)
@@ -300,7 +299,9 @@ def test_gate_subcred_replay_rejected(session):
 def test_gate_stale_t_epoch_backdating_rejected(session):
     # R1 收口对抗自查增面：远古 t_start（证明语句 exp 检查空转+窗口洗白）——即使
     # 实例一致性门被绕过（instances 21 同值），时间锚新鲜度门独立拒绝。
-    kw = _apply_kwargs(session, t_start=_NOW - 10 * 365 * 86400, t_end=_NOW - 10 * 365 * 86400 + 3600)
+    kw = _apply_kwargs(
+        session, t_start=_NOW - 10 * 365 * 86400, t_end=_NOW - 10 * 365 * 86400 + 3600
+    )
     import json as _json
 
     from app.authz.service import _fe_be32_hex_from_u64
@@ -412,7 +413,8 @@ def _make_case(plan_hash_hex, nonce_hex):
     # SN 绑定换代（2026-10-06）：实例面 25→26——索引 25=sn_hash（SM3(serial)
     # 全 32B BE 折叠；serial 与 _honest_sub_credential 的 build_message 同源）。
     inst = ["0" * 64] * 26
-    inst[25] = _fe_be32_hex_from_bytes32(sm3_bytes(b"FZ-SN-AUTHZ-TEST"))  # 词折叠环同 SMT 根（prove 窗定谳）
+    # 词折叠环同 SMT 根（prove 窗定谳）
+    inst[25] = _fe_be32_hex_from_bytes32(sm3_bytes(b"FZ-SN-AUTHZ-TEST"))
     challenge = binding_challenge(plan_hash_hex, nonce_hex)
     inst[19] = _fe_be32_hex_from_digest(sm3_bytes(bytes.fromhex(challenge)))
     pred_str = plan_hash_hex + "|" + nonce_hex + "|" + POLICY_VERSION

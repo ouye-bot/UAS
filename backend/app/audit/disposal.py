@@ -99,15 +99,17 @@ def resolve_todo(session: Session, *, todo_id: int, note: str | None) -> dict:
     row = session.get(DisposalRequest, todo_id)
     if row is None:
         raise DisposalError("todo_not_found", "处置待办不存在", 404)
-    rowcount = session.query(DisposalRequest).filter(
-        DisposalRequest.id == todo_id, DisposalRequest.status == "pending"
-    ).update(
-        {
-            "status": "done",
-            "resolved_note": (note or "").strip() or None,
-            "resolved_ts": _utcnow(),
-        },
-        synchronize_session=False,
+    rowcount = (
+        session.query(DisposalRequest)
+        .filter(DisposalRequest.id == todo_id, DisposalRequest.status == "pending")
+        .update(
+            {
+                "status": "done",
+                "resolved_note": (note or "").strip() or None,
+                "resolved_ts": _utcnow(),
+            },
+            synchronize_session=False,
+        )
     )
     session.commit()
     if rowcount == 0:

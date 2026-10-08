@@ -134,9 +134,7 @@ def _fake_chain_align(handles_state):
 def _guard_env(monkeypatch, tmp_path):
     """真链档守卫测试环境：临时库+索引器线程 no-op（hermetic——不触真链面）。"""
     monkeypatch.setenv("FZ_CHAIN_ANCHOR", "real")
-    monkeypatch.setattr(
-        "app.telemetry.indexer.start_background_indexer", lambda *a, **k: None
-    )
+    monkeypatch.setattr("app.telemetry.indexer.start_background_indexer", lambda *a, **k: None)
     _install_tmp_db(monkeypatch, tmp_path)
 
 

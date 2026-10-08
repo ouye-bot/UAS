@@ -151,14 +151,10 @@ def test_kdf_cross_vectors():
 
     # v4 现行口径
     assert derive_kek("Test-Pass-8", "aabbccdd", 8) == "1277e3342905e4695e67bde5dd3d89dd"
-    assert (
-        derive_kek("Test-Pass-8", "aabbccdd", 21000) == "0b1e8a811af3d432501681bf8372023b"
-    )
+    assert derive_kek("Test-Pass-8", "aabbccdd", 21000) == "0b1e8a811af3d432501681bf8372023b"
     # v3 legacy 口径（保留——旧密封件/旧种子兼容读取的事实源）
     assert _legacy_v3("Test-Pass-8", "aabbccdd", 8) == "b7a19b8f13a8ea0768e16242baaf6d14"
-    assert (
-        _legacy_v3("Test-Pass-8", "aabbccdd", 21000) == "8c30c8ae0a6067df7085e7230c92096d"
-    )
+    assert _legacy_v3("Test-Pass-8", "aabbccdd", 21000) == "8c30c8ae0a6067df7085e7230c92096d"
 
 
 def test_kdf_production_iterations_default_and_env(monkeypatch):
@@ -202,7 +198,19 @@ def test_pilot_register_profile_login_flow(client):
     assert me2["status"] == "active" and me2["cred_hash_hex"] == out["master_cred_hash_hex"]
     rk = client.post(
         "/auth/profile/keep",
-        json={"sealed_profile": json.dumps({"v": 3, "meta": {"ct": "ab" * 120, "tag": "cd" * 16, "salt": "ef" * 16, "nonce": "12" * 12}})},
+        json={
+            "sealed_profile": json.dumps(
+                {
+                    "v": 3,
+                    "meta": {
+                        "ct": "ab" * 120,
+                        "tag": "cd" * 16,
+                        "salt": "ef" * 16,
+                        "nonce": "12" * 12,
+                    },
+                }
+            )
+        },
     )
     assert rk.status_code == 200, rk.text
     me3 = client.get("/auth/me").json()["data"]
@@ -366,9 +374,15 @@ def test_reset_institutional_account(client):
         salt = sess.query(Account).filter_by(username="adm_reset").one().init_kdf_salt_hex
     finally:
         gen.close()
-    r = client.post("/auth/activate", json={
-        "username": "adm_reset", "verifier_hex": derive_activation_verifier("Old-Pass-1", salt),
-        "pubkey_hex": pk_no04, "sealed_blob": _sealed_blob_js_style(pk_no04, sk, "New-Pass-1")})
+    r = client.post(
+        "/auth/activate",
+        json={
+            "username": "adm_reset",
+            "verifier_hex": derive_activation_verifier("Old-Pass-1", salt),
+            "pubkey_hex": pk_no04,
+            "sealed_blob": _sealed_blob_js_style(pk_no04, sk, "New-Pass-1"),
+        },
+    )
     assert r.status_code == 200
     _login(client, "adm_reset", sk)
     assert client.get("/auth/me").status_code == 200  # 会话在
@@ -394,9 +408,15 @@ def test_reset_institutional_account(client):
         gen.close()
     sk2, _pk2 = generate_keypair()
     pk2 = _pk2  # 同上（无 04 前缀）
-    r2 = client.post("/auth/activate", json={
-        "username": "adm_reset", "verifier_hex": derive_activation_verifier("Reset-Pass-2", salt2),
-        "pubkey_hex": pk2, "sealed_blob": _sealed_blob_js_style(pk2, sk2, "Reset-Pass-2")})
+    r2 = client.post(
+        "/auth/activate",
+        json={
+            "username": "adm_reset",
+            "verifier_hex": derive_activation_verifier("Reset-Pass-2", salt2),
+            "pubkey_hex": pk2,
+            "sealed_blob": _sealed_blob_js_style(pk2, sk2, "Reset-Pass-2"),
+        },
+    )
     assert r2.status_code == 200
     _login(client, "adm_reset", sk2)
     who = client.get("/auth/whoami").json()["data"]
@@ -449,9 +469,15 @@ def test_reset_writes_admin_log_and_retires_epoch(client):
     finally:
         gen.close()
     sk, pk = generate_keypair()
-    r = client.post("/auth/activate", json={
-        "username": "aud_log", "verifier_hex": derive_activation_verifier("Init-Pass-1", salt),
-        "pubkey_hex": pk, "sealed_blob": _sealed_blob_js_style(pk, sk, "Init-Pass-1")})
+    r = client.post(
+        "/auth/activate",
+        json={
+            "username": "aud_log",
+            "verifier_hex": derive_activation_verifier("Init-Pass-1", salt),
+            "pubkey_hex": pk,
+            "sealed_blob": _sealed_blob_js_style(pk, sk, "Init-Pass-1"),
+        },
+    )
     assert r.status_code == 200, r.text
     # 离线脚本重置
     gen, sess = _sess_of(client)
@@ -605,18 +631,26 @@ def test_legacy_seed_format_compat_and_upgrade(client):
     assert pre["verifier"] == "legacy_v3" and pre["rounds"] == KDF_LEGACY_V3_ITERATIONS
     # 新域核对子（客户端若不按 prelogin 分派复算）=拒
     sk, pk = generate_keypair()
-    r = client.post("/auth/activate", json={
-        "username": "aud_old_seed",
-        "verifier_hex": derive_activation_verifier("Old-Seed-Pw-3", salt),
-        "pubkey_hex": pk,
-        "sealed_blob": _sealed_blob_js_style(pk, sk, "Old-Seed-Pw-3"),
-    })
+    r = client.post(
+        "/auth/activate",
+        json={
+            "username": "aud_old_seed",
+            "verifier_hex": derive_activation_verifier("Old-Seed-Pw-3", salt),
+            "pubkey_hex": pk,
+            "sealed_blob": _sealed_blob_js_style(pk, sk, "Old-Seed-Pw-3"),
+        },
+    )
     assert r.status_code == 401 and r.json()["code"] == "activation_failed"
     # 旧口径核对子→激活成功（兼容读取），焚毁即换代
-    r2 = client.post("/auth/activate", json={
-        "username": "aud_old_seed",
-        "verifier_hex": _legacy_v3("Old-Seed-Pw-3", salt, KDF_LEGACY_V3_ITERATIONS),
-        "pubkey_hex": pk, "sealed_blob": _sealed_blob_js_style(pk, sk, "Old-Seed-Pw-3")})
+    r2 = client.post(
+        "/auth/activate",
+        json={
+            "username": "aud_old_seed",
+            "verifier_hex": _legacy_v3("Old-Seed-Pw-3", salt, KDF_LEGACY_V3_ITERATIONS),
+            "pubkey_hex": pk,
+            "sealed_blob": _sealed_blob_js_style(pk, sk, "Old-Seed-Pw-3"),
+        },
+    )
     assert r2.status_code == 200, r2.text
     gen, sess = _sess_of(client)
     try:

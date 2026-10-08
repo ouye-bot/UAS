@@ -84,16 +84,17 @@ class WorkerDeps:
                     import tempfile as _tf
 
                     _spec["input"]["holder_sk_hex"] = ""
-                    _fd, _sanitized_path = _tf.mkstemp(
-                        prefix="fz-canonical-", suffix=".json")
+                    _fd, _sanitized_path = _tf.mkstemp(prefix="fz-canonical-", suffix=".json")
                     with os.fdopen(_fd, "w", encoding="utf-8") as _w:
                         json.dump(_spec, _w)
                     env["FZ_AUTH_CANONICAL_SPEC"] = _sanitized_path
                     env["FZ_ZK_HOLDER_SK_HEX"] = _cand
             except (OSError, ValueError, KeyError, TypeError):
                 pass  # 读取失败=如实交由 zkc 装配面人话拒绝（不吞验证结果）
-        print(f"[worker] zkc verify 构型 {describe()} task_case={os.path.basename(case_dir)}",
-              flush=True)
+        print(
+            f"[worker] zkc verify 构型 {describe()} task_case={os.path.basename(case_dir)}",
+            flush=True,
+        )
         # 期望值写入验证方私有位置（2026-09-28 安全深检 B-P2 根修）：原写进
         # case 目录（证明者域）——同目录写入者可替换期望值绕过最后一道实例
         # 核对。改 tempfile（验证方独占，用毕即焚）；case 目录的 expected.json
@@ -321,7 +322,6 @@ def _pending_gauge(session: Session) -> None:
 def _dump_worker_gauges(gauges: dict[str, float]) -> None:
     """worker gauges → 共享文件（backend /metrics 合并读取——原子写）。"""
     import json as _json
-    import tempfile as _tf
 
     try:
         d = Path(os.environ.get("FZ_ZK_CASES_DIR", "/tmp/fz-zk-cases"))
@@ -758,9 +758,7 @@ def _process_one(session: Session, deps: WorkerDeps, row: Application, stats: di
                 "verify_s": verify_s,
                 # 批 4-3 档位显式化：判决件自述链锚档——第三方核对「这份授权
                 # 登记是否落真链」不必猜档（fake=演示假链，tx 形态如实可辨）。
-                "mode": (
-                    "fake" if os.environ.get("FZ_CHAIN_ANCHOR", "fake") == "fake" else "real"
-                ),
+                "mode": ("fake" if os.environ.get("FZ_CHAIN_ANCHOR", "fake") == "fake" else "real"),
                 "expected": expected,
                 "verify_log": log[-400:],
             },

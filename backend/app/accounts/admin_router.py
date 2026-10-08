@@ -26,7 +26,12 @@ router = APIRouter(prefix="/admin", tags=["admin"])
 def _deny(exc: Exception) -> JSONResponse:
     status = getattr(exc, "status", 400) or 400
     return JSONResponse(
-        status_code=status, content={"code": getattr(exc, "code", "error"), "message": str(exc), "data": None}
+        status_code=status,
+        content={
+            "code": getattr(exc, "code", "error"),
+            "message": str(exc),
+            "data": None,
+        },
     )
 
 
@@ -54,7 +59,11 @@ def list_collab_requests(
 ):
     return JSONResponse(
         status_code=200,
-        content={"code": "ok", "message": "", "data": {"items": collab_svc.list_requests(session, status or None)}},
+        content={
+            "code": "ok",
+            "message": "",
+            "data": {"items": collab_svc.list_requests(session, status or None)},
+        },
     )
 
 
@@ -71,7 +80,9 @@ def approve(
     p = principal_from(request, session)
     try:
         acc = get_account(session, p.username)
-        out = collab_svc.approve_and_execute(session, admin=acc, request_id=req_id, sig_hex=body.sig_hex)
+        out = collab_svc.approve_and_execute(
+            session, admin=acc, request_id=req_id, sig_hex=body.sig_hex
+        )
     except collab_svc.CollabError as exc:
         return _deny(exc)
     except AccountError as exc:
@@ -102,7 +113,9 @@ def retry(
         return _deny(exc)
     except AccountError as exc:
         return _deny(exc)
-    return JSONResponse(status_code=200, content={"code": "ok", "message": "已重新执行（后台）", "data": out})
+    return JSONResponse(
+        status_code=200, content={"code": "ok", "message": "已重新执行（后台）", "data": out}
+    )
 
 
 @router.post("/collab-requests/{req_id}/reject")
@@ -123,7 +136,9 @@ def reject(
         return _deny(exc)
     except AccountError as exc:
         return _deny(exc)
-    return JSONResponse(status_code=200, content={"code": "ok", "message": "已驳回（理由随请求留痕）", "data": out})
+    return JSONResponse(
+        status_code=200, content={"code": "ok", "message": "已驳回（理由随请求留痕）", "data": out}
+    )
 
 
 # 🔴 在线重置端点已下线（2026-09-30 密码重置收紧批，队长已批方案）：
@@ -192,14 +207,22 @@ def delete_orphan_account(
     if row.role != "pilot" or row.status != "pending_profile":
         return JSONResponse(
             status_code=409,
-            content={"code": "not_orphan", "message": "仅「待补资料」的飞手账户可删除（已激活/已签发账户走吊销面）", "data": None},
+            content={
+                "code": "not_orphan",
+                "message": "仅「待补资料」的飞手账户可删除（已激活/已签发账户走吊销面）",
+                "data": None,
+            },
         )
     from app.accounts.models import WebSession
+
     for ws in session.query(WebSession).filter(WebSession.username == username).all():
         session.delete(ws)
     session.delete(row)
     session.commit()
-    return JSONResponse(status_code=200, content={"code": "ok", "message": f"已删除孤儿账户 {username}", "data": None})
+    return JSONResponse(
+        status_code=200,
+        content={"code": "ok", "message": f"已删除孤儿账户 {username}", "data": None},
+    )
 
 
 @router.get("/collab-requests/{req_id}/verify-sigs")
@@ -220,12 +243,8 @@ def verify_collab_sigs(
 @router.get("/overview")
 def overview(session: Session = Depends(get_session), _p=Depends(require_role("admin"))):
     """机构台总览：待解锁令状/出具台账/账户概况/账户管理台账——签发台账是机构本职的可视面。"""
-    warrants = session.scalars(
-        select(Warrant).order_by(Warrant.id.desc()).limit(50)
-    ).all()
-    ledger = session.scalars(
-        select(CollabIssued).order_by(CollabIssued.id.desc()).limit(50)
-    ).all()
+    warrants = session.scalars(select(Warrant).order_by(Warrant.id.desc()).limit(50)).all()
+    ledger = session.scalars(select(CollabIssued).order_by(CollabIssued.id.desc()).limit(50)).all()
     accounts = session.scalars(select(Account).order_by(Account.id)).all()
     from app.accounts.models import AccountAdminLog
 

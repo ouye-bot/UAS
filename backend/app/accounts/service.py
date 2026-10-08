@@ -21,7 +21,6 @@ import re
 import secrets
 import time
 
-from fastapi import HTTPException
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
@@ -40,7 +39,8 @@ from app.accounts.models import (
     RateLimitBucket,
     WebSession,
 )
-from app.crypto.sm2 import pubkey_from_priv, verify as sm2_verify
+from app.crypto.sm2 import pubkey_from_priv
+from app.crypto.sm2 import verify as sm2_verify
 from app.crypto.sm3 import sm3_bytes
 from app.deployment import is_production
 
@@ -123,6 +123,7 @@ def log_account_action(
     在线面已无重置入口（2026-09-30 收紧）——operator 恒为离线种子脚本。"""
     session.add(AccountAdminLog(action=action, username=username, operator=operator, detail=detail))
 
+
 # 会话 Cookie 名与参数（HttpOnly+SameSite=Lax——演示 http 档不含 Secure，
 # 生产 TLS 部署加 Secure 属部署面开关）
 SESSION_COOKIE = "fz_session"
@@ -163,9 +164,7 @@ class AttemptLimiter:
             .first()
         )
         if row is None:
-            session.add(
-                RateLimitBucket(bucket_key=key, window_start=_utcnow(), hits=1)
-            )
+            session.add(RateLimitBucket(bucket_key=key, window_start=_utcnow(), hits=1))
             session.commit()
             return
         if now - row.window_start.replace(tzinfo=dt.UTC).timestamp() >= self._win:
@@ -184,11 +183,7 @@ class AttemptLimiter:
         session.commit()
 
     def reset(self, key: str, session: Session) -> None:
-        row = (
-            session.query(RateLimitBucket)
-            .filter(RateLimitBucket.bucket_key == key)
-            .first()
-        )
+        row = session.query(RateLimitBucket).filter(RateLimitBucket.bucket_key == key).first()
         if row is not None:
             session.delete(row)
             session.commit()
@@ -254,9 +249,7 @@ def _validate_sealed_blob(blob_text: str, pubkey_hex: str) -> None:
             raise AccountError("bad_blob", "v4 密封槽 KDF 标记非法（须 pbkdf2-sm3）")
         it = enc.get("iter")
         if not isinstance(it, int) or it < _KDF_ITER_FLOOR:
-            raise AccountError(
-                "bad_blob", f"v4 密封槽 KDF 迭代数低于下限（须 ≥{_KDF_ITER_FLOOR}）"
-            )
+            raise AccountError("bad_blob", f"v4 密封槽 KDF 迭代数低于下限（须 ≥{_KDF_ITER_FLOOR}）")
 
 
 def _validate_pubkey(pubkey_hex: str) -> None:
@@ -271,17 +264,13 @@ def _validate_pubkey(pubkey_hex: str) -> None:
 
 
 def get_account(session: Session, username: str) -> Account:
-    row = session.execute(
-        select(Account).where(Account.username == username)
-    ).scalar_one_or_none()
+    row = session.execute(select(Account).where(Account.username == username)).scalar_one_or_none()
     if row is None:
         raise AccountError("user_not_found", "账户不存在", 404)
     return row
 
 
-def register_account(
-    session: Session, username: str, pubkey_hex: str, sealed_blob: str
-) -> Account:
+def register_account(session: Session, username: str, pubkey_hex: str, sealed_blob: str) -> Account:
     """飞手自助注册：浏览器生成钥对+密码密封→上传密封件。账户=待补资料态，
     零链副作用（上链发生在资料补全、RA 签发时——账户≠凭证）。"""
     if not USERNAME_RE.fullmatch(username or ""):
@@ -292,9 +281,7 @@ def register_account(
     if _blob_version(sealed_blob) == 3:
         raise AccountError("v3_register_rejected", _V3_REGISTER_REJECTED_MSG, 422)
     _validate_sealed_blob(sealed_blob, pubkey_hex)
-    dup = session.execute(
-        select(Account).where(Account.username == username)
-    ).scalar_one_or_none()
+    dup = session.execute(select(Account).where(Account.username == username)).scalar_one_or_none()
     if dup is not None:
         raise AccountError("username_taken", "用户名已被占用", 409)
     row = Account(
@@ -434,9 +421,7 @@ def login(session: Session, username: str, nonce_hex: str, sig_hex: str) -> tupl
     # nonce）。未启用/未到点=现状惰性升级（前端登录会话内 v3→v4 重封回传）。
     cutoff = v3_cutoff_ts()
     if cutoff and time.time() >= cutoff and _blob_version(row.sealed_blob or "") == 3:
-        raise AccountError(
-            "v3_cutoff", "旧版密钥封装已过截止期——请联系机构重置凭证", 403
-        )
+        raise AccountError("v3_cutoff", "旧版密钥封装已过截止期——请联系机构重置凭证", 403)
     ch = session.execute(
         select(AuthChallenge).where(AuthChallenge.nonce_hex == nonce_hex)
     ).scalar_one_or_none()
@@ -551,9 +536,7 @@ def seed_institutional_account(
     台账）；active 态拒绝（防误覆盖已激活钥对）。"""
     if role not in ("auditor", "admin"):
         raise AccountError("bad_role", "预置账户角色限 auditor/admin")
-    row = session.execute(
-        select(Account).where(Account.username == username)
-    ).scalar_one_or_none()
+    row = session.execute(select(Account).where(Account.username == username)).scalar_one_or_none()
     if row is not None:
         if row.status == "pending_activation":
             salt = secrets.token_hex(16)
@@ -609,9 +592,7 @@ def reset_institutional_account(
     row.sealed_blob = None
     row.sealed_profile = None
     row.last_login_ts = None
-    for ws in session.execute(
-        select(WebSession).where(WebSession.username == username)
-    ).scalars():
+    for ws in session.execute(select(WebSession).where(WebSession.username == username)).scalars():
         session.delete(ws)
     session.commit()
     return row

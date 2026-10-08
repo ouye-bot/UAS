@@ -516,7 +516,11 @@ def authz_consume(body: ConsumeIn, request: Request, session: Session = Depends(
     if row is None:
         return JSONResponse(
             status_code=404,
-            content={"ok": False, "code": "auth_not_found", "message": "授权记录不在案（token_hash 不匹配）"},
+            content={
+                "ok": False,
+                "code": "auth_not_found",
+                "message": "授权记录不在案（token_hash 不匹配）",
+            },
         )
     if int(row.remaining or 0) <= 0:
         return JSONResponse(
@@ -542,13 +546,19 @@ def authz_consume(body: ConsumeIn, request: Request, session: Session = Depends(
             if "quota exhausted" in text or "auth revoked" in text:
                 return JSONResponse(
                     status_code=409,
-                    content={"ok": False, "code": "quota_exhausted",
-                             "message": f"链上配额拒绝递减: {text[:120]}"},
+                    content={
+                        "ok": False,
+                        "code": "quota_exhausted",
+                        "message": f"链上配额拒绝递减: {text[:120]}",
+                    },
                 )
             return JSONResponse(
                 status_code=503,
-                content={"ok": False, "code": "chain_unavailable",
-                         "message": f"配额链写不可达——桥端稍后重试: {text[:120]}"},
+                content={
+                    "ok": False,
+                    "code": "chain_unavailable",
+                    "message": f"配额链写不可达——桥端稍后重试: {text[:120]}",
+                },
             )
         except Exception as e:  # noqa: BLE001 —— 回执事件缺失等：对账收口再 503
             # 交易可能已落地而事件解出失败（R2-c 同族形态）：remainingOf 回读
@@ -562,8 +572,11 @@ def authz_consume(body: ConsumeIn, request: Request, session: Session = Depends(
             except Exception:  # noqa: BLE001
                 return JSONResponse(
                     status_code=503,
-                    content={"ok": False, "code": "chain_unavailable",
-                             "message": f"配额链写回执异常——桥端稍后重试: {str(e)[:120]}"},
+                    content={
+                        "ok": False,
+                        "code": "chain_unavailable",
+                        "message": f"配额链写回执异常——桥端稍后重试: {str(e)[:120]}",
+                    },
                 )
         row.remaining = int(remaining)
     else:

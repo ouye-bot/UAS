@@ -73,9 +73,9 @@ def _sub_credential(session_pk_hex: str = _VALID_PK):
     )
     _p, _pub = ra_signing_keypair()
     # SN 绑定换代（2026-10-06）：服务端溯源链播种（app DB 同 e2e 模式）。
-    import app.db as db_mod
-
     from conftest import seed_sn_chain
+
+    import app.db as db_mod
 
     with db_mod.SessionLocal() as _s:
         seed_sn_chain(_s, msg, b"FZ-SN-CASE-BIND")

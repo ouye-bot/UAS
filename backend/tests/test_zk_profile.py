@@ -75,8 +75,12 @@ def test_release_demo_default_equivalence(monkeypatch):
     assert env["RUST_MIN_STACK"] == "536870912"
     # 新增的显式电路键全部与 zksvc 内部缺省同值（SM3_LUT=1 组装面 set_var；
     # PCS_INTERLEAVE 缺省开；BATCH_DEDUP/VERIFY_STREAM 缺省关）——零行为变化
-    assert (env["SM3_LUT"], env["PCS_INTERLEAVE"], env["PCS_BATCH_DEDUP"],
-            env["PCS_VERIFY_STREAM"]) == ("1", "1", "0", "0")
+    assert (
+        env["SM3_LUT"],
+        env["PCS_INTERLEAVE"],
+        env["PCS_BATCH_DEDUP"],
+        env["PCS_VERIFY_STREAM"],
+    ) == ("1", "1", "0", "0")
 
 
 def test_dev_respects_explicit_overrides(monkeypatch):
@@ -142,6 +146,7 @@ def test_zk_cache_dir_default_derivation(monkeypatch, tmp_path):
     monkeypatch.delenv("FZ_ZK_CASES_DIR", raising=False)
     monkeypatch.setenv("FZ_ZKSVC_DIR", "D:/zksvc")
     import os as _os
+
     assert profile.zkc_env()[profile.CACHE_DIR_ENV] == _os.path.join("D:/zksvc", "cache")
 
     monkeypatch.delenv("FZ_ZKSVC_DIR", raising=False)

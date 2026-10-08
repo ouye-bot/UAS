@@ -406,11 +406,21 @@ def p3_crypto(rb: ReportBuilder) -> None:
 
 # ================= P1/P5 串行闸出证管线 =================
 
+def _bridge_serial() -> str:
+    """桥本机序列号（SN 单源——⑥代桥第 6 查：登记 SN 须与桥读数同源，
+    随机 SN=ARM 必 sn_mismatch。与网页端 6466458 根修同款）。"""
+    rc, pub = _req(BRIDGE + "/engine_pub", timeout=15)
+    sn = (pub or {}).get("device_serial")
+    if rc != 200 or not sn:
+        raise RuntimeError(f"bridge serial 不可得: rc={rc} {str(pub)[:120]}")
+    return sn
+
+
 def _register_perf_holder(m, tag: str) -> tuple[dict, str, str, str]:
     """注册 perf_* 持有人（RA 承诺面——真链 registerCommitment）。sn 全链一致。"""
     from app.crypto.sm2 import generate_keypair
     holder_sk, holder_pk = generate_keypair()
-    sn = "FZ-PERF-" + secrets.token_hex(2)
+    sn = _bridge_serial()
     rc, reg = _req(API + "/ra/register", {
         "username": tag, "id_number": "110101199001011234", "cert_level": 3,
         "sn": sn, "user_pub_hex": holder_pk, "class_id": 1,

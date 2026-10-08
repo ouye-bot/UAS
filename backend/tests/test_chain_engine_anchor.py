@@ -346,7 +346,9 @@ def test_worker_real_consume_sortie_calldata():
         "logs": [
             {
                 "address": json.loads(
-                    (Path(__file__).resolve().parents[2] / "contracts" / ".chain_addresses.json").read_text()
+                    (
+                        Path(__file__).resolve().parents[2] / "contracts" / ".chain_addresses.json"
+                    ).read_text()
                 )["FlightAuthRegistry"]["address"],
                 "topics": [topic0, "0x" + (7).to_bytes(32, "big").hex()],
                 # data: remaining=2 ‖ engine(32B) ‖ ts(32B)
@@ -447,8 +449,7 @@ def test_trail_binding_issues_engine_sig(client):
     from app.kms import engine_pub_hex
 
     msg = (
-        f"FZ-TRAIL-BIND2|7|5000|{head}|"
-        f"{d['min_lat']}|{d['max_lat']}|{d['min_lon']}|{d['max_lon']}"
+        f"FZ-TRAIL-BIND2|7|5000|{head}|{d['min_lat']}|{d['max_lat']}|{d['min_lon']}|{d['max_lon']}"
     ).encode()
     from app.crypto.sm2 import verify_digest
 

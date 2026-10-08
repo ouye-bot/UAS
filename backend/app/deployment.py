@@ -71,8 +71,4 @@ def assert_production_services() -> None:
             "多副本）：请配置 PostgreSQL 等生产库连接串"
         )
     if problems:
-        raise RuntimeError(
-            "生产档服务形态断言未通过——拒绝启动（"
-            + "；".join(problems)
-            + "）"
-        )
+        raise RuntimeError("生产档服务形态断言未通过——拒绝启动（" + "；".join(problems) + "）")
