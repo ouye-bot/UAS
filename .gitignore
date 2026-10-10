@@ -60,3 +60,7 @@ docs/MEMORY.md
 *.db-shm
 backend/cache/
 fz_zksvc.tgz
+
+# —— 门限根目录（④站：密封份额=可重组门限根钥材料，密封钥确定性派生——零钥入库红线；
+# 缺失时 initialize_if_absent 现场自举，demo_reset 不清此目录=跨重置连续）——
+backend/threshold_root/

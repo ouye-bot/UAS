@@ -143,10 +143,24 @@ def _ra_with_sn_envelope(tmp_path):
 
     eng = create_engine(f"sqlite:///{tmp_path}/env.db")
     Base.metadata.create_all(eng)
+    from app.audit.models import Base as AuditBase  # collab_issued（④站第③关）
+
+    AuditBase.metadata.create_all(eng)
     s = sessionmaker(bind=eng, expire_on_commit=False)()
     priv, pub = ra_signing_keypair()
     ra = RaService(
-        s, RaDeps(ra_priv_hex=priv, ra_pub_hex=pub, anchor=ChainAnchor(call=_FakeChain()))
+        s,
+        RaDeps(
+            ra_priv_hex=priv,
+            ra_pub_hex=pub,
+            anchor=ChainAnchor(call=_FakeChain()),
+            threshold_hooks={
+                # ④站本地判定（真模型真查同 session——分层测试；链查由实弹覆盖）
+                "request_registered": lambda sha, w, c: True,
+                "warrant_on_chain": lambda w_hex: True,
+                "collab_approved": lambda sha: True,
+            },
+        ),
     )
     holder_pk = generate_keypair()[1]
     reg = ra.register(

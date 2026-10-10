@@ -111,6 +111,24 @@ def test_unlock_via_collab_code(app_client, monkeypatch):
     # RA 假锚种子：令状在案（模拟 RA 链上公示——双控第二关的 RA 侧）
 
     ra_router_mod._ra_deps().anchor.warrant_on_chain = lambda wh_bytes: wh_bytes.hex() == wh
+    # ④站份额域三关（与 anchor 同位置注入——判定源=测试库，与被测链路同源）：
+    # ①请求登记（unlock 内自动）②令状链查（上行桩）③双控批文=测试库出函行。
+    from sqlalchemy import select as _select
+
+    from app.audit.models import CollabIssued as _CI
+
+    def _collab_ok(request_sha: str) -> bool:
+        s2 = TestSession()
+        try:
+            return s2.scalar(_select(_CI).limit(1)) is not None
+        finally:
+            s2.close()
+
+    ra_router_mod._ra_deps().threshold_hooks = {
+        "request_registered": lambda sha, w, c_: True,
+        "warrant_on_chain": lambda w_hex: w_hex == wh,
+        "collab_approved": _collab_ok,
+    }
     r4 = c.post(
         f"/audit/warrants/{wh}/unlock",
         json={"collab_code": code},

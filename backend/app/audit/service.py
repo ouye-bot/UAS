@@ -232,7 +232,39 @@ class AuditService:
         if cred is None or cred.id_store_cipher is None:
             return {"verdict": "insufficient", "reason": "登记材料缺通道②密文（旧版）"}
         try:
-            plain = unwrap_secret(bytes(cred.id_store_cipher))
+            # ④站信封版本分派：v5 门限信封=门限解封（ctx=该 cred 的双控出函
+            # 行——案件闭环时的批文即第③关判定源）；legacy=旧单钥直读。
+            blob = bytes(cred.id_store_cipher)
+            if blob[:1] == b"":
+                import hashlib as _hl
+
+                from app.audit.models import CollabIssued
+                from app.authz.service import unwrap_any
+
+                issued = self._s.scalar(
+                    _sel2(CollabIssued).where(
+                        CollabIssued.master_cred_hash_hex == master_cred_hash_hex
+                    )
+                )
+                if issued is None:
+                    return {
+                        "verdict": "insufficient",
+                        "reason": "v5 信封无出函行（门限第③关无判据）",
+                    }
+                wh_hex = issued.warrant_hash_hex
+                request_sha = _hl.sha256(
+                    wh_hex.encode() + master_cred_hash_hex.encode() + blob[1:3] + blob[3:67]
+                ).hexdigest()
+                plain = unwrap_any(
+                    blob,
+                    unlock_ctx={
+                        "warrant_hash_hex": wh_hex,
+                        "cred_hash_hex": master_cred_hash_hex,
+                        "request_sha256_hex": request_sha,
+                    },
+                )
+            else:
+                plain = unwrap_secret(blob)
             sn = _open_envelope_sn(plain)
         except Exception as e:  # noqa: BLE001
             return {"verdict": "insufficient", "reason": f"信封解封失败: {e}"}

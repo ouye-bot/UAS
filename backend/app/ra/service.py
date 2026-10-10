@@ -119,13 +119,32 @@ class RaDeps:
     # （服务层单测默认）；fake 档经 anchor.call("revoke_auth",…) 留痕供断言；
     # 真链档由 API 层注入 FlightAuthRegistry 路径。返回 {"ok": bool, "detail": str}。
     auth_revoke: Callable[[int], dict] | None = None
+    # ④站门限份额域三关 hooks（None=默认真实现——request_registered 台账/
+    # warrant_on_chain 走 anchor/collab_approved 走 SessionLocal）。测试注入
+    # 本地判定（真模型真查——非网络替身）；API 层默认即真实现。
+    threshold_hooks: dict | None = None
+
+
+def _threshold_hook_request_registered():
+    from app.ra.threshold_hooks import request_registered
+
+    return request_registered
+
+
+def _threshold_hook_collab_approved():
+    from app.ra.threshold_hooks import collab_approved
+
+    return collab_approved
 
 
 def _ra_store_wrap(plaintext: bytes) -> bytes:
-    """RA 域钥 SM4-GCM wrap（A3 通道②——B4）。域钥 KMS 派生，零落盘。"""
-    from app.authz.service import wrap_secret
+    """通道②信封（A3/B4）：④站起=**v5 门限信封**（每信封随机 Kₑ 的 SM4-GCM
+    包 PII + Kₑ 的 SM2-ECIES(根公钥 D)）——解密须三治理角色域 2-of-3 份额
+    合成（单域失陷不可单独解实名）；unwrap 侧版本分派（legacy 旧单钥信封
+    兼容读取）。根钥分割即焚毁（app/ra/threshold_shares）。"""
+    from app.authz.service import threshold_wrap
 
-    return wrap_secret(plaintext)
+    return threshold_wrap(plaintext)
 
 
 def _utcnow() -> dt.datetime:
@@ -631,11 +650,53 @@ class RaService:
         cred = self._load_cred(master_cred_hash_hex)
         if cred.id_store_cipher is None:
             raise RaError("no_store_cipher", "该凭证无通道②密文（B4 前注册）")
-        from app.authz.service import unwrap_secret
+        # ④站门限路径：合成方先登记解锁请求（warrant/cred/C₁ 指纹三元组
+        # →unlock_requests 台账=份额域第①关判定源），三份额域独立三关校验
+        # （台账在案/令状链上在案/双控批文在案）后各出 [dᵢ]C₁ 点份额——
+        # dᵢ 本身不出域，私钥 d 全程不重组。legacy 信封（首字节≠0x05）走
+        # 旧单钥路径（历史数据兼容，信封换代纪律同 v3 cutoff 先例）。
+        import hashlib as _hl
 
+        from app.authz.service import unwrap_any
+        from app.ra.threshold_hooks import register_unlock_request
+
+        blob = bytes(cred.id_store_cipher)
+        request_sha = (
+            _hl.sha256(
+                warrant_hash_hex.encode()
+                + master_cred_hash_hex.encode()
+                + blob[1:3]
+                + blob[3:67]
+            ).hexdigest()
+            if blob[:1] == b""
+            else _hl.sha256(warrant_hash_hex.encode() + master_cred_hash_hex.encode()).hexdigest()
+        )
+        register_unlock_request(
+            request_sha256_hex=request_sha,
+            warrant_hash_hex=warrant_hash_hex,
+            cred_hash_hex=master_cred_hash_hex,
+        )
         try:
-            plain = unwrap_secret(bytes(cred.id_store_cipher))
-        except Exception as e:  # GCM 认证失败归一（SM4GCMError 族）
+            plain = unwrap_any(
+                blob,
+                share_hooks=self._d.threshold_hooks
+                or {
+                    "request_registered": _threshold_hook_request_registered(),
+                    "warrant_on_chain": lambda _wh_hex, _wh=wh: (
+                        self._d.anchor.warrant_on_chain(_wh)
+                    ),
+                    "collab_approved": _threshold_hook_collab_approved(),
+                },
+                unlock_ctx={
+                    "warrant_hash_hex": warrant_hash_hex,
+                    "cred_hash_hex": master_cred_hash_hex,
+                    "request_sha256_hex": request_sha,
+                },
+            )
+        except Exception as e:  # GCM 认证/份额拒绝归一（SM4GCMError+ShareDomainError 族）
+            code = getattr(e, "code", None)
+            if code == "share_denied":
+                raise RaError("share_denied", str(e), 403) from e
             raise RaError("unwrap_failed", f"通道② 解密失败: {e}") from e
         # 信封解析单源（2026-09-28 深检收尾：v3=0x01 前缀+四段含 SN₁；旧式
         # 三段 sn 诚实缺省——含历史信封。分派逻辑此前内联双份，与

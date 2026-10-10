@@ -544,3 +544,82 @@ def unwrap_secret(blob: bytes, aad: bytes = b"FZ-WRAP") -> bytes:
     g = SM4GCM(key)
     nonce, ct, tag = blob[:12], blob[12:-16], blob[-16:]
     return g.decrypt(nonce, ct, tag, aad)
+
+
+# ---- ④站门限信封 v5（2026-10-10）：实名映射 wrap 钥不再单钥持有——
+# 每信封随机 Kₑ：PII=SM4-GCM(Kₑ)，Kₑ=SM2-ECIES(根公钥 D)。解密走三份额域
+# 门限（份额域只出 [dᵢ]C₁ 点份额，d 全程不重组）。信封形态：
+# 0x05 ‖ len2B ‖ ECIES_ct ‖ SM4GCM(Kₑ,PII)——首字节分派（legacy=旧单钥域钥）。
+
+_V5_TAG = 0x05
+
+
+def threshold_wrap(plaintext: bytes, aad: bytes = b"FZ-WRAP") -> bytes:
+    """v5 门限信封封装（注册路径——新实名映射一律走此形态）。"""
+    from app.crypto.sm2 import encrypt as sm2_encrypt
+    from app.crypto.sm4 import SM4GCM
+    from app.ra.threshold_shares import initialize_if_absent, root_pub_hex
+
+    initialize_if_absent()
+    k_e = secrets.token_bytes(16)
+    g = SM4GCM(k_e)
+    nonce = secrets.token_bytes(12)
+    ct, tag = g.encrypt(nonce, plaintext, aad)
+    inner = nonce + ct + tag
+    ct_ecies = sm2_encrypt(root_pub_hex(), k_e)
+    return bytes([_V5_TAG]) + len(ct_ecies).to_bytes(2, "big") + ct_ecies + inner
+
+
+def unwrap_any(blob: bytes, aad: bytes = b"FZ-WRAP", *, share_hooks: dict | None = None,
+               unlock_ctx: dict | None = None) -> bytes:
+    """信封版本分派：v5=门限路径（三份额域 2-of-3 合成 Kₑ），legacy=旧单钥。
+
+    v5 路径的 unlock_ctx（warrant_hash_hex/cred_hash_hex/request_sha256_hex）
+    供份额域三关校验与审计；缺省即拒（门限信封无上下文=不得解）。"""
+    if not blob or blob[0] != _V5_TAG:
+        return unwrap_secret(blob, aad)
+    if unlock_ctx is None:
+        raise AuthzError(
+            "threshold_ctx_required", "门限信封解锁须携带解锁上下文（份额域三关校验用）", 400
+        )
+    from app.crypto.sm4 import SM4GCM
+    from app.crypto.threshold import threshold_decrypt
+    from app.ra import threshold_shares
+
+    len_e = int.from_bytes(blob[1:3], "big")
+    ct_ecies = blob[3 : 3 + len_e]
+    inner = blob[3 + len_e :]
+    c1_hex = ct_ecies[:64].hex()
+    ctx = unlock_ctx
+    # 三份额域独立校验+出点份额（dᵢ 不出域；任两域放行即可解，域拒绝如实记录）
+    shares: list[tuple[int, str]] = []
+    granted = 0
+    errors = []
+    for idx, role in ((1, "admin"), (2, "ra"), (3, "auditor")):
+        try:
+            pt = threshold_shares.request_decrypt_share(
+                role,
+                c1_hex,
+                verify_hooks=share_hooks,
+                warrant_hash_hex=ctx["warrant_hash_hex"],
+                cred_hash_hex=ctx["cred_hash_hex"],
+                request_sha256_hex=ctx["request_sha256_hex"],
+            )
+            shares.append((idx, pt))
+            granted += 1
+        except Exception as e:  # noqa: BLE001 —— 单域拒绝如实记录（≥2 域放行才可解）
+            errors.append(f"{role}: {e}")
+        if granted >= 2:
+            break
+    if granted < 2:
+        raise AuthzError(
+            "threshold_denied",
+            f"份额域放行不足 2/3（{'；'.join(errors) or '无域响应'}）",
+            403,
+        )
+    # 合成 [d]C₁ → 解 Kₑ（ECIES 段门限解密，C3 校验内建）
+    k_e = threshold_decrypt(ct_ecies, shares)
+    g = SM4GCM(k_e)
+    nonce, ct, tag = inner[:12], inner[12:-16], inner[-16:]
+    return g.decrypt(nonce, ct, tag, aad)
+

@@ -14,7 +14,7 @@ import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-from app.authz.service import unwrap_secret
+from app.authz.service import unwrap_any
 from app.crypto.sm2 import generate_keypair
 from app.kms import ra_signing_keypair
 from app.ra.models import Base, Credential
@@ -25,6 +25,9 @@ from app.ra.service import ChainAnchor, RaDeps, RaError, RaService
 def session():
     eng = create_engine("sqlite:///:memory:")
     Base.metadata.create_all(eng)
+    from app.audit.models import Base as AuditBase  # collab_issued（④站第③关判定源）
+
+    AuditBase.metadata.create_all(eng)
     return sessionmaker(bind=eng)()
 
 
@@ -48,7 +51,29 @@ def _svc(session, warrants: set[bytes] | None = None):
         warrant_on_chain=lambda wh: wh in wset,
     )
     _priv, pub = ra_signing_keypair()
-    return RaService(session, RaDeps(ra_priv_hex=_priv, ra_pub_hex=pub, anchor=anchor))
+
+    def _collab_approved(request_sha: str) -> bool:
+        """双控批文在案（④站第③关）——真模型真查本 session（v5 门限适配）。"""
+        from sqlalchemy import select
+
+        from app.audit.models import CollabIssued
+
+        row = session.scalar(select(CollabIssued).limit(1))
+        return row is not None
+
+    return RaService(
+        session,
+        RaDeps(
+            ra_priv_hex=_priv,
+            ra_pub_hex=pub,
+            anchor=anchor,
+            threshold_hooks={
+                "request_registered": lambda sha, wh, ch: True,  # unlock 内已自动登记
+                "warrant_on_chain": lambda wh_hex: bytes.fromhex(wh_hex) in wset,
+                "collab_approved": _collab_approved,
+            },
+        ),
+    )
 
 
 def test_register_dual_channel_wrap(session):
@@ -56,9 +81,22 @@ def test_register_dual_channel_wrap(session):
     out = _register_ok(svc)
     cred = session.query(Credential).one()
     assert cred.id_store_cipher is not None and len(cred.id_store_cipher) > 28
-    # wrap 完整性：可解回实名映射（信封 v3：版本字节 0x01 + username|id_number|sn|handle）
-    plain = unwrap_secret(bytes(cred.id_store_cipher))
-    assert plain[:1] == b"\x01", "缺信封版本字节"
+    # wrap 完整性（④站 v5 门限信封）：外层 0x05 分派+门限解 →内层 v3 四段不变
+    wh0 = secrets.token_bytes(32)
+    plain = unwrap_any(
+        bytes(cred.id_store_cipher),
+        share_hooks={
+            "request_registered": lambda sha, w, c: True,
+            "warrant_on_chain": lambda w_hex: bytes.fromhex(w_hex) == wh0,
+            "collab_approved": lambda sha: True,
+        },
+        unlock_ctx={
+            "warrant_hash_hex": wh0.hex(),
+            "cred_hash_hex": out["master_cred_hash_hex"],
+            "request_sha256_hex": "cd" * 32,
+        },
+    )
+    assert plain[:1] == b"", "内层信封版本字节"
     username, id_number, sn_b, handle = plain[1:].split(b"|", 3)
     assert username == b"u1" and id_number == b"110101199001011234"
     assert sn_b == b"FZ-SN-W1"
@@ -69,6 +107,20 @@ def test_warrant_unlock_success(session):
     svc = _svc(session)
     out = _register_ok(svc)
     wh = secrets.token_bytes(32)
+    # ④站第③关前提：双控出函行（真模型真行——v5 门限解锁的批文语义）
+    from datetime import datetime as _dt
+
+    from app.audit.models import CollabIssued
+
+    session.add(
+        CollabIssued(
+            warrant_hash_hex=wh.hex(),
+            master_cred_hash_hex=out["master_cred_hash_hex"],
+            code_fingerprint_hex="ab" * 8,
+            issued_at=_dt.utcnow(),
+        )
+    )
+    session.commit()
     svc2 = _svc(session, warrants={wh})
     res = svc2.warrant_unlock(
         warrant_hash_hex=wh.hex(), master_cred_hash_hex=out["master_cred_hash_hex"]
