@@ -639,7 +639,7 @@ def s2_challenge_ratelimit(opts):
     b_act = metrics()
     for i in range(1, 8):
         st, r, ms, _ = post("/auth/activate", act_body, timeout=15)
-        curve_act.append({"n": i, "status": st, "code": (r or {}).get("code")})
+        curve_act.append({"n": i, "status": st, "code": (r or {}).get("code"), "ms": round(ms, 1)})
         if st == 429 and hit_act is None:
             hit_act = i
             break

@@ -58,12 +58,16 @@ class Account(Base):
     init_kdf_salt_hex: Mapped[str | None] = mapped_column(String(32), nullable=True)
     # 待激活时效打点（2026-10-11 激活面收紧批②）：进入 pending_activation 的
     # 时刻（种子/重置即打点）——超 PENDING_ACTIVATION_TTL_HOURS 激活拒绝。
-    # 迁移 0026 对存量行 server_default=CURRENT_TIMESTAMP（从迁移时刻起算——
-    # 从严）；NULL=不拒（防御性：正常路径恒有值）。
+    # 迁移 0026 对存量行以 UPDATE 回填 CURRENT_TIMESTAMP（从迁移时刻起算——
+    # 从严；SQLite 拒绝 ALTER ADD COLUMN 携带非常量 DEFAULT，故不用
+    # server_default，见迁移 b8c9d0e1 docstring）；NULL=不拒（防御性：正常
+    # 路径恒有值）。
     pending_since_ts: Mapped[dt.datetime | None] = mapped_column(DateTime, nullable=True)
     # 一次性激活码哈希（2026-10-11 批③双因子）：SM3(码)——明码只经种子脚本
-    # stdout/独立交付件出（与口令文件分离=双通道），激活成功即焚。NULL=未出码
-    # （demo 档双因子关，恒 NULL；production 档 required 下 NULL=拒绝并指引重置）。
+    # 独立交付件出（seed_accounts 双文件落盘：码行只进 fz_activation_codes.txt，
+    # 永不进口令文件——单文件泄露不足以抢注的双通道保证），激活成功即焚。
+    # NULL=未出码（demo 档双因子关，恒 NULL；production 档 required 下
+    # NULL=拒绝并指引重置）。
     activation_code_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
     # 机构域键（⑥站多机构一期）：账户归属机构域（org-a=缺省机构域；org-b=第二
     # 机构 demo 种子）——管理/公示面归属标注；受理门控与电路零变化（一期=链面

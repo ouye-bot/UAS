@@ -60,8 +60,11 @@ def main() -> int:
     out_lines: list[str] = []
     code_lines: list[str] = []
 
-    def _maybe_issue_code(session, username: str, role_name: str, lines: list[str]) -> None:
-        """双因子档位开启时为待激活账户出一次性码（demo 档缺省关=零出码）。"""
+    def _maybe_issue_code(session, username: str, role_name: str) -> None:
+        """双因子档位开启时为待激活账户出一次性码（demo 档缺省关=零出码）。
+        双通道纪律（审查批 2026-10-11 钉死）：码行只进 code_lines（独立交付
+        件 fz_activation_codes.txt）——严禁并入 out_lines/口令文件，单文件
+        泄露不足以抢注钥对的双因子声明由此行保证。"""
         if not activation_code_required():
             return
         row = session.query(Account).filter(Account.username == username).one_or_none()
@@ -69,8 +72,7 @@ def main() -> int:
             return
         code = issue_activation_code(session, row)
         session.commit()
-        lines.append(f"{username}（{role_name}）：激活码 {code}")
-        code_lines.append(f"{username}：{code}")
+        code_lines.append(f"{username}（{role_name}）：{code}")
 
     s = SessionLocal()
     try:
@@ -101,12 +103,12 @@ def main() -> int:
                 pw = _pw_of(env_key, pw_flag)
                 reset_institutional_account(s, username, pw)
                 out_lines.append(f"{username}（{role}）：已重置——新密码 {pw}（下次登录重新激活）")
-                _maybe_issue_code(s, username, role, out_lines)
+                _maybe_issue_code(s, username, role)
                 continue
             pw = _pw_of(env_key, pw_flag)
             seed_institutional_account(s, username, role, pw, org_id=org_id)
             out_lines.append(f"{username}（{role}）：初始密码 {pw}")
-            _maybe_issue_code(s, username, role, out_lines)
+            _maybe_issue_code(s, username, role)
     finally:
         s.close()
 

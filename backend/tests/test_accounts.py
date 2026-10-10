@@ -377,6 +377,73 @@ def _try_activate(
     return c.post("/auth/activate", json=body)
 
 
+def test_seed_code_channel_separation(tmp_path, monkeypatch):
+    """审查批钉死（2026-10-11）：production 档种子跑完后，激活码行只进独立
+    交付件 fz_activation_codes.txt，口令文件 fz_accounts_seed.txt 内**零码行**
+    （单文件泄露不足以抢注钥对的双因子声明由此测试钉死——d620379 曾把码行
+    漏进口令文件，实弹审查抓出）。子进程跑种子脚本：TEMP/FZ_DB_URL 全部重
+    定向 tmp_path——零宿主态残留。"""
+    import os
+    import sqlite3
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    backend = Path(__file__).resolve().parent.parent
+    db_path = tmp_path / "seed_channel.db"
+    env = {
+        **os.environ,
+        "FZ_ACTIVATION_CODE_REQUIRED": "1",  # 强制双因子档（出码路径触发）
+        "FZ_DB_URL": f"sqlite:///{db_path}",
+        "FZ_CHAIN_ANCHOR": "fake",
+        "TEMP": str(tmp_path),
+        "TMP": str(tmp_path),
+    }
+    env.pop("FZ_SEED_AUDITOR_PASSWORD", None)
+    env.pop("FZ_SEED_ADMIN_PASSWORD", None)
+    # 建表（脚本 _ensure_tables 同构——先建好再跑，隔离 alembic 依赖）
+    from sqlalchemy import create_engine
+
+    from app.ra.models import Base
+
+    eng = create_engine(f"sqlite:///{db_path}")
+    Base.metadata.create_all(eng)
+    eng.dispose()
+    r = subprocess.run(
+        [
+            sys.executable,
+            str(backend / "scripts" / "seed_accounts.py"),
+            "--no-org-b",
+            "--auditor-pw",
+            "Auditor-Pw-1",
+            "--admin-pw",
+            "Admin-Pw-1",
+        ],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=120,
+        cwd=str(backend),
+    )
+    assert r.returncode == 0, r.stdout + r.stderr
+    seed_file = tmp_path / "fz_accounts_seed.txt"
+    code_file = tmp_path / "fz_activation_codes.txt"
+    assert seed_file.is_file()
+    seed_text = seed_file.read_text(encoding="utf-8")
+    assert "初始密码" in seed_text  # 口令文件本职在案
+    assert "激活码" not in seed_text  # ★ 双通道：口令文件零码行
+    assert code_file.is_file(), "出码档须落独立交付件"
+    code_text = code_file.read_text(encoding="utf-8")
+    assert code_text.count("：") >= 2  # 两账户（auditor/admin）各一行码
+    # 码文件与口令文件互斥含对方敏感面：码文件无口令、口令文件无码
+    assert "Auditor-Pw-1" not in code_text and "Admin-Pw-1" not in code_text
+    # 库内核对子/码哈希在案（种子真落库——FZ_DB_URL 重定向生效）
+    con = sqlite3.connect(db_path)
+    n = con.execute("SELECT COUNT(*) FROM accounts WHERE status='pending_activation'").fetchone()[0]
+    con.close()
+    assert n == 2
+
+
 def _admin_log_count(sess, username: str, action: str = "activate_failed") -> int:
     from app.accounts.models import AccountAdminLog
 
