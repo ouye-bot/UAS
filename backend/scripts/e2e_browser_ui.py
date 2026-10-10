@@ -45,6 +45,10 @@ WEB_URL = f"http://localhost:{WEB_PORT}/"
 
 _checks = 0
 _page_ref = {"page": None}  # 失败现场转储用（main 的 except 消费）
+# 第 0 批 0.3 增补夹具通道（插入式）：临时库路径（Gap2 org 域翻转消费）+
+# admin-fix 钥对（Gap1 吊销数据制备——一次性夹具钥，非生产秘密）
+_db_path: dict = {"path": None}
+_admin_fix: dict = {"sk": None, "pk": None}
 
 
 def ok(label: str) -> None:
@@ -81,6 +85,7 @@ def _boot_fixtures(tmp: Path) -> list[subprocess.Popen]:
     import tempfile
 
     db = Path(tempfile.mkdtemp(prefix="fz_browser_e2e_")) / "e2e.db"
+    _db_path["path"] = str(db)
     cases = tmp / "cases"
     cases.mkdir(parents=True, exist_ok=True)
 
@@ -106,6 +111,33 @@ def _boot_fixtures(tmp: Path) -> list[subprocess.Popen]:
     )
     if pre.returncode != 0:
         print("[FAIL] 临时库建表失败", pre.stderr[-300:])
+        raise SystemExit(1)
+
+    # 第 0 批 0.3 增补种子（追加式子进程——既有种子语句零触碰）：
+    # admin-fix=已激活形态夹具管理员（钥对由主进程生成经 _admin_fix 传入——
+    # Gap1 吊销数据制备走真实 /ra/revoke 签名仪式）；
+    # admin-b=org-b 域种子（Gap2 跨域浏览器级——e2e_cross_org org-b 种子语义
+    # 的夹具版，首登激活态，密码=夹具值非生产秘密）。
+    adm_b_pw = os.environ.get("FZ_SEED_ADMIN_B_PASSWORD", "AdminB-E2E-1")
+    pre2 = subprocess.run(
+        [PY, "-c",
+         "import sys; sys.path.insert(0, r'%s'); "
+         "from sqlalchemy import create_engine; "
+         "from sqlalchemy.orm import sessionmaker; "
+         "import app.accounts.models; "
+         "from app.ra.models import Base; "
+         "eng = create_engine(r'sqlite:///%s'); "
+         "Base.metadata.create_all(eng); "
+         "s = sessionmaker(bind=eng)(); "
+         "from app.accounts.models import Account; "
+         "s.add(Account(username='admin-fix', role='admin', status='active', pubkey_hex=r'%s')); "
+         "from app.accounts.service import seed_institutional_account; "
+         "seed_institutional_account(s, 'admin-b', 'admin', %r, org_id='org-b'); "
+         "s.close()" % (BACKEND, db, _admin_fix["pk"], adm_b_pw)],
+        capture_output=True, text=True, timeout=60,
+    )
+    if pre2.returncode != 0:
+        print("[FAIL] 0.3 增补种子失败", pre2.stderr[-300:])
         raise SystemExit(1)
 
     procs: list[subprocess.Popen] = []
@@ -172,6 +204,7 @@ def run_tests(tmp: Path) -> None:
     page_errors: list[str] = []
     aud_pw = os.environ.get("FZ_SEED_AUDITOR_PASSWORD", "Audit-E2E-1")
     adm_pw = os.environ.get("FZ_SEED_ADMIN_PASSWORD", "Admin-E2E-1")
+    adm_b_pw = os.environ.get("FZ_SEED_ADMIN_B_PASSWORD", "AdminB-E2E-1")
     pilot_user = "e2e-pilot-" + secrets.token_hex(3)
     pilot_pw = "e2epass1"
 
@@ -227,6 +260,15 @@ def run_tests(tmp: Path) -> None:
         page.wait_for_url("**/#/record")
         page.wait_for_selector("text=登记编号", timeout=15000)
         ok("⓪.4c 进入飞手工作台（我的记录渲染）")
+
+        # ---- 0.3 Gap1 数据锚（插入式——既有断言零触碰）：凭证句柄捕获+无事件
+        # 空缺省状态捕获。刚登记用户：无吊销/无违规/无子凭证 ⟹ /ra/pilot/notices
+        # 三段全空 ⟹ PilotNotices v-if 不渲染；拉取在途（notices=null）同样不渲染
+        # ——count==0 在两态恒定，断言无竞态。----
+        pilot_handle = page.evaluate(
+            "() => JSON.parse(localStorage.fzCred).master_cred_hash_hex")
+        gap1_empty = (page.locator(".fz-notices").count() == 0
+                      and page.locator("[data-test^='notice-']").count() == 0)
 
         # ---- ⓪.5 飞手导航隔离（不见审计台/机构台入口） ----
         expect(page.locator("nav button:has-text('审计台')").count() == 0
@@ -332,6 +374,49 @@ def run_tests(tmp: Path) -> None:
         rc_pilot = page.request.get(f"{API_LOCAL}/audit/warrants").status
         expect(rc_pilot == 403, "⑦.2 飞手会话打审计面 → 403（角色门实弹）", f"rc={rc_pilot}")
 
+        # ---- ⑦.3 提醒条真实栈实弹（0.3 Gap1 增补——插入式）：org-a 夹具管理
+        # 员经真实 /auth/challenge-login + /ra/revoke 签名仪式吊销飞手凭证
+        # （同域操作——0.1 org 域门放行路径），重载 #/record 后：吊销红条
+        # （理由回显）+到期黄条（①.2 子凭证未消费——24h TTL 落 7 天提醒窗）
+        # 渲染可见；与 ⓪.4c 捕获的空缺省合成一双态合取断言（任一态破即红）。
+        # 数据=真实后端状态，零前端 mock。----
+        import requests as _rq
+
+        from app.crypto.sm2 import sign as _sm2_sign
+        from app.ra.service import revoke_msg as _revoke_msg
+
+        _sess = _rq.Session()
+        _sess.trust_env = False  # 与 _get 同纪律——环回直连不落系统代理
+        _ch = _sess.post(f"{API_LOCAL}/auth/challenge/admin-fix",
+                         timeout=10).json()["data"]["nonce_hex"]
+        _lr = _sess.post(
+            f"{API_LOCAL}/auth/login",
+            json={"username": "admin-fix", "nonce_hex": _ch,
+                  "sig_hex": _sm2_sign(_admin_fix["sk"], f"FZ-AUTH-LOGIN|{_ch}".encode())},
+            timeout=10)
+        assert _lr.status_code == 200, f"夹具管理员登录失败: {_lr.text[:150]}"
+        _ep = _sess.get(f"{API_LOCAL}/ra/revocation/snapshot",
+                        timeout=10).json()["data"]["epoch"] + 1
+        _reason = "浏览器级提醒条实弹吊销"
+        _rr = _sess.post(
+            f"{API_LOCAL}/ra/revoke",
+            json={"master_cred_hash_hex": pilot_handle, "reason": _reason,
+                  "sig_hex": _sm2_sign(_admin_fix["sk"],
+                                       _revoke_msg([pilot_handle], _reason, _ep).encode()),
+                  "epoch": _ep},
+            timeout=15)
+        assert _rr.status_code == 200, f"夹具吊销失败: {_rr.text[:200]}"
+        page.goto(WEB_URL + "#/record")  # ⑥ 段后页在 #/chain——显式回首页
+        page.reload()  # 全量重载=RecordView 重挂载+notices 重拉（吊销后真实状态）
+        page.wait_for_selector("[data-test='notice-revoked']", timeout=15000)
+        _rev_txt = page.locator("[data-test='notice-revoked']").first.inner_text()
+        gap1_visible = ("您的凭证已被吊销" in _rev_txt
+                        and _reason in _rev_txt
+                        and page.locator("[data-test='notice-expiring']").count() >= 1)
+        expect(gap1_empty and gap1_visible,
+               "⑦.3 提醒条双态（无事件诚实空缺省不渲染+吊销红条/到期黄条真实栈渲染可见）",
+               f"empty={gap1_empty} visible={gap1_visible}")
+
         # ---- ⑧ 审计台 Vue（审计员首登激活→工作台） ----
         actx = browser.new_context()
         actx.add_init_script(
@@ -384,6 +469,109 @@ def run_tests(tmp: Path) -> None:
             not in ("", "—", "读取中"),
                "⑨.2 治理大屏 k-of-n KPI 活数据（/chain/governance 回读填充）")
         mctx.close()
+
+        # ---- ⑩ 跨域浏览器级（0.3 Gap2 增补——插入式）：org-b 种子语义的
+        # 浏览器动线。UI 无 org 选择面（web 源码零 org_id surface）：域归属由
+        # 夹具库建立——admin-b=org-b 种子首登；pilot2 浏览器注册后 users.org_id
+        # 翻转为 org-b（e2e_cross_org [X2] 的夹具手段），随后受理面动线子凭证
+        # 签发成功=「受理面认 B 域用户」（[X3] 的浏览器级对应面）。两态合成一
+        # 合取断言（任一面破即红）。----
+        pilot2_user = "e2e-orgb-" + secrets.token_hex(3)
+        octx = browser.new_context()
+        octx.add_init_script(
+            f"localStorage.setItem('fzApiBase','{API}');"
+            f"localStorage.setItem('fzBridgeBase','{BRIDGE}');"
+        )
+        opage = octx.new_page()
+        opage.on("pageerror", lambda e: page_errors.append(f"[orgb-pilot] {e}"[:200]))
+        opage.set_default_timeout(20000)
+        opage.goto(WEB_URL + "#/login")
+        opage.wait_for_load_state("networkidle")
+        opage.click("button.tab:has-text('飞手注册')")
+        opage.fill("input:not([type='password']) >> nth=0", pilot2_user)
+        opw = opage.locator("input[type='password']:visible")
+        opw.first.fill("e2epass2")
+        opw.nth(1).fill("e2epass2")
+        opage.click("button:has-text('生成密钥并建账户')")
+        opage.wait_for_selector("text=补全实名与无人机资料", timeout=30000)
+        opage.click("button:has-text('填入示例数据')")
+        # 证件号覆盖为随机新值——示例号固定（LoginView fillSample），pilot1 已被
+        # ⑦.3 吊销 ⟹ 其证件号入 B7 黑名单，复用必 409 id_revoked_before
+        opage.fill("input[maxlength='18']",
+                   "11010119920303" + "".join(secrets.choice("0123456789") for _ in range(4)))
+        opage.click("button:has-text('提交资料并签发上链')")
+        opage.wait_for_selector("text=进入飞证工作台", timeout=60000)
+        opage.click("button:has-text('进入飞证工作台')")
+        opage.wait_for_url("**/#/record", timeout=30000)
+        opage.wait_for_selector("text=登记编号", timeout=15000)
+        # 域归属翻转第一拍（夹具库直改 users.org_id=org-b；账户仍 org-a=域错配态）
+        _flip = subprocess.run(
+            [PY, "-c",
+             "import sys; sys.path.insert(0, r'%s'); "
+             "from sqlalchemy import create_engine; "
+             "from sqlalchemy.orm import sessionmaker; "
+             "from app.ra.models import User; "
+             "eng = create_engine(r'sqlite:///%s'); "
+             "s = sessionmaker(bind=eng)(); "
+             "u = s.query(User).filter_by(username='%s').one(); "
+             "u.org_id = 'org-b'; s.commit(); print(u.org_id)" % (
+                 BACKEND, _db_path["path"], pilot2_user)],
+            capture_output=True, text=True, timeout=60)
+        assert _flip.returncode == 0 and _flip.stdout.strip() == "org-b", \
+            f"org 域翻转失败: {_flip.stderr[-200:]}"
+        # ① 域错配态会话内签发 → 0.1 org 域门 403 org_forbidden 浏览器级呈现
+        # （判词=目标凭证归属域/操作者域双域——跨域拒绝的人话呈现实弹）
+        opage.click("button:has-text('签发一次性子凭证')")
+        opage.wait_for_selector("text=跨域操作拒绝", timeout=15000)
+        deny_seen = True
+        # ② 域对齐（accounts.org_id=org-b——账户与凭证同域的多机构正确语义）
+        _flip2 = subprocess.run(
+            [PY, "-c",
+             "import sys; sys.path.insert(0, r'%s'); "
+             "from sqlalchemy import create_engine; "
+             "from sqlalchemy.orm import sessionmaker; "
+             "from app.accounts.models import Account; "
+             "eng = create_engine(r'sqlite:///%s'); "
+             "s = sessionmaker(bind=eng)(); "
+             "a = s.query(Account).filter_by(username='%s').one(); "
+             "a.org_id = 'org-b'; s.commit(); print(a.org_id)" % (
+                 BACKEND, _db_path["path"], pilot2_user)],
+            capture_output=True, text=True, timeout=60)
+        assert _flip2.returncode == 0 and _flip2.stdout.strip() == "org-b", \
+            f"账户域对齐失败: {_flip2.stderr[-200:]}"
+        # ③ 域对齐后受理动线：会话内签发成功（受理面认 B 域用户——[X3] 对应面）
+        opage.click("button:has-text('签发一次性子凭证')")
+        try:
+            opage.wait_for_selector("text=一次性凭证身份", timeout=20000)
+        except Exception:
+            print("\n[FAIL-CTX orgb] url=", opage.url)
+            print("[FAIL-CTX orgb] body tail:\n", opage.locator("body").inner_text()[-1200:])
+            raise
+        org_b_issued = True
+        octx.close()
+        # org-b 机构账户浏览器首登激活（prelogin activation 分支——⑧⑨ 同工艺）→机构台
+        b2ctx = browser.new_context()
+        b2ctx.add_init_script(
+            f"localStorage.setItem('fzApiBase','{API}');"
+            f"localStorage.setItem('fzBridgeBase','{BRIDGE}');"
+        )
+        bpage = b2ctx.new_page()
+        bpage.on("pageerror", lambda e: page_errors.append(f"[orgb-admin] {e}"[:200]))
+        bpage.set_default_timeout(20000)
+        bpage.goto(WEB_URL + "#/login")
+        bpage.wait_for_load_state("networkidle")
+        bpage.click("button.tab:has-text('登录')")
+        bpage.fill("label:has-text('用户名') + input", "admin-b")
+        bpage.locator("label:has-text('密码') + input").fill(adm_b_pw)
+        bpage.click("button.btn:has-text('登录')")
+        bpage.wait_for_url("**/#/admin", timeout=60000)
+        bpage.wait_for_selector("text=待批协作请求", timeout=20000)
+        b2_rendered = True
+        b2ctx.close()
+        expect(deny_seen and org_b_issued and b2_rendered,
+               "⑩.1 跨域浏览器级（org-b 机构账户首登→机构台渲染；域错配签发 403 org_forbidden"
+               "浏览器呈现+域对齐后受理动线成功——e2e_cross_org [X2/X3] 对应面）",
+               f"deny={deny_seen} issued={org_b_issued} admin_b={b2_rendered}")
 
         # ---- 服务状态点（App 壳） ----
         dots = page.locator(".dot, .status-dot, [class*='dot']")
@@ -476,6 +664,12 @@ def main() -> int:
                 return 1
     tmp = Path(tempfile.mkdtemp(prefix="fz_browser_e2e_"))
     procs: list[subprocess.Popen] = []
+    # 0.3 增补：admin-fix 夹具钥对（Gap1 吊销签名仪式——主进程持 sk，
+    # pk 经 _admin_fix 进种子子进程建已激活形态账户行）
+    sys.path.insert(0, str(BACKEND))
+    from app.crypto.sm2 import generate_keypair as _gk
+
+    _admin_fix["sk"], _admin_fix["pk"] = _gk()
     t0 = time.time()
     try:
         procs = _boot_fixtures(tmp)
