@@ -22,6 +22,10 @@ class Principal:
     role: str
     status: str
     cred_hash_hex: str | None
+    # 机构域键（⑥站多机构；2026-10-10 org 隔离硬化起为授权校验消费面：
+    # ra 服务层「目标凭证归属域==操作者账户 org_id」跨域 403 fail-closed）。
+    # accounts.org_id NOT NULL server_default=org-a——会话主体恒有归属域。
+    org_id: str = "org-a"
 
 
 def principal_from(request: Request, session: Session) -> Principal | None:
@@ -35,7 +39,11 @@ def principal_from(request: Request, session: Session) -> Principal | None:
         return None
     _, acc = found
     return Principal(
-        username=acc.username, role=acc.role, status=acc.status, cred_hash_hex=acc.cred_hash_hex
+        username=acc.username,
+        role=acc.role,
+        status=acc.status,
+        cred_hash_hex=acc.cred_hash_hex,
+        org_id=acc.org_id or "org-a",
     )
 
 

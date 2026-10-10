@@ -19,13 +19,13 @@ import os
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.accounts.deps import require_role
+from app.accounts.deps import principal_from, require_role
 from app.chain.client import ChainError
 from app.db import get_session
 from app.ra.models import Revocation
@@ -371,6 +371,8 @@ _ERR_STATUS = {
     "cred_revoked": 403,
     "revoked": 403,
     "holder_revoked": 403,
+    # ⑦复评 §5.3 org 域隔离：跨域操作 fail-closed（判词带双域便于审计）
+    "org_forbidden": 403,
     "cred_expired": 409,
     "quota_exceeded": 429,
     "not_found": 404,
@@ -425,9 +427,23 @@ def register(body: RegisterIn, session: Session = Depends(get_session)):
 
 
 @router.post("/sub-credentials")
-def sub_credentials(body: SubCredIn, session: Session = Depends(get_session)):
+def sub_credentials(
+    body: SubCredIn,
+    request: Request,
+    session: Session = Depends(get_session),
+):
+    """子凭证签发。⑦复评 §5.3 org 隔离：已登录操作者（机构管理员席）签发须
+    同域（目标凭证归属域==操作者账户 org_id——跨域 403 org_forbidden）；
+    匿名原像路径（未登录——飞手自持原像知识认证 B2-d4，用户侧流程语义）无
+    操作者账户可比，不设门。"""
     try:
-        return _ok(_svc(session).issue_sub_credential(**body.model_dump()))
+        p = principal_from(request, session)
+        return _ok(
+            _svc(session).issue_sub_credential(
+                **body.model_dump(),
+                operator_org_id=p.org_id if p is not None else None,
+            )
+        )
     except RaError as exc:
         return _deny(exc)
 
@@ -486,7 +502,8 @@ def revoke(
     session: Session = Depends(get_session),
     p=Depends(require_role("admin")),
 ):
-    """按凭证吊销（B1 升格）：admin 会话+理由≥4 字+SM2 签名+纪元绑定。"""
+    """按凭证吊销（B1 升格）：admin 会话+理由≥4 字+SM2 签名+纪元绑定。
+    ⑦复评 §5.3：服务层 org 归属校验（目标凭证归属域==操作者账户 org_id）。"""
     try:
         return _ok(
             _svc(session).revoke(
@@ -496,6 +513,7 @@ def revoke(
                 epoch=body.epoch,
                 admin_username=p.username,
                 admin_pub_hex=_admin_pub(session, p.username),
+                operator_org_id=p.org_id,
             )
         )
     except RaError as exc:
@@ -522,6 +540,7 @@ def revoke_by_username(
                 epoch=body.epoch,
                 admin_username=p.username,
                 admin_pub_hex=_admin_pub(session, p.username),
+                operator_org_id=p.org_id,
             )
         )
     except RaError as exc:
@@ -544,6 +563,7 @@ def restore_request(
                 reason=body.reason,
                 admin_username=p.username,
                 admin_sig_hex=body.sig_hex,
+                operator_org_id=p.org_id,
             )
         )
     except RaError as exc:
@@ -566,6 +586,7 @@ def restore_countersign(
                 request_id=request_id,
                 auditor_username=p.username,
                 countersign_sig_hex=body.sig_hex,
+                operator_org_id=p.org_id,
             )
         )
     except RaError as exc:
@@ -586,14 +607,17 @@ def restore_requests(
 def revoke_by_username_preview(
     username: str,
     session: Session = Depends(get_session),
-    _p=Depends(require_role("admin")),
+    p=Depends(require_role("admin")),
 ):
     """按人吊销·两步式第一拍（只读预览，B1 升格配套）：FZ-REVOKE 签名消息须
     覆盖该用户全部有效凭证句柄串——前端无法预知句柄集，先经本端点取句柄与
     目标纪元（公示纪元+1），本地拼消息签名后再调 POST /ra/revoke/by-username。
-    只读不落库；用户不存在 404/无有效凭证 409（与正式端点同判）。"""
+    只读不落库；用户不存在 404/无有效凭证 409（与正式端点同判）。
+    ⑦复评 §5.3：预览=by-username 操作自身第一拍，同受服务层 org 归属门。"""
     try:
-        return _ok(_svc(session).revoke_preview_by_username(username=username))
+        return _ok(
+            _svc(session).revoke_preview_by_username(username=username, operator_org_id=p.org_id)
+        )
     except RaError as exc:
         return _deny(exc)
 

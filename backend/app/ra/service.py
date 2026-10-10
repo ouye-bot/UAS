@@ -304,10 +304,15 @@ class RaService:
         cert_level: int,
         sn: str,
         holder_pub_hex: str,
+        operator_org_id: str | None = None,
     ) -> dict:
         if not sn or "|" in sn:
             raise RaError("bad_input", "sn 含非法字符（竖线）或为空")
         cred = self._load_cred(master_cred_hash_hex)
+        # ⑦复评 §5.3：已登录操作者（机构管理员席）签发须同域——域门在原像
+        # 验证之前（跨域操作者不获原像试探回显）；匿名原像路径（None）=
+        # 飞手自持原像知识认证的用户侧流程语义，不设门（B2-d4 既有设计）。
+        self._org_guard(self._creds_org([cred]), operator_org_id, "子凭证签发")
         # 原像知识认证：重算 C 须逐字节命中库内承诺
         try:
             c = commitment_c(
@@ -420,6 +425,25 @@ class RaService:
                 return u.org_id
         return DEFAULT_ORG
 
+    def _org_guard(self, target_org: str, operator_org_id: str | None, object_noun: str) -> None:
+        """org 域归属校验（2026-10-10 ⑦复评 §1.2 第一层缺口对症修法+§5.3 立即
+        执行项）：目标凭证归属域==操作者账户 org_id，跨域 403 org_forbidden
+        fail-closed；判词带双域信息（目标凭证归属域/操作者域）便于审计。
+
+        operator_org_id=None=无操作者域上下文——按现行行为放行。形态仅存在于
+        ①服务层直调（既有测试调用点，无会话主体可比）；②匿名原像路径
+        （issue_sub_credential 飞手自持原像知识认证——B2-d4 既有设计）。HTTP
+        授权边界（路由层）自会话主体恒传非 None（accounts.org_id NOT NULL
+        server_default=org-a），校验在 API 面恒生效——详见提交信息决策②。"""
+        if operator_org_id is None or operator_org_id == target_org:
+            return
+        raise RaError(
+            "org_forbidden",
+            f"跨域操作拒绝：目标凭证归属域={target_org}，操作者域={operator_org_id}"
+            f"——机构账户仅可操作本机构域{object_noun}",
+            403,
+        )
+
     def _link_authz_axis(self, creds: list[Credential]) -> tuple[list[int], list[dict]]:
         """B4 吊销联动授权轴：解析该（些）凭证名下全部在案且未过期未撤销的
         authId（沿 scope.py 四环解析反向：Credential→SubCredential→Application
@@ -484,10 +508,14 @@ class RaService:
         admin_pub_hex: str,
         admin_sig_hex: str,
         epoch: int,
+        operator_org_id: str | None = None,
     ) -> dict:
         """按凭证吊销（B1 升格）：理由必填≥4 字+admin SM2 签名（FZ-REVOKE|v1
-        域，绑定句柄集与新纪元）+动作入 append-only 台账+证件号黑名单（B7）。"""
+        域，绑定句柄集与新纪元）+动作入 append-only 台账+证件号黑名单（B7）。
+        ⑦复评 §5.3：org 归属校验——目标凭证归属域==操作者账户 org_id（跨域
+        403 fail-closed），域门先于状态检查与签名仪式（越权探测面收窄）。"""
         cred = self._load_cred(master_cred_hash_hex)
+        self._org_guard(self._creds_org([cred]), operator_org_id, "凭证")
         if cred.status == 2:
             raise RaError("bad_input", "已吊销")
         r = reason.strip()
@@ -502,16 +530,20 @@ class RaService:
         )
         return self._revoke_credentials([cred], r, admin_username, admin_sig_hex)
 
-    def revoke_preview_by_username(self, *, username: str) -> dict:
+    def revoke_preview_by_username(
+        self, *, username: str, operator_org_id: str | None = None
+    ) -> dict:
         """按人吊销·两步式第一拍（只读）：FZ-REVOKE 签名消息须覆盖该用户全部
         有效凭证句柄串（revoke_msg），而前端无法预知句柄集——本预览只读返回
         句柄（字典序，与 revoke_msg 排序口径一致）+目标纪元（=当前纪元+1，
         与 _verify_admin_sig 的 expected_epoch 同源）。不落库不推链；负例同
         revoke_by_username（用户不存在 404/无有效凭证 bad_input，与正式端点
-        同判同码）。"""
+        同判同码）。⑦复评 §5.3：预览=by-username 操作自身第一拍，同受 org
+        归属门（跨域句柄集枚举=信息泄露面，一并无域放行）。"""
         user = self._s.scalar(select(User).where(User.username == username))
         if user is None:
             raise RaError("not_found", "用户不存在", 404)
+        self._org_guard(user.org_id or DEFAULT_ORG, operator_org_id, "用户凭证")
         creds = self._s.scalars(
             select(Credential).where(Credential.user_id == user.id, Credential.status == 1)
         ).all()
@@ -532,14 +564,17 @@ class RaService:
         admin_pub_hex: str,
         admin_sig_hex: str,
         epoch: int,
+        operator_org_id: str | None = None,
     ) -> dict:
         """按人级联吊销（R4 第二批 B-P2-5；B1 升格同 revoke）：该用户全部有效
         凭证一次撤销——单凭证吊销的逃逸面对侧（重新登记即获新有效凭证）。同纪元
         同根一次推链；每凭证独立 setStatus。撤销语义在「人-凭证-钥匙」三层对齐：
-        按人（本入口）/按凭证（revoke）/按钥匙（传播并入+签发面预检）。"""
+        按人（本入口）/按凭证（revoke）/按钥匙（传播并入+签发面预检）。
+        ⑦复评 §5.3：org 归属校验同 revoke（目标域=用户归属域）。"""
         user = self._s.scalar(select(User).where(User.username == username))
         if user is None:
             raise RaError("not_found", "用户不存在")
+        self._org_guard(user.org_id or DEFAULT_ORG, operator_org_id, "用户凭证")
         creds = self._s.scalars(
             select(Credential).where(Credential.user_id == user.id, Credential.status == 1)
         ).all()
@@ -770,13 +805,26 @@ class RaService:
 
     # ---- B6 双控恢复（撤销不可逆性的唯一例外口——双人各执一钥）----
     def restore_request(
-        self, *, handle_hex: str, reason: str, admin_username: str, admin_sig_hex: str
+        self,
+        *,
+        handle_hex: str,
+        reason: str,
+        admin_username: str,
+        admin_sig_hex: str,
+        operator_org_id: str | None = None,
     ) -> dict:
         """admin 发起恢复：目标句柄须在撤销集+理由≥4 字+admin SM2 签名
         （FZ-RESTORE|v1|{handle}|{reason}）→pending 请求（一句柄一在途）。
-        单签不执行——执行只在 countersign 双签齐后发生。"""
+        单签不执行——执行只在 countersign 双签齐后发生。
+        ⑦复评 §5.3/§1.2：org 归属校验——目标凭证归属域==操作者账户 org_id
+        （跨域 403 fail-closed，双控第一腿；第二腿 countersign 同门）。"""
         h = _norm_handle(handle_hex)
         r = _check_reason(reason)
+        # 目标凭证提前解析（域门+not_restorable 判据共用——句柄不映射主凭证时
+        # 无归属域可比，既有 not_found/not_restorable 判词原样负责）
+        cred = self._s.scalar(select(Credential).where(Credential.master_cred_hash_hex == h))
+        if cred is not None:
+            self._org_guard(self._creds_org([cred]), operator_org_id, "恢复对象")
         self._verify_admin_sig(
             msg=restore_msg(h, r),
             sig_hex=admin_sig_hex,
@@ -786,10 +834,7 @@ class RaService:
             raise RaError("not_revoked", "该句柄不在撤销集——无恢复对象（已生效/未吊销）", 409)
         # 仅主凭证句柄可恢复（撤销集还含 pk′.x 子钥传播叶——摘子钥叶=解锁他人
         # 出示钥，越出「凭证恢复」语义；持有者重置身份钥即可换新，无需恢复）
-        if (
-            self._s.scalar(select(Credential.id).where(Credential.master_cred_hash_hex == h))
-            is None
-        ):
+        if cred is None:
             raise RaError("not_restorable", "仅主凭证句柄可恢复（子钥传播叶不可恢复）", 409)
         dup = self._s.scalar(
             select(RestoreRequest).where(
@@ -808,13 +853,19 @@ class RaService:
         return self.restore_view(row)
 
     def restore_countersign(
-        self, *, request_id: int, auditor_username: str, countersign_sig_hex: str
+        self,
+        *,
+        request_id: int,
+        auditor_username: str,
+        countersign_sig_hex: str,
+        operator_org_id: str | None = None,
     ) -> dict:
         """auditor 复核：SM2 签同内容不同消息域（FZ-RESTORE-COUNTERSIGN|v1）
         +重验 admin 原签——双签齐才执行：SMT 摘叶+合约 setStatus(handle,1)+
         新纪元根推链（复用 _revoke_credentials 的推链范式）+台账+公示根更新
         （公示面即 DB 镜像，摘叶后 snapshot 自动收敛）。负例：单签不执行/
-        非对应角色拒（路由层角色守卫）/已生效句柄拒。"""
+        非对应角色拒（路由层角色守卫）/已生效句柄拒。⑦复评 §1.2：恢复双控
+        第二腿同受 org 归属门（复核人域==目标凭证归属域，跨域 403）。"""
         from app.accounts.models import Account
 
         row = self._s.get(RestoreRequest, request_id)
@@ -822,6 +873,11 @@ class RaService:
             raise RaError("not_found", "恢复请求不存在", 404)
         if row.status != "pending":
             raise RaError("bad_state", f"请求状态为 {row.status}——仅待复核态可复核", 409)
+        cred = self._s.scalar(
+            select(Credential).where(Credential.master_cred_hash_hex == row.handle_hex)
+        )
+        if cred is not None:
+            self._org_guard(self._creds_org([cred]), operator_org_id, "恢复对象")
         if row.requested_by == auditor_username:
             raise RaError("self_countersign", "发起人不得自行复核——双控须两人", 403)
         admin_pub = self._account_pub(row.requested_by)
