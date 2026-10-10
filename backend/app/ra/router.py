@@ -220,6 +220,117 @@ class SubCredIn(BaseModel):
     holder_pub_hex: str = Field(min_length=128, max_length=128)
 
 
+# ---- ⑧站触达闭环：飞手被动获知面（吊销/违规/子凭证到期）----
+
+SUB_EXPIRY_WINDOW_DAYS = 7  # 子凭证到期提醒窗（过期前 N 天——⑧站拍板值）
+
+
+def pilot_notice_rows(session: Session, username: str) -> dict:
+    """飞手提醒面数据（①吊销/违规触达+②子凭证到期——登录首页红条与申请
+    前置提示共用数据源；零新增暴露面=登录主体自有数据）。
+
+    - revoked：本用户名下 status=2（吊销）主凭证+最近一次吊销台账行（理由/
+      纪元/时点——撤销台账 append-only，取该句柄最新一行）；
+    - violations：本用户全部 authId 的链上围栏违规事件（ChainEvent
+      event_type=1）——零身份链面数据经自有凭证链路归属到登录主体；
+    - expiring_subs：未消费且 expires_at 落在提醒窗内的子凭证
+      （consumed=False；窗=SUB_EXPIRY_WINDOW_DAYS 天，含今天起算）。"""
+    import datetime as _dt
+
+    from app.authz.models import Application
+    from app.ra.models import (
+        Credential,
+        RevocationLedger,
+        SubCredential,
+        User,
+    )
+    from app.telemetry.models import ChainEvent
+
+    user = session.scalar(select(User).where(User.username == username))
+    notices: dict = {"revoked": [], "violations": [], "expiring_subs": []}
+    if user is None:
+        return notices  # 未登记用户（仅门户账户）=三段皆空——诚实缺省
+    creds = session.scalars(select(Credential).where(Credential.user_id == user.id)).all()
+    cred_ids = [c.id for c in creds]
+    if not cred_ids:
+        return notices
+    # ① 吊销：主凭证吊销态+台账理由（该句柄最新一行）
+    for cred in creds:
+        if cred.status != 2:
+            continue
+        led = session.scalars(
+            select(RevocationLedger)
+            .where(RevocationLedger.subject_hex == cred.master_cred_hash_hex)
+            .order_by(RevocationLedger.epoch.desc(), RevocationLedger.id.desc())
+            .limit(1)
+        ).first()
+        notices["revoked"].append(
+            {
+                "master_cred_hash_hex": cred.master_cred_hash_hex,
+                "reason": led.reason if led is not None else "",
+                "epoch": led.epoch if led is not None else None,
+                "revoked_at": (led.ts.isoformat() if led is not None else None),
+            }
+        )
+    # ① 违规：子凭证→申请→authId→链上围栏违规事件（含已立案与否由审计面
+    # 判定——本面只做「你有违规被记录」的触达，立案进度在审计公示面）
+    subs = session.scalars(
+        select(SubCredential).where(SubCredential.credential_id.in_(cred_ids))
+    ).all()
+    sub_by_hash = {s.sub_cred_hash_hex: s for s in subs}
+    apps = session.scalars(
+        select(Application).where(
+            Application.sub_cred_hash_hex.in_(list(sub_by_hash.keys())),
+            Application.auth_id.is_not(None),
+        )
+    ).all()
+    auth_ids = sorted({int(a.auth_id) for a in apps})
+    if auth_ids:
+        events = session.scalars(
+            select(ChainEvent)
+            .where(ChainEvent.auth_id.in_(auth_ids), ChainEvent.event_type == 1)
+            .order_by(ChainEvent.logged_at.desc())
+        ).all()
+        app_by_auth = {int(a.auth_id): a for a in apps}
+        for ev in events:
+            app = app_by_auth.get(int(ev.auth_id))
+            notices["violations"].append(
+                {
+                    "auth_id": int(ev.auth_id),
+                    "event_hash_hex": ev.event_hash_hex,
+                    "logged_at": ev.logged_at.isoformat(),
+                    "sub_cred_hash_hex": app.sub_cred_hash_hex if app is not None else None,
+                }
+            )
+    # ② 子凭证到期提醒：未消费+提醒窗内（今起 SUB_EXPIRY_WINDOW_DAYS 天）
+    now = _dt.datetime.utcnow()
+    horizon = now + _dt.timedelta(days=SUB_EXPIRY_WINDOW_DAYS)
+    for s in subs:
+        if s.consumed or not (now <= s.expires_at <= horizon):
+            continue
+        notices["expiring_subs"].append(
+            {
+                "sub_cred_hash_hex": s.sub_cred_hash_hex,
+                "expires_at": s.expires_at.isoformat(),
+                # 日历日口径（datetime 差的 .days 是地板除——微秒负差致少 1 天）
+                "days_left": max(0, (s.expires_at.date() - now.date()).days),
+            }
+        )
+    notices["expiring_subs"].sort(key=lambda x: x["expires_at"])
+    return notices
+
+
+@router.get("/pilot/notices")
+def pilot_notices(
+    p=Depends(require_role("pilot")),
+    session: Session = Depends(get_session),
+):
+    """⑧站触达闭环：飞手被动获知面（吊销/违规事件/子凭证到期——首页红条与
+    申请前置提示共用）。会话守卫=pilot（服务端权威）——数据面=登录主体自有
+    凭证链路归属，零新增暴露面。"""
+    return _ok(pilot_notice_rows(session, p.username))
+
+
 class RevokeIn(BaseModel):
     """B1 升格：理由必填（≥4 字，服务层强制——信封语义拒而非 422 裸奔）+
     admin SM2 签名（FZ-REVOKE|v1|{handles 排序}|{reason}|{epoch}）+目标纪元。"""
