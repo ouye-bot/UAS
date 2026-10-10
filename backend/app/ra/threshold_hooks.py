@@ -130,3 +130,21 @@ def collab_approved(request_sha256_hex: str) -> bool:
             s.close()
     except Exception:  # noqa: BLE001 —— DB 不可达=fail-closed
         return False
+
+
+def owner_set_synced() -> bool:
+    """第④关真实现（1.3 件④）：份额域与治理席位同步——链上 owner-set 指纹
+    与 root.json 绑定指纹对拍。漂移（治理除名/增删后未重分割）=False（fail-
+    closed 拒解锁——止损从『记得做』变『不做不行』，直至 re-share 对齐）。
+    fake 档=False（同 warrant_on_chain：份额出借面不因演示档放行）；链不可达
+    =False；域未绑定+链可用=惰性绑定当前指纹→True（首次对拍即锚定）。"""
+    import os
+
+    if os.environ.get("FZ_CHAIN_ANCHOR", "fake") == "fake":
+        return False
+    try:
+        from app.ra.threshold_sync import owner_set_synced as _synced
+
+        return _synced()  # 复用同步面单源（漂移红牌落盘同触发）
+    except Exception:  # noqa: BLE001 —— 任何异常=fail-closed（份额出借面红线）
+        return False

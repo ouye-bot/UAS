@@ -88,6 +88,10 @@ def initialize_if_absent() -> dict:
                     "epoch": epoch,
                     "threshold": _THRESHOLD_K,
                     "roles": list(_ROLES),
+                    # 份额域绑定指纹（1.3 件①）：owner-set 指纹 SM3(sorted(
+                    # owners))——初始化时 None（未绑定），首次同步对拍惰性绑定
+                    # /re-share 仪式携 fp 写入（漂移检测与解锁第④关的判定源）。
+                    "owner_set_fp": None,
                     "created_ts": time.time(),
                 },
                 ensure_ascii=False,
@@ -147,7 +151,10 @@ def request_decrypt_share(
     ① 解锁请求台账在案（verify_hooks["request_registered"]——合成方受理面
        先登记 warrant/cred/C₁ 指纹三元组）；
     ② 令状链上在案（verify_hooks["warrant_on_chain"]）；
-    ③ 双控批文在案（verify_hooks["collab_approved"]——FZ-COLLAB 批准/执行态）。
+    ③ 双控批文在案（verify_hooks["collab_approved"]——FZ-COLLAB 批准/执行态）；
+    ④ 份额域与治理席位同步（verify_hooks["owner_set_synced"]——1.3 件④：
+       漂移=fail-closed 拒）。hooks 无此键=替位注入形态跳过（真实现 _default_
+       hooks 恒含——生产解锁恒过第④关）。
     hooks 缺省=真实现（app.ra.threshold_hooks）；单测可注入本地真实现
     （判定逻辑同码路径——非网络替身，诚实标注）。
     """
@@ -161,6 +168,9 @@ def request_decrypt_share(
         "warrant_on_chain": hooks["warrant_on_chain"](warrant_hash_hex),
         "collab_approved": hooks["collab_approved"](request_sha256_hex),
     }
+    sync_hook = hooks.get("owner_set_synced")
+    if sync_hook is not None:
+        checks["owner_set_synced"] = bool(sync_hook())
     failed = [k for k, v in checks.items() if not v]
     row = {
         "action": "decrypt_share",
@@ -192,7 +202,7 @@ def root_pub_hex() -> str:
     return meta["pub_hex"]
 
 
-def ceremonial_reshare(gov_confirmed_epoch: int) -> dict:
+def ceremonial_reshare(gov_confirmed_epoch: int, owner_set_fp: str | None = None) -> dict:
     """⑤站 proactive re-share 仪式（治理提案 execute 后由 backend 侧执行）。
 
     语义（任务书钉定）：**D_pub 不变、无需根钥 d**——从任意 ≥2 份现存份额
@@ -204,6 +214,13 @@ def ceremonial_reshare(gov_confirmed_epoch: int) -> dict:
     在 governor 提案（description=『threshold-reshare:epoch-N』）execute 并
     链上回读对拍后才携 N 调用；直调不带正确治理纪元即拒（仪式不被绕过）。
 
+    owner-set 指纹门（1.3 件①）：owner_set_fp=提案时点链上 owner-set 指纹
+    （SM3(sorted(owners))）——非 None 时与**执行时点链读**对拍（提案→execute
+    窗内席位再漂移=fingerprint_mismatch 拒，零持久变更，须重新起草提案）；
+    过门即写 root.json.owner_set_fp（绑定+漂移检测判定源）。None=门跳过
+    （单测直调形态兼容——audit 行 fp_source=skipped 如实在案非静默；生产
+    仪式驱动方 scripts/threshold_reshare.py 与 /admin/threshold/reshare 恒携）。
+
     原子序：先内存全量自证（canary=SM2(D_pub) 加解对拍走 decrypt_share/
     combine_decrypt_shares/threshold_decrypt 真实原语），后落盘（先份额后
     纪元——窗内解封请求开封失败=域拒绝=fail-closed，无安全面）。三域审计
@@ -213,6 +230,25 @@ def ceremonial_reshare(gov_confirmed_epoch: int) -> dict:
         raise ShareDomainError("bad_epoch_arg", "gov_confirmed_epoch 须为整数纪元")
     if gov_confirmed_epoch < 2:
         raise ShareDomainError("bad_epoch_arg", "目标纪元须 ≥2（纪元 1=初始化态）")
+    # owner-set 指纹门（锁外执行——链读不持域锁；失败=零持久变更）
+    fp_source = "skipped"
+    if owner_set_fp is not None:
+        from app.ra.threshold_sync import SyncError, chain_owner_set
+
+        try:
+            chain = chain_owner_set()
+        except SyncError as e:
+            raise ShareDomainError(
+                "fingerprint_unavailable", f"owner-set 指纹门链读失败（fail-closed）: {e}"
+            ) from e
+        if chain["fp_hex"] != owner_set_fp:
+            raise ShareDomainError(
+                "fingerprint_mismatch",
+                f"owner-set 指纹不符：提案时点 {owner_set_fp[:16]}… ≠ "
+                f"执行时点链上 {chain['fp_hex'][:16]}…（席位窗内再漂移——提案作废，"
+                "须重新起草）",
+            )
+        fp_source = "verified"
     with _lock:
         if not is_initialized():
             raise ShareDomainError("not_initialized", "门限根未初始化（先 initialize_if_absent）")
@@ -262,10 +298,13 @@ def ceremonial_reshare(gov_confirmed_epoch: int) -> dict:
         meta["epoch"] = new_epoch
         meta["prev_epoch"] = old_epoch
         meta["reshared_ts"] = time.time()
+        if fp_source == "verified":
+            meta["owner_set_fp"] = owner_set_fp  # 件①：绑定链上 owner-set 指纹
         (_root_dir() / "root.json").write_text(
             json.dumps(meta, ensure_ascii=False, indent=1), encoding="utf-8"
         )
-        # ⑤ 三域仪式审计（append-only；记录纪元不含任何份额材料）
+        # ⑤ 三域仪式审计（append-only；记录纪元不含任何份额材料；fp_source
+        # 如实——verified=指纹门激活并过门，skipped=直调形态门未启用）
         for role in _ROLES:
             _audit(
                 role,
@@ -274,6 +313,7 @@ def ceremonial_reshare(gov_confirmed_epoch: int) -> dict:
                     "decision": "ok",
                     "from_epoch": old_epoch,
                     "to_epoch": new_epoch,
+                    "fp_source": fp_source,
                 },
             )
         # 中间值出栈即焚（opened 旧份额/new_shares 新份额不外溢本函数域）
@@ -282,9 +322,11 @@ def ceremonial_reshare(gov_confirmed_epoch: int) -> dict:
 
 
 def _default_hooks() -> dict:
-    """真实现三关（延迟 import 防环——authz/ra 面互引）。"""
+    """真实现四关（延迟 import 防环——authz/ra 面互引）。第④关=份额域与
+    治理席位同步（1.3 件④——失同步 fail-closed 拒解锁）。"""
     from app.ra.threshold_hooks import (
         collab_approved,
+        owner_set_synced,
         request_registered,
         warrant_on_chain,
     )
@@ -293,4 +335,5 @@ def _default_hooks() -> dict:
         "request_registered": request_registered,
         "warrant_on_chain": warrant_on_chain,
         "collab_approved": collab_approved,
+        "owner_set_synced": owner_set_synced,
     }

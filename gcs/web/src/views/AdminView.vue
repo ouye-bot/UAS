@@ -480,6 +480,19 @@ async function checkSigs(r: ReqView): Promise<void> {
         </table>
       </div>
       <FzEmpty v-else text="尚无治理提案记录。" icon="doc" />
+      <!-- 1.3 件②：份额域失同步红牌（治理席位变更后未重分割——解锁面
+          第④关同步 fail-closed；红牌=漂移检测在案+reshare 提案已自动起草
+          （Queued 待确认），confirm/execute 由治理面人工完成） -->
+      <p
+        v-if="gov.threshold_sync && gov.threshold_sync.synced === false"
+        data-test="threshold-sync-flag"
+        class="req-meta"
+        style="color:#c0392b;border:1px solid #e6b0aa;border-radius:8px;padding:8px 12px;margin-top:10px"
+      >
+        ⛔ 份额域失同步：治理席位已变更（owner-set 指纹漂移）而份额未重分割
+        ——门限解锁已被 fail-closed 拦截。reshare 提案已自动起草（待多签确认+
+        时间锁执行）；执行后自动恢复。
+      </p>
       <div class="req-meta" style="margin-top:6px">
         治理席位（{{ gov.chain.owner_count }}）：
         <span v-for="o in gov.chain.owners" :key="o.address" style="margin-right:10px">

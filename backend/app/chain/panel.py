@@ -374,6 +374,14 @@ def governance_face(limit: int = 20):
                 }
             except Exception:  # noqa: BLE001 —— 互认面读败=字段缺席（不破治理面）
                 pass
+        # 1.3 件②：份额域↔治理席位同步红牌（live 对拍——漂移=治理席位变更
+        # 后未重分割，解锁面第④关同步 fail-closed；字段缺席不破治理面）
+        try:
+            from app.ra.threshold_sync import sync_status
+
+            data["threshold_sync"] = sync_status()
+        except Exception:  # noqa: BLE001 —— 同步面读败=字段缺席
+            pass
         with _face_lock:
             _gov_cache.update(at=time.monotonic(), data=data)
         return {"ok": True, "data": {**data, "proposals": proposals[:limit]}}

@@ -11,7 +11,9 @@ exists" 幂等拒=同纪元不可重放；currentVersion 指针零 off-chain 消
 用法：cd uas/backend && python scripts/threshold_reshare.py
 前置：真链在线（scripts/chain_nodes_up.sh）+ threshold_root 已初始化（epoch≥1）
 +链上交易钥 env（.local_env 同口径——demo 缺省派生亦可，production 档必须注入）。
-owner 增删触发的自动刷新=演进项（本轮=提案/手动触发）。
+owner 增删触发的漂移检测/红牌/自动起草=watcher（app.ra.threshold_sync，
+1.3 件②）；本脚本=人工/定时驱动的完整仪式（提案→execute→re-share 一气呵成）；
+API 面=POST /admin/threshold/reshare（同 propose_and_reshare 服务函数）。
 """
 
 from __future__ import annotations
@@ -81,12 +83,19 @@ def main() -> int:
     # ---- ② 治理提案面：description=threshold-reshare:epoch-N ----
     version = f"threshold-epoch-{target}"
     description = f"threshold-reshare:epoch-{target}"
+    # owner-set 指纹（1.3 件①）：提案时点链读——携入仪式指纹门（执行窗漂移
+    # 即拒 fail-closed）+公告元数据（链上公示行含 fp=第三方可独立对拍）
+    from app.ra.threshold_sync import chain_owner_set
+
+    chain = chain_owner_set()
+    owner_fp = chain["fp_hex"]
     announcement = json.dumps(
         {
             "epoch": target,
             "pub_hex": pub_before,
             "roles": meta["roles"],
             "threshold": meta["threshold"],
+            "owner_set_fp": owner_fp,
         },
         ensure_ascii=False,
         sort_keys=True,
@@ -116,8 +125,8 @@ def main() -> int:
         f"  公示行: version={version} paramsHash=0x{params_hash.hex()[:16]}… ts={int(onchain_ts)}"
     )
 
-    # ---- ⑤ backend 侧执行份额刷新（纪元门 fail-closed）----
-    r = ts.ceremonial_reshare(gov_confirmed_epoch=target)
+    # ---- ⑤ backend 侧执行份额刷新（纪元门+owner-set 指纹门 fail-closed）----
+    r = ts.ceremonial_reshare(gov_confirmed_epoch=target, owner_set_fp=owner_fp)
     expect(
         r["epoch"] == target and r["prev_epoch"] == old_epoch,
         f"份额刷新完成：纪元 {old_epoch}→{target}",

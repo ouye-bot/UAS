@@ -255,7 +255,21 @@ export interface GovernanceOwnerRow {
   role?: string | null;
 }
 
+/** 1.3 件②：份额域↔治理席位同步红牌（/chain/governance threshold_sync 段）。 */
+export interface ThresholdSyncFace {
+  mode: string;
+  synced: boolean | null;
+  bound?: boolean;
+  chain_fp_hex?: string;
+  domain_fp_hex?: string | null;
+  chain_required?: number;
+  chain_owner_count?: number;
+  red_flag?: boolean;
+  error?: string;
+}
+
 export interface GovernanceFace {
+  threshold_sync?: ThresholdSyncFace;
   chain: {
     required: number;
     delay_s: number;

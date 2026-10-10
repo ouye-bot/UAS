@@ -50,7 +50,7 @@ function jsonResponse(status: number, payload: unknown) {
   };
 }
 
-function stubFetch(opts: { todos: unknown[] | "404" }): ReturnType<typeof vi.fn> {
+function stubFetch(opts: { todos: unknown[] | "404"; drift?: boolean }): ReturnType<typeof vi.fn> {
   return vi.fn(async (url: any, init?: any) => {
     const u = String(url);
     const method = (init?.method ?? "GET").toUpperCase();
@@ -69,6 +69,18 @@ function stubFetch(opts: { todos: unknown[] | "404" }): ReturnType<typeof vi.fn>
     }
     if (u.includes("/admin/overview")) {
       return jsonResponse(200, { code: "ok", message: "", data: { warrants: [], collab_ledger: [], accounts: [], reset_log: [] } });
+    }
+    if (u.includes("/chain/governance")) {
+      return jsonResponse(200, {
+        code: "ok", message: "",
+        data: {
+          mode: "real",
+          chain: { required: 2, delay_s: 10, owner_count: 3, owners: [], proposal_count: 0, proposals: [] },
+          threshold_sync: opts.drift
+            ? { mode: "real", synced: false, bound: true, red_flag: true, chain_fp_hex: "bb".repeat(32), domain_fp_hex: "aa".repeat(32) }
+            : { mode: "real", synced: true, bound: true, red_flag: false },
+        },
+      });
     }
     if (u.includes("/ra/revoke/by-username/preview")) {
       return jsonResponse(200, { code: "ok", message: "", data: { username: "pilot_bad", handles: [H1], epoch: 6 } });
@@ -94,7 +106,7 @@ function stubFetch(opts: { todos: unknown[] | "404" }): ReturnType<typeof vi.fn>
   });
 }
 
-async function mountAdmin(opts: { todos: unknown[] | "404" }) {
+async function mountAdmin(opts: { todos: unknown[] | "404"; drift?: boolean }) {
   const fetchStub = stubFetch(opts);
   vi.stubGlobal("fetch", fetchStub);
   const w = mount(AdminView);
@@ -229,4 +241,21 @@ describe("AdminView 升格批：待办卡/吊销两步式/验签/恢复发起", 
     expect(sm2.doVerifySignature(msg, restoreCalls[0].body.sig_hex, KP.publicKey)).toBe(true);
     w.unmount();
   });
+
+describe("份额域失同步红牌（1.3 件②）", () => {
+  it("漂移态：红牌在案（失同步判词+提案已起草指引）", async () => {
+    const { w } = await mountAdmin({ todos: [], drift: true });
+    await flushPromises();
+    const flag = w.find('[data-test="threshold-sync-flag"]');
+    expect(flag.exists()).toBe(true);
+    expect(flag.text()).toContain("份额域失同步");
+    expect(flag.text()).toContain("fail-closed");
+  });
+
+  it("对齐态：零红牌（既有大屏可见面零变化——浏览器 e2e 冻结面）", async () => {
+    const { w } = await mountAdmin({ todos: [] });
+    await flushPromises();
+    expect(w.find('[data-test="threshold-sync-flag"]').exists()).toBe(false);
+  });
+});
 });

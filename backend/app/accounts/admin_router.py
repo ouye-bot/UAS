@@ -240,6 +240,29 @@ def verify_collab_sigs(
     return JSONResponse(status_code=200, content={"code": "ok", "message": "", "data": out})
 
 
+@router.post("/threshold/reshare")
+def threshold_reshare(_p=Depends(require_role("admin"))):
+    """份额刷新 API 面（1.3 件③，J2 止损闭环）：包装⑤站三步提案+份额刷新
+    仪式（governor k-of-n 时间锁——治理面写入不绕过治理面）。幂等=链上
+    PolicyRegistry version exists 拒重放（同纪元不可重放——合约级幂等）。
+    owner-set 指纹门：提案时点链读 fp 携入仪式，执行窗漂移即拒（fail-closed）。
+    耗时≈时间锁延迟（demo 档 FZ_GOVERNOR_DELAY_S=10s——管理面低频可接受）。"""
+    from app.ra.threshold_sync import SyncError, propose_and_reshare
+
+    try:
+        out = propose_and_reshare()
+    except SyncError as exc:
+        return _deny(exc)
+    return JSONResponse(
+        status_code=200,
+        content={
+            "code": "ok",
+            "message": "份额刷新完成（治理提案已 execute 公示+三域 re-share）",
+            "data": out,
+        },
+    )
+
+
 @router.get("/overview")
 def overview(session: Session = Depends(get_session), _p=Depends(require_role("admin"))):
     """机构台总览：待解锁令状/出具台账/账户概况/账户管理台账——签发台账是机构本职的可视面。"""

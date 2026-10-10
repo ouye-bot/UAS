@@ -128,6 +128,11 @@ def create_app() -> FastAPI:
         from app.telemetry.indexer import start_background_indexer
 
         start_background_indexer()
+        # 1.3 件②：份额域↔治理席位同步 watcher（漂移→大屏红牌+自动起草
+        # reshare 提案——confirm/execute 保持人工，防事件注入 DoS）
+        from app.ra.threshold_sync import start_background_watcher
+
+        start_background_watcher()
     from app.chain.panel import router as chain_panel_router
 
     app.include_router(chain_panel_router)
