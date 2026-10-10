@@ -7,9 +7,9 @@
 
 | 文件 | sha256 |
 |---|---|
-| AdminGovernor.abi | 7cbf44776297f960d42b3cc3104d26b88f187589946861d5f1b2e99b952f567a |
-| AdminGovernor.bin | 72002def3b8e015f3a3e994bfbee16e5088d9a0c1812f924356f0d89ed7bbd83 |
-| AdminGovernor.runtime.bin | 47afa7a2b998f80d59095dbcca0a4299db913147152cf7b2af7130e07b1e68e6 |
+| AdminGovernor.abi | 46ebf2cb1d8adcb8f48841daf43707ed4d1aa942730132df52692fda9ecf3e4a |
+| AdminGovernor.bin | f6e04c86c2f51e7e2df189144369f26ad6c412761c219872b005b6b3b89a6de9 |
+| AdminGovernor.runtime.bin | 7deb0b3b2647de9be57eb3dd9ae618194aa3f9b7debb64ab027593fbd80f0ad4 |
 | FlightAuthRegistry.abi | f551f2c10e6c2f89bf78b60ef9e8a5a7a26912a96f78228dcf4a7138245ded24 |
 | FlightAuthRegistry.bin | 5a52acbd709859cf3c3cd80b9c889499825ba94cdb553eb9759c744ecced1561 |
 | FlightAuthRegistry.runtime.bin | 0cfbe9ab98ddef3bc9c2504b37fd88942402a434842c7684a069bb6fd44a93a5 |

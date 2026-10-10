@@ -259,3 +259,88 @@ def record_detail(auth_id: int):
         return {"ok": True, "data": detail}
     finally:
         session.close()
+
+
+# ── ③站治理公示大屏（2026-10-10）：AdminGovernor k-of-n 公示面只读——
+# 提案列表（状态/票数/eta/description）/owner 席位/required/delay。零身份
+# 纪律：description 为治理动作人话、owner 展示链上地址（公示钥址非实名），
+# 三钥 role 标注由本进程钥域比对得出。fake 锚档诚实返 None（与 /panel 同）。
+_GOV_TTL_S = float(os.environ.get("FZ_GOV_FACE_TTL_S", "5"))
+_gov_cache: dict = {"at": 0.0, "data": None}
+_GOV_STATUS = {0: "active", 1: "queued", 2: "executed", 3: "cancelled"}
+
+
+@router.get("/governance")
+def governance_face(limit: int = 20):
+    """治理公示面（k-of-n 完全体——提案全生命周期+席位/法定票数/时间锁档）。"""
+    if _mode() == "fake":
+        return {"ok": True, "data": {"chain": None, "mode": "fake"}}
+    now = time.monotonic()
+    with _face_lock:
+        if _gov_cache["data"] is not None and now - _gov_cache["at"] < _GOV_TTL_S:
+            data = _gov_cache["data"]
+            return {"ok": True, "data": {**data, "proposals": data["proposals"][:limit]}}
+    try:
+        from app.chain.governor import GOVERNOR_NAME, eta_unix_seconds
+
+        gov = _binding_cached(GOVERNOR_NAME)
+        addrs = _addresses()
+        name_by_addr = {v["address"].lower(): k for k, v in addrs.items()}
+
+        def _short(a: str) -> str:
+            a = a.lower()
+            return f"{a[:8]}…{a[-6:]}"
+
+        def _label(a: str) -> str:
+            n = name_by_addr.get(a.lower())
+            return ("治理自身面" if n == GOVERNOR_NAME else n) or _short(a)
+
+        count = int(gov.call_fn("ownerCount", [])[0])
+        owners = []
+        for i in range(count):
+            a = str(gov.call_fn("owners", [i])[0]).lower()
+            owners.append({"address": a, "short": _short(a)})
+        # 三钥 role 标注（钥域比对——admin/RA/auditor 交易钥地址）
+        try:
+            from app.chain.signer import TxSigner
+            from app.kms import chain_admin_tx_key, chain_auditor_tx_key, chain_ra_tx_key
+
+            role_map = {
+                TxSigner(chain_admin_tx_key()).address.lower(): "admin",
+                TxSigner(chain_ra_tx_key()).address.lower(): "RA",
+                TxSigner(chain_auditor_tx_key()).address.lower(): "auditor",
+            }
+            for o in owners:
+                o["role"] = role_map.get(o["address"])
+        except Exception:  # noqa: BLE001 —— 钥域不可得=标注缺席（地址仍在）
+            pass
+        total = int(gov.call_fn("proposalCount", [])[0])
+        proposals = []
+        for pid in range(total, max(0, total - min(limit, 50)), -1):
+            t, ch, desc, eta, conf, st = gov.call_fn("getProposal", [pid])
+            proposals.append(
+                {
+                    "proposal_id": pid,
+                    "target": _label(str(t)),
+                    "description": desc,
+                    "confirmations": int(conf),
+                    "status": _GOV_STATUS.get(int(st), str(st)),
+                    "eta_unix_s": eta_unix_seconds(int(eta)),
+                }
+            )
+        data = {
+            "chain": {
+                "required": int(gov.call_fn("required", [])[0]),
+                "delay_s": int(gov.call_fn("delay", [])[0]),
+                "owner_count": count,
+                "owners": owners,
+                "proposal_count": total,
+                "proposals": proposals,
+            },
+            "mode": "real",
+        }
+        with _face_lock:
+            _gov_cache.update(at=time.monotonic(), data=data)
+        return {"ok": True, "data": {**data, "proposals": proposals[:limit]}}
+    except Exception as e:  # noqa: BLE001 —— 链不可达=降级（大屏隐藏）
+        return {"ok": True, "data": {"chain": None, "mode": _mode(), "error": str(e)[:160]}}

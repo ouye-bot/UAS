@@ -376,6 +376,13 @@ def run_tests(tmp: Path) -> None:
                and mpage.locator("text=凭证吊销").count() > 0
                and mpage.locator("text=账户总览").count() > 0,
                "⑨.1 机构台 Vue 渲染（待批/台账/吊销/总览四板块）")
+        # ③站治理公示大屏守卫（2026-10-10）：k-of-n 大屏必须渲染且链上数据
+        # 活填充——多签 KPI 格非占位（真链 governor 回读），提案表或空态在列。
+        mpage.wait_for_selector("text=链上治理", timeout=20000)
+        expect(
+            mpage.locator("text=多签").first.inner_text().replace(chr(10), "")
+            not in ("", "—", "读取中"),
+               "⑨.2 治理大屏 k-of-n KPI 活数据（/chain/governance 回读填充）")
         mctx.close()
 
         # ---- 服务状态点（App 壳） ----

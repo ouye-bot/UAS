@@ -17,6 +17,8 @@ import {
   revokeMsg,
   verdictLabel,
   type DisposalTodo,
+  type GovernanceFace,
+  type GovernanceProposalRow,
   type RestoreRequestRow,
   type RevokeResult,
   type SnapshotLeaf,
@@ -73,6 +75,45 @@ async function refresh(): Promise<void> {
   void refreshRevocation();
   void refreshRestores();
   void refreshTodos();
+  void refreshGovernance();
+}
+
+// ---- ③站治理公示大屏（/chain/governance——AdminGovernor k-of-n 公示只读）：
+// 提案全生命周期+席位/法定票数/时间锁档。链不可达/fake 档=整卡优雅隐藏
+// （todosAvailable 同范式——不谎称空、不装一致）。
+const gov = ref<GovernanceFace | null>(null);
+const govAvailable = ref(true);
+const govLoaded = ref(false);
+async function refreshGovernance(): Promise<void> {
+  try {
+    gov.value = await api<GovernanceFace>("/chain/governance");
+    govAvailable.value = true;
+  } catch {
+    govAvailable.value = false;
+  }
+  govLoaded.value = true;
+}
+function govTone(st: GovernanceProposalRow["status"]): string {
+  return { active: "amber", queued: "blue", executed: "teal", cancelled: "gray" }[st] ?? "gray";
+}
+function govLabel(st: GovernanceProposalRow["status"]): string {
+  return (
+    { active: "表决中", queued: "时间锁中", executed: "已执行", cancelled: "已取消" }[st] ??
+    String(st)
+  );
+}
+function govEta(etaUnixS: number): string {
+  if (!etaUnixS) return "—";
+  const remain = Math.round(etaUnixS - Date.now() / 1000);
+  if (remain <= 0) return "到期可执行";
+  const h = Math.floor(remain / 3600);
+  const m = Math.floor((remain % 3600) / 60);
+  return h > 0 ? `剩余 ${h}h${m}m` : `剩余 ${m}m${remain % 60}s`;
+}
+function govDelayTag(delayS: number): { text: string; tone: string } {
+  return delayS >= 86400
+    ? { text: "生产档 24h", tone: "teal" }
+    : { text: `演示档 ${delayS}s`, tone: "amber" };
 }
 
 // KPI 指标带（与审计台同语言——机构视角五数；count-up：视觉深化批 C）
@@ -93,8 +134,11 @@ const kpiAccounts = useCountUp(computed(() => kpiRaw.value.accounts));
 
 // 轮询（4s）：批准后的后台执行态流转自动可见（approved→executed/execute_failed）
 let pollTimer: ReturnType<typeof setInterval> | null = null;
+// 治理公示面轮询（10s——链上公示节奏，与双控 4s 分离）
+let govTimer: ReturnType<typeof setInterval> | null = null;
 onMounted(() => {
   void refresh();
+  govTimer = setInterval(() => void refreshGovernance(), 10000);
   pollTimer = setInterval(async () => {
     // 无条件轮询（同审计台 P1-7 根修：新 pending 请求自动出现，双控合流不靠 F5）
     try {
@@ -104,7 +148,10 @@ onMounted(() => {
     } catch { /* 下拍再试 */ }
   }, 4000);
 });
-onBeforeUnmount(() => { if (pollTimer) clearInterval(pollTimer); });
+onBeforeUnmount(() => {
+  if (pollTimer) clearInterval(pollTimer);
+  if (govTimer) clearInterval(govTimer);
+});
 
 // ---- 管理员钥解锁（批准/驳回签名前置）----
 const sk = ref<string | null>(getCachedSk());
@@ -385,6 +432,62 @@ async function checkSigs(r: ReqView): Promise<void> {
           <div class="fz-kpi"><span class="fz-kpi-n teal">{{ kpiAccounts }}</span><span class="fz-kpi-l">账户数</span></div>
         </div>
       </div>
+    </div>
+
+    <!-- ③站治理公示大屏：AdminGovernor k-of-n 链上公示只读（/chain/governance）
+        ——提案全生命周期/席位/法定票数/时间锁档。链不可达或 fake 档=整卡隐藏
+        （govAvailable=false，todosAvailable 同范式）。零身份：owner 展示链上
+        公示钥址短形态+role 标注，无实名。 -->
+    <div class="panel" v-if="govAvailable && gov">
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:4px;flex-wrap:wrap">
+        <h2 style="margin:0">链上治理（AdminGovernor k-of-n）</h2>
+        <template v-if="gov.chain">
+          <span class="fz-pill teal">{{ gov.chain.required }}/{{ gov.chain.owner_count }} 多签</span>
+          <span class="fz-pill" :class="govDelayTag(gov.chain.delay_s).tone">
+            {{ govDelayTag(gov.chain.delay_s).text }}
+          </span>
+          <span class="fz-pill gray">累计提案 {{ gov.chain.proposal_count }}</span>
+        </template>
+      </div>
+      <FzEmpty
+        v-if="!gov.chain"
+        :text="gov.mode === 'fake'
+          ? '演示链档——治理公示面随真链提供（AdminGovernor k-of-n：提案→多签→时间锁→执行）。'
+          : '链不可达——治理公示面暂不可读（恢复后自动填充）。'"
+        icon="doc"
+      />
+      <template v-if="gov.chain">
+      <p class="desc">
+        政策公示/指纹锚定/治理席位变更——每一条链上治理写入都经
+        「提案 → 多签确认 → 时间锁 → 执行」四步，全程事件上链可追责；
+        owner 增删与法定票数变更同样走此仪式（治理面变更不绕过治理面）。
+      </p>
+      <div class="tbl-wrap" v-if="gov.chain.proposals.length">
+        <table class="tbl">
+          <thead>
+            <tr><th>#</th><th>治理动作</th><th>目标</th><th>确认</th><th>状态</th><th>时间锁</th></tr>
+          </thead>
+          <tbody>
+            <tr v-for="p in gov.chain.proposals" :key="p.proposal_id">
+              <td class="mono">{{ p.proposal_id }}</td>
+              <td>{{ p.description || "—" }}</td>
+              <td class="mono">{{ p.target }}</td>
+              <td class="mono">{{ p.confirmations }}/{{ gov!.chain!.required }}</td>
+              <td><span class="fz-badge" :class="govTone(p.status)">{{ govLabel(p.status) }}</span></td>
+              <td class="mono">{{ p.status === "queued" ? govEta(p.eta_unix_s) : "—" }}</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <FzEmpty v-else text="尚无治理提案记录。" icon="doc" />
+      <div class="req-meta" style="margin-top:6px">
+        治理席位（{{ gov.chain.owner_count }}）：
+        <span v-for="o in gov.chain.owners" :key="o.address" style="margin-right:10px">
+          <span class="mono">{{ o.short }}</span>
+          <span v-if="o.role" class="fz-badge blue">{{ o.role }}</span>
+        </span>
+      </div>
+      </template>
     </div>
 
     <!-- ⓪ 处置待办（A5/B2）：审计结案「属实」→ 机构处置的交接面——后端

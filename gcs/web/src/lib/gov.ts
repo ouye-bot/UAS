@@ -238,3 +238,32 @@ export function conclusionTone(c: string | null | undefined): string {
   if (!c) return "gray";
   return CONCLUSION_META[c as CloseConclusion]?.tone ?? "gray";
 }
+
+/** ③站治理公示面（/chain/governance——AdminGovernor k-of-n 公示只读）。 */
+export interface GovernanceProposalRow {
+  proposal_id: number;
+  target: string;
+  description: string;
+  confirmations: number;
+  status: "active" | "queued" | "executed" | "cancelled" | string;
+  eta_unix_s: number;
+}
+
+export interface GovernanceOwnerRow {
+  address: string;
+  short: string;
+  role?: string | null;
+}
+
+export interface GovernanceFace {
+  chain: {
+    required: number;
+    delay_s: number;
+    owner_count: number;
+    owners: GovernanceOwnerRow[];
+    proposal_count: number;
+    proposals: GovernanceProposalRow[];
+  } | null;
+  mode: string;
+  error?: string;
+}

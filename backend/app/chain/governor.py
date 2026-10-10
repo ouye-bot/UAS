@@ -45,9 +45,13 @@ def load_governor(client, addresses: dict) -> ContractBinding:
 def ctor_args(
     owner_addresses: list[str], required: int = _REQUIRED, delay_s: int | None = None
 ) -> bytes:
-    """构造参数 (address[3],uint8,uint32) 的 ABI 静态编码（逐 32B 字）。"""
-    if len(owner_addresses) != 3:
-        raise ValueError("owners 须三钥（admin/RA/auditor）")
+    """构造参数 (address[],uint8,uint32) 的 ABI 编码——③站 k-of-n 动态数组。
+
+    address[] 动态数组=head(0x60 偏移,长度,逐 32B 字)+尾段（旧 address[3]
+    定长版为纯静态尾段——编码换代随合约 k-of-n 化，链烟测 --deploy 同源消费）。
+    """
+    if not owner_addresses:
+        raise ValueError("owners 不可为空（治理面至少一钥）")
     delay = governor_delay_s() if delay_s is None else delay_s
     words = []
     for a in owner_addresses:
@@ -55,9 +59,17 @@ def ctor_args(
         if len(raw) != 20:
             raise ValueError(f"owner 地址须 20B: {a}")
         words.append(b"\x00" * 12 + raw)
-    words.append(required.to_bytes(32, "big"))
-    words.append(delay.to_bytes(32, "big"))
-    return b"".join(words)
+    # ABI 布局（三参数）：slot0=数组数据偏移 0x60（跳过三个头槽）、slot1=required、
+    # slot2=delay、slot3=数组长度、slot4..=逐地址字。
+    head = (0x20 * 3).to_bytes(32, "big")  # address[] 数据偏移
+    body = (
+        head
+        + required.to_bytes(32, "big")
+        + delay.to_bytes(32, "big")
+        + len(owner_addresses).to_bytes(32, "big")
+        + b"".join(words)
+    )
+    return body
 
 
 def eta_unix_seconds(eta_raw: int) -> float:

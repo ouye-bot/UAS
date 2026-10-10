@@ -244,6 +244,17 @@ def main() -> int:
         and GOV.call_fn("delay", [])[0] == delay_s,
         f"governor 参数锁定 (required=2, delay={delay_s}s)",
     )
+    # ③站生产 24h 档标记：FZ_GOVERNOR_DELAY_S≥86400=生产档（观察/cancel 窗足
+    # 量）；演示链缺省 10s 保测试性（AdminGovernor.sol 头注纪律）——档位显式
+    # 打印进烟测判决行，部署者对时间锁档位不再靠猜。
+    if delay_s >= 86400:
+        print(f"  [档位] 时间锁=生产档（{delay_s}s ≥ 24h——观察与 cancel 窗足量）")
+    else:
+        print(f"  [档位] 时间锁=演示档（{delay_s}s < 24h——仅保测试性，生产须 ≥86400）")
+    expect(
+        GOV.call_fn("ownerCount", [])[0] == 3,
+        "governor ownerCount=3（③站 k-of-n 动态数组落地）",
+    )
     owners_on = [str(GOV.call_fn("owners", [i])[0]).lower() for i in range(3)]
     expect(
         owners_on == [admin.address.lower(), ra.address.lower(), auditor.address.lower()],
@@ -753,6 +764,160 @@ def main() -> int:
         "confirm",
         [pid2],
         "⑦ cancel 后再 confirm → revert",
+    )
+
+    # ===== ⑧ governor 参数化矩阵（③站 k-of-n 完全体——owner 增删/required
+    #      变更均走时间锁提案：target=governor 自身，治理面变更不绕过治理面）=====
+    print("== ⑧ governor 参数化矩阵（k-of-n 完全体）==")
+    # ⑧-b 治理自身面准入锁（onlyGovernor）：**owner 直调 addOwner 也拒**——
+    # 到达路径唯一=时间锁提案的 execute（execute 内部调用者=合约自身）。
+    # 用 admin（在任 owner）直调=最强负例：席位再高也不能绕过 k-of-n+时间锁。
+    expect_revert(
+        client,
+        admin,
+        GOV,
+        "addOwner",
+        [attacker.address],
+        "⑧-b owner 直调 addOwner 也拒（onlyGovernor——唯一路径=提案仪式）→ revert",
+    )
+    # ⑧-c addOwner(D) 完整提案仪式（每轮随机临时钥=幂等）
+    d_priv, _ = generate_keypair()
+    owner_d = TxSigner(d_priv)
+    run_proposal(GOV, admin, ra, GOV, "addOwner", [owner_d.address], "smoke:⑧ addOwner D")
+    expect(
+        GOV.call_fn("isOwner", [owner_d.address])[0] is True,
+        "⑧-c addOwner(D) 提案仪式生效 isOwner=true",
+    )
+    expect(GOV.call_fn("ownerCount", [])[0] == 4, "⑧-c ownerCount=4（追加生效）")
+    # ⑧-d 新 owner 治理权实证：D 对新提案 confirm 有效（一票入账仍 Active）
+    pid_d, _cd_d = _propose(4, 160, 2, admin)
+    GOV.send_fn(owner_d, "confirm", [pid_d])
+    _t, _c, _desc, _eta0, conf_d, st_d = GOV.call_fn("getProposal", [pid_d])
+    expect(
+        int(conf_d) == 1 and int(st_d) == 0,
+        "⑧-d 新 owner D confirm 有效（治理权真实生效，非名义席位）",
+    )
+    GOV.send_fn(admin, "cancel", [pid_d])
+    ok("⑧-d D 票提案 cancel 清理（待决索引释放——幂等不残留）")
+    # ⑧-e removeOwner(D) 提案仪式 → 移除生效（swap-and-pop）
+    run_proposal(GOV, admin, ra, GOV, "removeOwner", [owner_d.address], "smoke:⑧ removeOwner D")
+    expect(
+        GOV.call_fn("isOwner", [owner_d.address])[0] is False,
+        "⑧-e removeOwner(D) 提案仪式生效 isOwner=false",
+    )
+    expect(GOV.call_fn("ownerCount", [])[0] == 3, "⑧-e ownerCount 回落=3")
+    # ⑧-f 被移除者 confirm → revert（治理权回收）
+    expect_revert(
+        client,
+        owner_d,
+        GOV,
+        "confirm",
+        [pid_d],
+        "⑧-f 已移除 owner confirm → revert（治理权回收）",
+    )
+    # ⑧-g setRequired(5)（k>n=3 非法）提案 execute → revert（EVM 原子回滚：
+    #     提案态不留在 Executed——仍是 Queued 待决），cancel 清理
+    cd_r5 = GOV.encode_calldata("setRequired", [5])
+    rr5 = GOV.send_fn(admin, "propose", [GOV.address, sm3_bytes(cd_r5), "smoke:⑧ setRequired(5)"])
+    pid_r5 = int(
+        [ev for ev in GOV.decode_logs(rr5) if ev["event"] == "Proposed"][0]["proposalId"]
+    )
+    GOV.send_fn(admin, "confirm", [pid_r5])
+    GOV.send_fn(ra, "confirm", [pid_r5])
+    _t, _c, _d, eta_r5, _cf, _st = GOV.call_fn("getProposal", [pid_r5])
+    wait_r5 = eta_unix_seconds(int(eta_r5)) - time.time() + 1.5
+    if wait_r5 > 0:
+        time.sleep(wait_r5)
+    expect_revert(
+        client,
+        admin,
+        GOV,
+        "execute",
+        [GOV.address, 0, cd_r5],
+        "⑧-g setRequired(5>n) execute → revert（参数非法目标调用失败）",
+    )
+    expect(
+        int(GOV.call_fn("getProposal", [pid_r5])[5]) == 1,
+        "⑧-g execute 失败后提案原子回滚仍 Queued（非 Executed）",
+    )
+    GOV.send_fn(admin, "cancel", [pid_r5])
+    ok("⑧-g 非法 setRequired(5) 提案已 cancel 清理（待决索引释放）")
+    # ⑧-h/k below-quorum 不变式 + 真实运维序（先降 required 再移除 owner）：
+    # addOwner(E)→setRequired(4)（k=n 合法）→removeOwner(E) execute → revert
+    # （4-1=3 < 4）→setRequired(2) 恢复→原 removeOwner(E) 提案重试成功
+    e_priv, _ = generate_keypair()
+    owner_e = TxSigner(e_priv)
+    run_proposal(GOV, admin, ra, GOV, "addOwner", [owner_e.address], "smoke:⑧ addOwner E")
+    run_proposal(GOV, admin, ra, GOV, "setRequired", [4], "smoke:⑧ setRequired(4)")
+    expect(
+        GOV.call_fn("required", [])[0] == 4 and GOV.call_fn("ownerCount", [])[0] == 4,
+        "⑧-h setRequired(4)（k=n）生效（required/ownerCount=4/4）",
+    )
+    cd_re = GOV.encode_calldata("removeOwner", [owner_e.address])
+    rre = GOV.send_fn(admin, "propose", [GOV.address, sm3_bytes(cd_re), "smoke:⑧ removeOwner E"])
+    pid_re = int(
+        [ev for ev in GOV.decode_logs(rre) if ev["event"] == "Proposed"][0]["proposalId"]
+    )
+    GOV.send_fn(admin, "confirm", [pid_re])
+    GOV.send_fn(ra, "confirm", [pid_re])
+    _t, _c, _d, eta_re, _cf, _st = GOV.call_fn("getProposal", [pid_re])
+    wait_re = eta_unix_seconds(int(eta_re)) - time.time() + 1.5
+    if wait_re > 0:
+        time.sleep(wait_re)
+    expect_revert(
+        client,
+        admin,
+        GOV,
+        "execute",
+        [GOV.address, 0, cd_re],
+        "⑧-k removeOwner 至 n-1<required execute → revert（below quorum 不变式）",
+    )
+    # 恢复 setRequired(2)：此刻 required=4（k=n）——恢复提案本身须 4/4 全票
+    # （admin/RA/auditor/E 依次 confirm；run_proposal 双票helper 不适用——
+    # k=n 全票语义的活体演示）
+    cd_r2 = GOV.encode_calldata("setRequired", [2])
+    rr2 = GOV.send_fn(
+        admin, "propose", [GOV.address, sm3_bytes(cd_r2), "smoke:⑧ setRequired(2) 恢复"]
+    )
+    pid_r2 = int(
+        [ev for ev in GOV.decode_logs(rr2) if ev["event"] == "Proposed"][0]["proposalId"]
+    )
+    for signer in (admin, ra, auditor, owner_e):
+        GOV.send_fn(signer, "confirm", [pid_r2])
+    _t, _c, _d, eta_r2, cf_r2, st_r2 = GOV.call_fn("getProposal", [pid_r2])
+    expect(
+        int(cf_r2) == 4 and int(st_r2) == 1,
+        "⑧-k 4/4 全票 Queued（k=n 全票语义活体演示）",
+    )
+    wait_r2 = eta_unix_seconds(int(eta_r2)) - time.time() + 1.5
+    if wait_r2 > 0:
+        time.sleep(wait_r2)
+    GOV.send_fn(admin, "execute", [GOV.address, 0, cd_r2])
+    expect(GOV.call_fn("required", [])[0] == 2, "⑧-k required 恢复=2")
+    # 语义边界实证（入答辩口径）：required 下降**不追溯升级**历史 Active 提案
+    # （Queued 翻转只发生在 confirm 时点——时间锁不追溯，防"降票数后旧提案
+    # 静默达标"的绕过）——补一票（auditor）触发翻转 Queued → eta 重锁 → 重试。
+    GOV.send_fn(auditor, "confirm", [pid_re])
+    _t, _c, _d, eta_re2, cf_re2, st_re2 = GOV.call_fn("getProposal", [pid_re])
+    expect(
+        int(st_re2) == 1 and int(cf_re2) == 3,
+        "⑧-k 补票翻转 Queued（required 下降不追溯——confirm 时点判定语义）",
+    )
+    wait_re2 = eta_unix_seconds(int(eta_re2)) - time.time() + 1.5
+    if wait_re2 > 0:
+        time.sleep(wait_re2)
+    rre2 = GOV.send_fn(admin, "execute", [GOV.address, 0, cd_re])
+    exec_evs = [ev for ev in GOV.decode_logs(rre2) if ev["event"] in ("Executed", "OwnerRemoved")]
+    expect(
+        any(ev["event"] == "Executed" for ev in exec_evs)
+        and any(ev["event"] == "OwnerRemoved" for ev in exec_evs),
+        "⑧-k 降 required 后原 removeOwner(E) 提案重试生效（Executed+OwnerRemoved 双事件）",
+    )
+    expect(
+        GOV.call_fn("ownerCount", [])[0] == 3
+        and GOV.call_fn("required", [])[0] == 2
+        and GOV.call_fn("isOwner", [owner_e.address])[0] is False,
+        "⑧-i 部署态收口（count=3, required=2, E 已移除——幂等烟测不破坏部署态）",
     )
 
     print(f"== chain_smoke 全绿：{_checks} 项断言 [OK] ==")
