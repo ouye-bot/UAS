@@ -83,6 +83,8 @@ const hasMaterial = computed(() => !!(cred && sub));
 const deviceSn = ref("");
 const snMismatch = ref(false);
 const registeredSn = String(form.sn ?? "").trim();
+// ⑧站触达闭环：吊销前置提示（挂载时拉 /ra/pilot/notices——空=无前置条）
+const revokedNotices = ref<{ reason: string }[]>([]);
 
 // ---- 计划时刻（datetime-local ⟷ Unix 秒内部口径） ----
 const startLocal = ref("");
@@ -357,6 +359,14 @@ async function apply(): Promise<void> {
   failed.value = false; // 新一次提交——刻度轨解除定格回到进行时形态
   try {
     if (!hasMaterial.value) throw new ApiError("no_material", "先在「我的记录」签发一次性子凭证", 0);
+    // ⑧站触达闭环·申请前置提示：凭证已吊销=就地专属判词（fail-fast 省一次
+    // 烧证——后端受理门 revoked 仍为真权威，此处是被动获知的提交面前置）
+    if (revokedNotices.value.length)
+      throw new ApiError(
+        "cred_revoked",
+        `您的凭证已被吊销${revokedNotices.value[0]?.reason ? `（理由：${revokedNotices.value[0].reason}）` : ""}——申请将被拒绝；恢复须签发机构双控复核，请联系机构`,
+        0,
+      );
     // SN 单源门（2026-10-07）：桥读数不可达=不猜；登记 SN≠本机 SN=老账户阻断
     // （两态都给人话指引——首次 ARM 必 sn_mismatch 的路径就此封死）
     if (!deviceSn.value) throw new ApiError("device_serial_unavailable", DEVICE_SERIAL_UNAVAILABLE, 0);
@@ -440,6 +450,13 @@ onMounted(async () => {
   // SN 单源：读桥本机序列号+老账户失配判定（读数失败=空串，提交面 fail-closed）
   deviceSn.value = await getDeviceSerial();
   snMismatch.value = !!deviceSn.value && !!registeredSn && registeredSn !== deviceSn.value;
+  // ⑧站触达闭环：申请前置提示数据源（吊销态——提交面前置判词+页顶红条）
+  try {
+    const n = await api<Record<string, any>>("/ra/pilot/notices");
+    revokedNotices.value = (n?.revoked ?? []) as { reason: string }[];
+  } catch {
+    revokedNotices.value = []; // 拉取失败=不渲染前置条（后端受理门 revoked 真权威兜底）
+  }
   // C-P1-5：政策上限提交前即知（公开公示面，登记机型——无需绑定参数）
   try {
     const d = await api<Record<string, any>>(`/authz/policy/class/${registeredClassId}`);
@@ -521,6 +538,11 @@ function denyMessage(code: string, message: string): string {
       <h2>起飞申请</h2>
       <p class="desc">提交后系统在本机生成零知识证明并自动核验飞行资质与合规性，全程不透露您的身份。</p>
       <div v-if="!hasMaterial" class="deny"><span class="code">缺材料</span>请先在「我的记录」签发一次性子凭证。</div>
+      <!-- ⑧站触达闭环：吊销前置提示（数据源 /ra/pilot/notices——提交面同点阻断） -->
+      <div v-for="(r, i) in revokedNotices" :key="'rv' + i" class="deny" data-test="apply-revoked">
+        <span class="code">凭证已吊销</span>
+        {{ r.reason ? `理由：${r.reason}。` : "" }}起飞申请将被拒绝；恢复须签发机构双控复核，请联系机构。
+      </div>
       <!-- SN 单源（2026-10-07）：老账户失配就地指引（登记 SN≠本机 SN——
            不阻断页面浏览，但提交面 fail-closed；人话指向重登记） -->
       <div v-if="snMismatch" class="deny">

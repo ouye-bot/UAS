@@ -6,6 +6,7 @@ import { storeToRefs } from "pinia";
 import { sm2 } from "sm-crypto";
 import { api, ApiError } from "../lib/api";
 import HashText from "../components/HashText.vue";
+import PilotNotices, { type PilotNoticeData } from "../components/PilotNotices.vue";
 import DenyBox from "../components/DenyBox.vue";
 import StatusTag from "../components/StatusTag.vue";
 import ParticleField from "../components/ParticleField.vue";
@@ -140,6 +141,16 @@ async function loadLocal(): Promise<void> {
 }
 onMounted(loadLocal);
 
+// ---- ⑧站触达闭环：飞手被动获知面（吊销/违规/子凭证到期——首页提醒条） ----
+const notices = ref<PilotNoticeData | null>(null);
+onMounted(async () => {
+  try {
+    notices.value = await api("/ra/pilot/notices");
+  } catch {
+    notices.value = null; // 拉取失败=不渲染提醒条（既有页面形态零变化）
+  }
+});
+
 // ---- 孤儿户续办门（2026-09-30 评审 P1-8 根修）：半途注册（已建户未补资料）
 // 登录后不再卡死——就地补完资料（密码解锁钥→签发上链→二相回存），用户名不废。----
 const orphan = ref<null | { done: boolean; busy: boolean; err: string; pw: string; id_number: string; sn: string; cert_level: number; class_id: number }>(null);
@@ -230,6 +241,9 @@ const KPI_META = {
         </div>
       </div>
     </div>
+
+    <!-- ⑧站触达闭环：吊销/违规/到期提醒条（被动获知面——数据源 /ra/pilot/notices） -->
+    <PilotNotices :notices="notices" />
 
     <!-- 孤儿户续办门（半途注册自救） -->
     <div class="panel" v-if="orphan && !orphan.done" style="border-left: 4px solid #d9963a">
