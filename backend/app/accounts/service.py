@@ -31,6 +31,7 @@ from app.accounts.kdf import (
 )
 from app.accounts.models import (
     CHALLENGE_TTL_SECONDS,
+    PENDING_ACTIVATION_TTL_HOURS,
     SESSION_TTL_HOURS,
     Account,
     AccountAdminLog,
@@ -191,6 +192,47 @@ class AttemptLimiter:
 
 auth_limiter = AttemptLimiter()
 
+# 激活面专用限速（2026-10-11 激活面收紧批①）：5 发/窗、键=纯 username
+# （去 IP——批量开户属同一机构出口 IP 的合法形态，按 IP 会误伤；攻击者
+# 换 IP 也逃不掉——目标变量是账户不是网络路径）。与 auth_limiter 同窗长
+# （300s），同落库共享桶（多副本部署共享同窗、重启不清零）。
+ACTIVATE_MAX_ATTEMPTS = 5
+activate_limiter = AttemptLimiter(max_attempts=ACTIVATE_MAX_ATTEMPTS, window_s=300.0)
+
+
+def activation_rate_key(username: str) -> str:
+    """激活限速键单源（check 与 reset 必须同键——重置清桶依赖此函数）。"""
+    return f"activate|{username}"
+
+
+def activation_code_required() -> bool:
+    """激活码双因子档位（2026-10-11 批③）：production 档默认强制，demo 档
+    默认关（演示流程零影响——机制在、按档启用）。env FZ_ACTIVATION_CODE_
+    REQUIRED 显式覆写（1/true/yes/on=开，0/false/no/off=关——部署方对
+    production 档也可显式关闭，属部署决策如实生效）。与 cookie_secure()
+    同款「显式 env>档位缺省」模式。"""
+    raw = (os.environ.get("FZ_ACTIVATION_CODE_REQUIRED") or "").strip().lower()
+    if raw:
+        return raw in ("1", "true", "yes", "on")
+    return is_production()
+
+
+def issue_activation_code(session: Session, row: Account) -> str:
+    """出具一次性激活码（production/显式开档使用）：CSPRNG 8B→16 hex，库内
+    只存 SM3 哈希——明码经返回值交种子脚本独立交付（不与口令同文件）。
+    出码动作入台账（append-only，与重置审计同流）。重复调用=换新码
+    （旧码哈希被覆盖——只认最新一枚，覆盖动作同入台账）。"""
+    code = secrets.token_hex(8)
+    row.activation_code_hash = sm3_bytes(code.encode()).hex()
+    log_account_action(
+        session,
+        action="activation_code_issued",
+        username=row.username,
+        operator="offline_seed_script",
+        detail="one_time_code_hash_pinned",
+    )
+    return code
+
 
 def _utcnow() -> dt.datetime:
     return dt.datetime.now(dt.UTC).replace(tzinfo=None)
@@ -305,12 +347,16 @@ def prelogin(session: Session, username: str) -> dict:
     - "legacy_v3"=旧种子（库内核对子为旧链 KEK 等价值——兼容读取，激活即换代）。"""
     row = get_account(session, username)
     if row.status == "pending_activation":
+        # require_code（2026-10-11 批③）：双因子档位下客户端预先渲染激活码
+        # 输入面（省一次注定失败的服务端尝试——激活尝试有限速预算）
+        require_code = activation_code_required()
         if row.init_verifier_ver == "v1":
             return {
                 "mode": "activation",
                 "kdf_salt_hex": row.init_kdf_salt_hex,
                 "verifier": "v1",
                 "rounds": kdf_iterations(),
+                "require_code": require_code,
             }
         # 旧种子格式（init_verifier_ver 为 NULL）——兼容读取
         return {
@@ -318,6 +364,7 @@ def prelogin(session: Session, username: str) -> dict:
             "kdf_salt_hex": row.init_kdf_salt_hex,
             "verifier": "legacy_v3",
             "rounds": KDF_LEGACY_V3_ITERATIONS,
+            "require_code": require_code,
         }
     if row.status == "pending_profile":
         return {"mode": "challenge"}  # 已可登录（资料未补，工作台受限）
@@ -363,26 +410,89 @@ def upgrade_sealed_blob(session: Session, username: str, sealed_blob: str) -> No
     session.commit()
 
 
+def _audit_activate_failure(session: Session, username: str, reason: str) -> None:
+    """激活失败尝试入账（2026-10-11 批④）：append-only 台账与重置审计同流
+    （AccountAdminLog）。覆盖面=进入激活流程后的失败（过期/缺码/错码/口令
+    错——「凭初始口令试探」的攻击面）；not_activatable（状态机拒绝，非试探）
+    与 429（限速层拒绝，路由层先于本函数）不入账。"""
+    log_account_action(
+        session,
+        action="activate_failed",
+        username=username,
+        operator="self_attempt",
+        detail=reason,
+    )
+
+
 def activate(
-    session: Session, username: str, verifier_hex: str, pubkey_hex: str, sealed_blob: str
+    session: Session,
+    username: str,
+    verifier_hex: str,
+    pubkey_hex: str,
+    sealed_blob: str,
+    activation_code: str | None = None,
 ) -> None:
     """预置机构账户首登激活：初始密码核对子一次性比对（恒时）→写入钥对→
     焚烧核对子——此后进入纯挑战-应答态（密码材料归零）。
     核对子格式按 init_verifier_ver 分派（"v1"=独立域现行；NULL=旧种子
-    KEK 等价格式，兼容读取——激活即焚=换代，库内不再留 KEK 等价物）。"""
+    KEK 等价格式，兼容读取——激活即焚=换代，库内不再留 KEK 等价物）。
+    门序（2026-10-11 激活面收紧批）：②时效门（72h 过期拒——处置=管理员
+    重置重开窗，fail-fast 在昂贵 KDF 核对之前）→③双因子门（档位启用时
+    缺码 403 指引出码/错码 401 不焚码——先码后口令：码比对零 KDF 成本，
+    口令核对子=PBKDF2 昂贵面）→核对子恒时比对。全部失败路径入台账。"""
     row = get_account(session, username)
     if row.status != "pending_activation":
         raise AccountError("not_activatable", "该账户不在待激活状态", 409)
+    # ---- 门② 待激活时效（72h）：过期=种子窗关闭，唯一出路=管理员重置 ----
+    if (
+        row.pending_since_ts is not None
+        and (_utcnow() - row.pending_since_ts).total_seconds() > PENDING_ACTIVATION_TTL_HOURS * 3600
+    ):
+        _audit_activate_failure(session, username, "activation_expired")
+        session.commit()
+        raise AccountError(
+            "activation_expired",
+            "待激活已超时（72 小时）——初始口令通道已关闭，请联系机构管理员重置凭证",
+            403,
+        )
+    # ---- 门③ 一次性激活码（档位启用时强制；demo 档缺省关零影响）----
+    if activation_code_required():
+        want_code_hash = row.activation_code_hash
+        if not want_code_hash:
+            _audit_activate_failure(session, username, "activation_code_required")
+            session.commit()
+            raise AccountError(
+                "activation_code_required",
+                "该账户启用了双因子激活但尚未出具激活码——请联系机构管理员重置并索取",
+                403,
+            )
+        if not activation_code:
+            _audit_activate_failure(session, username, "activation_code_required")
+            session.commit()
+            raise AccountError(
+                "activation_code_required",
+                "该账户须一次性激活码——请向机构管理员索取（种子独立交付件）",
+                403,
+            )
+        if not hmac.compare_digest(
+            sm3_bytes(activation_code.strip().lower().encode()).hex(), want_code_hash
+        ):
+            _audit_activate_failure(session, username, "activation_code_invalid")
+            session.commit()
+            raise AccountError("activation_code_invalid", "激活码不正确或已失效", 401)
     _validate_pubkey(pubkey_hex)
     _validate_sealed_blob(sealed_blob, pubkey_hex)
     want = row.init_verifier_hex or ""
     if not want or not hmac.compare_digest(verifier_hex.lower(), want):
+        _audit_activate_failure(session, username, "activation_failed")
+        session.commit()
         raise AccountError("activation_failed", "初始密码不正确", 401)
     row.pubkey_hex = pubkey_hex.lower()
     row.sealed_blob = sealed_blob
     row.init_verifier_hex = None
     row.init_verifier_ver = None
     row.init_kdf_salt_hex = None
+    row.activation_code_hash = None  # 码一次性：激活成功即焚
     row.status = "active"
     append_pubkey_epoch(session, username, pubkey_hex)  # 首激活=纪元 1；重置后再激活=新纪元
     session.commit()
@@ -544,6 +654,7 @@ def seed_institutional_account(
             row.init_kdf_salt_hex = salt
             row.init_verifier_ver = "v1"
             row.init_verifier_hex = derive_activation_verifier(initial_password, salt)
+            row.pending_since_ts = _utcnow()  # 时效窗重开（2026-10-11 批②）
             log_account_action(
                 session, action="reseed_pending", username=username, operator="offline_seed_script"
             )
@@ -559,6 +670,7 @@ def seed_institutional_account(
         init_kdf_salt_hex=salt,
         init_verifier_ver="v1",
         init_verifier_hex=derive_activation_verifier(initial_password, salt),
+        pending_since_ts=_utcnow(),  # 时效窗起点（2026-10-11 批②）
     )
     session.add(row)
     session.commit()
@@ -590,6 +702,8 @@ def reset_institutional_account(
     row.init_kdf_salt_hex = salt
     row.init_verifier_ver = "v1"
     row.init_verifier_hex = derive_activation_verifier(new_password, salt)
+    row.pending_since_ts = _utcnow()  # 重置=新 72h 时效窗（2026-10-11 批②）
+    row.activation_code_hash = None  # 旧激活码作废——重开窗须重新出码（档位开时）
     row.pubkey_hex = None
     row.sealed_blob = None
     row.sealed_profile = None
@@ -597,6 +711,9 @@ def reset_institutional_account(
     for ws in session.execute(select(WebSession).where(WebSession.username == username)).scalars():
         session.delete(ws)
     session.commit()
+    # 重置=新激活生命周期：激活尝试限速桶清零（扫描残留不殃及重开窗后的
+    # 合法激活——桶在 300s 窗自愈前，重置路径显式清账）
+    activate_limiter.reset(activation_rate_key(username), session)
     return row
 
 

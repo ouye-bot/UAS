@@ -179,15 +179,30 @@ export interface LoginOutcome {
 }
 
 /** 登录。抛 ApiError（code 区分：activation_failed/密码错=bad_password/限速等）。
- * 密封件解封失败（GCM）=密码错误——本地即判，不猜服务端。 */
-export async function login(username: string, password: string): Promise<LoginOutcome> {
+ * 密封件解封失败（GCM）=密码错误——本地即判，不猜服务端。
+ * activationCode（2026-10-11 激活面收紧批③）：双因子档位（production/显式
+ * env）下预置账户首登激活的一次性激活码——prelogin 下发 require_code=true
+ * 而未携带时本地先行拒绝（不烧服务端激活尝试的限速预算）；demo 档缺省关。 */
+export async function login(
+  username: string,
+  password: string,
+  activationCode?: string,
+): Promise<LoginOutcome> {
   const pre = await api<{
     mode: "challenge" | "activation";
     kdf_salt_hex?: string;
     verifier?: "v1" | "legacy_v3";
     rounds?: number;
+    require_code?: boolean;
   }>(`/auth/prelogin/${encodeURIComponent(username)}`);
   if (pre.mode === "activation") {
+    if (pre.require_code && !activationCode) {
+      throw new ApiError(
+        "activation_code_required",
+        "该账户须一次性激活码——请向机构管理员索取（种子独立交付件）",
+        403,
+      );
+    }
     // 预置机构账户首登激活：初始密码核对子一次性比对→钥对生成+密封上传→焚烧。
     // 核对子按 prelogin 下发格式分派复算（v1=独立派生域现行 / legacy_v3=旧种子
     // 兼容读取——与后端 accounts/kdf.py 同域同参）；密封一律 v4 现行口径。
@@ -206,6 +221,7 @@ export async function login(username: string, password: string): Promise<LoginOu
         verifier_hex: verifier,
         pubkey_hex: pk,
         sealed_blob: JSON.stringify(blob),
+        ...(activationCode ? { activation_code: activationCode } : {}),
       }),
     });
   }

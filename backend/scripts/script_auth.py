@@ -43,8 +43,14 @@ def _sealed_blob(pk: str, sk: str, passphrase: str) -> str:
     return seal_envelope_v4(sk, pk, passphrase)
 
 
-def script_login(api_base: str, username: str, password: str) -> requests.Session:
-    """登录（必要时注册/激活）→携带会话 Cookie 的 Session（附 .sk）。"""
+def script_login(
+    api_base: str, username: str, password: str, activation_code: str | None = None
+) -> requests.Session:
+    """登录（必要时注册/激活）→携带会话 Cookie 的 Session（附 .sk）。
+
+    activation_code（2026-10-11 批③）：双因子档位（production/显式 env）下
+    预置账户首登激活的第二因子（种子脚本独立交付件交付）；demo 档缺省关，
+    不传即走纯核对子流。档位开而未传=本地先行拒绝（不烧服务端限速预算）。"""
     s = requests.Session()
     pre_r = s.get(f"{api_base}/auth/prelogin/{username}", timeout=10)
     if pre_r.status_code == 404:
@@ -69,18 +75,26 @@ def script_login(api_base: str, username: str, password: str) -> requests.Sessio
             _remember_sk(sk)
             pk_no04 = pk  # 服务端 sm2 公钥=X‖Y 无 04 前缀
             pre = pre_r.json()["data"]
+            if pre.get("require_code") and not activation_code:
+                raise RuntimeError(
+                    "该账户启用了双因子激活——请以 script_login(..., activation_code=) "
+                    "传入种子脚本独立交付件中的一次性激活码"
+                )
             if pre.get("verifier", "v1") == "legacy_v3":
                 verifier = _legacy_v3(password, pre["kdf_salt_hex"], KDF_LEGACY_V3_ITERATIONS)
             else:
                 verifier = derive_activation_verifier(password, pre["kdf_salt_hex"])
+            act_body = {
+                "username": username,
+                "verifier_hex": verifier,
+                "pubkey_hex": pk_no04,
+                "sealed_blob": _sealed_blob(pk_no04, sk, password),
+            }
+            if activation_code:
+                act_body["activation_code"] = activation_code
             r = s.post(
                 f"{api_base}/auth/activate",
-                json={
-                    "username": username,
-                    "verifier_hex": verifier,
-                    "pubkey_hex": pk_no04,
-                    "sealed_blob": _sealed_blob(pk_no04, sk, password),
-                },
+                json=act_body,
                 timeout=10,
             )
             r.raise_for_status()

@@ -35,6 +35,11 @@ const liUsername = ref("");
 const liPassword = ref("");
 const liBusy = ref(false);
 const activateHint = ref(false); // 预置机构账户首登激活提示
+// 一次性激活码（2026-10-11 激活面收紧批③）：双因子档位（production）下服务端
+// prelogin/激活拒绝反馈 require_code 后渲染——demo 档缺省关=本输入面不渲染
+// （浏览器 e2e 冻结面零变化）。
+const liActivationCode = ref("");
+const liNeedCode = ref(false);
 
 function homeOf(role: string): string {
   if (role === "auditor") return "/audit";
@@ -49,12 +54,18 @@ async function doLogin(): Promise<void> {
   }
   liBusy.value = true; deny.value = null; activateHint.value = false;
   try {
-    const out: LoginOutcome = await authLogin(liUsername.value.trim(), liPassword.value);
+    const out: LoginOutcome = await authLogin(
+      liUsername.value.trim(),
+      liPassword.value,
+      liActivationCode.value.trim() || undefined,
+    );
     liPassword.value = ""; // 密码即焚（解封完成即无用）
+    liActivationCode.value = ""; // 激活码一次性——激活完成即无用
     router.push(homeOf(out.role));
   } catch (e) {
     const err = e as ApiError;
     if (err.code === "activation_failed") activateHint.value = true;
+    if (err.code === "activation_code_required") liNeedCode.value = true;
     deny.value = { code: err.code ?? "login_failed", message: err.message ?? String(e) };
   } finally {
     liBusy.value = false;
@@ -236,6 +247,10 @@ const keyFingerprint = computed(() => (pending.value?.pk ?? "").slice(0, 16));
         <input v-model="liUsername" class="mono" autocomplete="username" @keyup.enter="doLogin" />
         <label>密码</label>
         <input v-model="liPassword" type="password" autocomplete="current-password" @keyup.enter="doLogin" />
+        <template v-if="liNeedCode">
+          <label>一次性激活码（双因子档位——机构管理员独立交付）</label>
+          <input v-model="liActivationCode" class="mono" data-test="activation-code" @keyup.enter="doLogin" />
+        </template>
         <p v-if="activateHint" class="note">
           检测到该账户为预置机构账户（首次登录）——请核对初始密码；激活将当场生成本账户专属密钥。
         </p>

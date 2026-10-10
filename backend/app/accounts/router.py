@@ -3,8 +3,9 @@
 
 统一信封 {code,message,data}；Cookie：HttpOnly+SameSite=Lax（fz_session），
 secure=FZ_COOKIE_SECURE（缺省 production 档自动 True）。
-限速：challenge/activate/login 共享尝试窗（rate_limit_buckets 落库——
-多副本部署共享同窗，重启不清零）。
+限速：challenge/login 共享尝试窗（ip|username 键）；activate 专窗 5 发/300s、
+键=纯 username（激活面收紧批 2026-10-11——批量开户同出口 IP 不误伤）。
+尝试窗落库 rate_limit_buckets——多副本部署共享同窗，重启不清零。
 """
 
 from __future__ import annotations
@@ -19,6 +20,8 @@ from app.accounts.service import (
     SESSION_COOKIE,
     AccountError,
     activate,
+    activate_limiter,
+    activation_rate_key,
     auth_limiter,
     cookie_secure,
     get_account,
@@ -59,6 +62,9 @@ class ActivateIn(BaseModel):
     verifier_hex: str = Field(min_length=32, max_length=32)
     pubkey_hex: str = Field(min_length=128, max_length=128)
     sealed_blob: str = Field(min_length=32, max_length=8192)
+    # 一次性激活码（2026-10-11 批③双因子）：仅档位启用（production/显式 env）
+    # 时强制；demo 档缺省关，不传即走纯核对子流
+    activation_code: str | None = Field(default=None, min_length=1, max_length=64)
 
 
 class LoginIn(BaseModel):
@@ -154,10 +160,21 @@ def challenge_route(username: str, request: Request, session: Session = Depends(
 
 
 @router.post("/activate")
-def activate_route(body: ActivateIn, request: Request, session: Session = Depends(get_session)):
+def activate_route(body: ActivateIn, session: Session = Depends(get_session)):
     try:
-        auth_limiter.check(f"activate|{_client_key(request, body.username)}", session)
-        activate(session, body.username, body.verifier_hex, body.pubkey_hex, body.sealed_blob)
+        # 限速键=纯 username（2026-10-11 批①：激活是账户变量不是网络路径变量
+        # ——同机构出口 IP 批量开户为合法形态，IP 维度会误伤；5 发/窗专例，
+        # 比 login/challenge 的共享窗更紧——核对子面=唯一凭初始口令即可绑定
+        # 任意自选钥对的面）
+        activate_limiter.check(activation_rate_key(body.username), session)
+        activate(
+            session,
+            body.username,
+            body.verifier_hex,
+            body.pubkey_hex,
+            body.sealed_blob,
+            activation_code=body.activation_code,
+        )
     except AccountError as exc:
         return _err(exc)
     return JSONResponse(

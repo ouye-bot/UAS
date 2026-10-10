@@ -204,10 +204,27 @@ def kill_workers(pids: list[int]) -> None:
         subprocess.run(["taskkill", "/F", "/T", "/PID", str(pid)], capture_output=True)
 
 
+def _load_local_env(env: dict) -> None:
+    """.local_env 注入（demo_up 同源纪律，2026-10-11 激活面批实弹定谳补齐）：
+    链上交易钥 FZ_CHAIN_*_TX_SK 在 .local_env（部署合约角色=这四把钥 CSPRNG
+    随机）——S10 复原 worker 漏载即退回派生演示钥，recordAuth 链写被合约
+    revert（0x16 transient x3，roles_live G.1 同族二现）。解析 export KEY=
+    VALUE 行写入 env；.local_env 为部署事实源，同键覆盖。"""
+    _env_file = UAS / ".local_env"
+    if not _env_file.exists():
+        return
+    import re as _re
+
+    for _line in _env_file.read_text(encoding="utf-8").splitlines():
+        _m = _re.match(r"^\s*(?:export\s+)?([A-Z0-9_]+)=(.*)\s*$", _line)
+        if _m and not _line.lstrip().startswith("#"):
+            env[_m.group(1)] = _m.group(2).strip().strip('"').strip("'")
+
+
 def load_persisted_keys() -> None:
     """%TEMP% 持久钥回注进程 env（demo_up 同源纪律——run3 实弹教训：本地派生
     HMAC 挑战（FZ_AUTHZ_BINDING_KEY）缺钥即回退确定性域钥，与在线服务派生
-    键空间分叉——S9-4 对拍 rc=2 的根因）。"""
+    键空间分叉——S9-4 对拍 rc=2 的根因）。附 .local_env（链上交易钥）。"""
     t = Path(tempfile.gettempdir())
     for var, fname in (
         ("FZ_ENGINE_SK", "fz_engine_sk.txt"), ("FZ_ENGINE_TOKEN", "fz_engine_token.txt"),
@@ -221,6 +238,7 @@ def load_persisted_keys() -> None:
                 os.environ[var] = p.read_text(encoding="utf-8").strip()
             except OSError:
                 pass
+    _load_local_env(os.environ)
 
 
 def worker_env(lease_s: int | None = None) -> dict:
@@ -240,6 +258,7 @@ def worker_env(lease_s: int | None = None) -> dict:
         p = t / fname
         if p.is_file():
             env[var] = p.read_text(encoding="utf-8").strip()
+    _load_local_env(env)
     if lease_s:
         env["FZ_WORKER_LEASE_S"] = str(lease_s)
     return env
@@ -607,6 +626,86 @@ def s2_challenge_ratelimit(opts):
         m.xfail("S2-4 300s 窗口恢复（默认档不真等）",
                 reason="限速窗 300s 真等仅 --recover 档执行——默认 xfail 标注非软通道",
                 defense_ref="app/accounts/service.py:AttemptLimiter")
+
+    # ---- ⑤ 激活限速实弹（2026-10-11 激活面收紧批①）：键=纯 username、5 发/窗 ----
+    # 限速在路由层先于一切身份校验（fail-closed）——任意 username 连发即证，
+    # 无需真待激活账户（404/409 同样计入尝试窗）。键不含 IP：批量开户（同一
+    # 机构出口 IP）为合法形态不误伤；键控隔离=另一 username 独立桶。
+    act_name = f"{PREFIX}_act_{secrets.token_hex(3)}"
+    # verifier_hex=32 hex（16B 核对子契约——ActivateIn max_length=32）
+    act_body = {"username": act_name, "verifier_hex": "00" * 16,
+                "pubkey_hex": "11" * 64, "sealed_blob": "0" * 64}
+    curve_act, hit_act = [], None
+    b_act = metrics()
+    for i in range(1, 8):
+        st, r, ms, _ = post("/auth/activate", act_body, timeout=15)
+        curve_act.append({"n": i, "status": st, "code": (r or {}).get("code")})
+        if st == 429 and hit_act is None:
+            hit_act = i
+            break
+    a_act = metrics()
+    d429_act = mdelta(b_act, a_act, mkey("/auth/activate", 429))
+    if hit_act == 6 and all(c["status"] != 429 for c in curve_act[:5]) and d429_act >= 1:
+        m.pass_("S2-5 激活限速实弹：5 发拒后第 6 发 429（键=纯 username，5 发/300s 专窗）",
+                defense_ref="app/accounts/router.py:activate_route",
+                latency_ms=round(curve_act[-1].get("ms", 0) or 0, 1),
+                detail={"trigger_at": hit_act, "metric429": d429_act})
+        m.pass_("S2-5痕迹 429 落 /metrics(429)", defense_ref="app/main.py:obs_middleware",
+                detail={"delta": d429_act})
+    else:
+        m.fail("S2-5 激活限速实弹", expected="恰第 6 发 429",
+               actual=f"trigger_at={hit_act} curve={curve_act[-3:]}",
+               defense_ref="app/accounts/router.py:activate_route",
+               attack_success=hit_act is None)
+    # 键控隔离：另一 username 独立桶（非 429=404 user_not_found 正常拒绝）
+    st_i, r_i, _, _ = post("/auth/activate", {**act_body, "username": act_name + "x"}, timeout=15)
+    if st_i != 429:
+        m.pass_("S2-5b 激活限速键控隔离：邻桶不受累（独立 username 独立窗）",
+                defense_ref="app/accounts/service.py:activation_rate_key",
+                detail={"isolated_status": st_i, "isolated_code": (r_i or {}).get("code")})
+    else:
+        m.fail("S2-5b 激活限速键控隔离", expected="非 429（独立桶）", actual=str(st_i),
+               defense_ref="app/accounts/service.py:activation_rate_key")
+
+    # ---- ⑥ 激活失败入账实弹（批④）：append-only 台账 activate_failed ----
+    # 真待激活账户（服务端直接播种——核对子=已知口令独立域派生）：坏核对子
+    # 尝试 → 401 activation_failed 且 account_admin_log 落 activate_failed 行。
+    aud_name = f"{PREFIX}_actaud_{secrets.token_hex(3)}"
+    from app.accounts.kdf import derive_activation_verifier as _dav
+
+    _salt = secrets.token_hex(16)
+    _ver = _dav("SecChain-Pw-1", _salt)
+    con = db()
+    con.execute(
+        "INSERT INTO accounts (username, role, status, org_id, init_verifier_hex, "
+        "init_verifier_ver, init_kdf_salt_hex, created_ts, pending_since_ts) "
+        "VALUES (?, 'auditor', 'pending_activation', 'org-a', ?, 'v1', ?, "
+        "datetime('now'), datetime('now'))",
+        (aud_name, _ver, _salt),
+    )
+    # 注意：db()=套件级共享单例连接——只 commit 不 close（close=后续 db_* 全炸）
+    con.commit()
+    from app.crypto.sm2 import generate_keypair as _gkp
+    from scripts.script_auth import _sealed_blob as _mk_blob
+
+    _sk_p, _pk_p = _gkp()
+    st_f, r_f, ms_f, _ = post("/auth/activate", {
+        "username": aud_name, "verifier_hex": "ff" * 16,
+        "pubkey_hex": _pk_p, "sealed_blob": _mk_blob(_pk_p, _sk_p, "SecChain-Pw-1"),
+    }, timeout=15)
+    n_audit = db_val(
+        "SELECT COUNT(*) FROM account_admin_log WHERE action='activate_failed' AND username=?",
+        (aud_name,), default=0,
+    )
+    if st_f == 401 and (r_f or {}).get("code") == "activation_failed" and int(n_audit) >= 1:
+        m.pass_("S2-6 激活失败入账实弹：坏核对子 401+台账 activate_failed 行在案（append-only）",
+                defense_ref="app/accounts/service.py:activate._audit_activate_failure",
+                latency_ms=round(ms_f, 1), detail={"audited_rows": int(n_audit)})
+    else:
+        m.fail("S2-6 激活失败入账实弹", expected="401 activation_failed+台账 ≥1 行",
+               actual=f"{st_f} {(r_f or {}).get('code')} rows={n_audit}",
+               defense_ref="app/accounts/service.py:activate._audit_activate_failure",
+               attack_success=(st_f == 200))
 
 
 # ================================================================ S3 双控

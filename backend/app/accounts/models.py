@@ -28,6 +28,9 @@ from app.ra.models import Base
 
 SESSION_TTL_HOURS = 12
 CHALLENGE_TTL_SECONDS = 120
+# 待激活时效窗（2026-10-11 激活面收紧批②）：pending_activation 超 72h 后激活
+# 拒绝（activation_expired，须管理员重置重开窗）——堵「种子泄露窗无限期有效」。
+PENDING_ACTIVATION_TTL_HOURS = 72
 
 
 class Account(Base):
@@ -53,6 +56,15 @@ class Account(Base):
     init_verifier_hex: Mapped[str | None] = mapped_column(String(64), nullable=True)
     init_verifier_ver: Mapped[str | None] = mapped_column(String(8), nullable=True)
     init_kdf_salt_hex: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    # 待激活时效打点（2026-10-11 激活面收紧批②）：进入 pending_activation 的
+    # 时刻（种子/重置即打点）——超 PENDING_ACTIVATION_TTL_HOURS 激活拒绝。
+    # 迁移 0026 对存量行 server_default=CURRENT_TIMESTAMP（从迁移时刻起算——
+    # 从严）；NULL=不拒（防御性：正常路径恒有值）。
+    pending_since_ts: Mapped[dt.datetime | None] = mapped_column(DateTime, nullable=True)
+    # 一次性激活码哈希（2026-10-11 批③双因子）：SM3(码)——明码只经种子脚本
+    # stdout/独立交付件出（与口令文件分离=双通道），激活成功即焚。NULL=未出码
+    # （demo 档双因子关，恒 NULL；production 档 required 下 NULL=拒绝并指引重置）。
+    activation_code_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
     # 机构域键（⑥站多机构一期）：账户归属机构域（org-a=缺省机构域；org-b=第二
     # 机构 demo 种子）——管理/公示面归属标注；受理门控与电路零变化（一期=链面
     # 互认：FedRegistry 机构准入+逐域撤销锚+全局聚合根）。

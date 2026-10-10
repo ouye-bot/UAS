@@ -344,6 +344,260 @@ def test_rate_limit_429(client):
     del sk
 
 
+# ---- 激活面收紧（2026-10-11 批）：①限速 5 发/username 键 ②72h 时效
+# ③激活码双因子（档位开关——demo 关/production 开）④失败尝试入账 ----
+def _seed_pending(c: TestClient, username: str, password: str = "Init-Pass-1") -> str:
+    """种子待激活机构账户，返回核对子盐（测试直走 service 层=种子脚本同流）。"""
+    from app.accounts.models import Account
+    from app.accounts.service import seed_institutional_account
+
+    s = c.app.dependency_overrides[get_session]
+    gen = s()
+    sess = next(gen)
+    try:
+        seed_institutional_account(sess, username, "auditor", password)
+        return sess.query(Account).filter_by(username=username).one().init_kdf_salt_hex
+    finally:
+        gen.close()
+
+
+def _try_activate(
+    c: TestClient, username: str, password: str, salt: str, act_code: str | None = None
+):
+    """一次激活尝试（核对子按 password 复算；act_code=可选激活码）。"""
+    sk, pk = generate_keypair()
+    body = {
+        "username": username,
+        "verifier_hex": derive_activation_verifier(password, salt),
+        "pubkey_hex": pk,
+        "sealed_blob": _sealed_blob_js_style(pk, sk, PASS),
+    }
+    if act_code is not None:
+        body["activation_code"] = act_code
+    return c.post("/auth/activate", json=body)
+
+
+def _admin_log_count(sess, username: str, action: str = "activate_failed") -> int:
+    from app.accounts.models import AccountAdminLog
+
+    return sess.query(AccountAdminLog).filter_by(action=action, username=username).count()
+
+
+def test_activate_rate_limit_5_per_window_username_key(client):
+    """件①：激活限速 5 发/窗、键=纯 username（去 IP——防误伤批量开户）。
+    键控隔离：同窗另一 username 不受累。"""
+    salt = _seed_pending(client, "act_rl")
+    statuses = [_try_activate(client, "act_rl", "Wrong-Pass-9", salt).status_code for _ in range(5)]
+    assert statuses == [401] * 5  # 前 5 发=口令错（未触限速）
+    r6 = _try_activate(client, "act_rl", "Wrong-Pass-9", salt)
+    assert r6.status_code == 429 and r6.json()["code"] == "rate_limited"
+    # 键控隔离：另一账户独立桶——第 6 发不外溢
+    salt2 = _seed_pending(client, "act_rl2")
+    r = _try_activate(client, "act_rl2", "Wrong-Pass-9", salt2)
+    assert r.status_code == 401  # 非 429
+
+
+def test_activate_expired_after_72h(client):
+    """件②：pending_activation 72h 超时→激活拒 403（处置=管理员重置）+入账。"""
+    import datetime as dt
+
+    from app.accounts.models import PENDING_ACTIVATION_TTL_HOURS
+    from app.accounts.models import Account as Acc
+
+    salt = _seed_pending(client, "act_exp")
+    s = client.app.dependency_overrides[get_session]
+    gen = s()
+    sess = next(gen)
+    try:
+        row = sess.query(Acc).filter_by(username="act_exp").one()
+        assert row.pending_since_ts is not None  # 种子即打点（时效窗起点）
+        row.pending_since_ts = row.pending_since_ts - dt.timedelta(
+            hours=PENDING_ACTIVATION_TTL_HOURS + 1
+        )
+        sess.commit()
+    finally:
+        gen.close()
+    # 正确口令也拒——过期门先于核对子
+    r = _try_activate(client, "act_exp", "Init-Pass-1", salt)
+    assert r.status_code == 403 and r.json()["code"] == "activation_expired"
+    gen = s()
+    sess = next(gen)
+    try:
+        assert _admin_log_count(sess, "act_exp") >= 1  # 过期拒=激活失败同流入账
+    finally:
+        gen.close()
+    # 管理员重置=新 72h 窗（pending_since_ts 刷新→激活可行）
+    from app.accounts.service import reset_institutional_account
+
+    gen = s()
+    sess = next(gen)
+    try:
+        reset_institutional_account(sess, "act_exp", "Re-Pass-2")
+        row = sess.query(Acc).filter_by(username="act_exp").one()
+        salt2 = row.init_kdf_salt_hex
+    finally:
+        gen.close()
+    sk, pk = generate_keypair()
+    r2 = client.post(
+        "/auth/activate",
+        json={
+            "username": "act_exp",
+            "verifier_hex": derive_activation_verifier("Re-Pass-2", salt2),
+            "pubkey_hex": pk,
+            "sealed_blob": _sealed_blob_js_style(pk, sk, PASS),
+        },
+    )
+    assert r2.status_code == 200, r2.text
+
+
+def test_activate_failure_audited(client):
+    """件④：激活失败尝试逐笔入台账（append-only，与重置审计同流）；
+    429 限速拒不入账（限速层拒绝≠口令试探）。"""
+    from app.accounts.models import AccountAdminLog
+
+    salt = _seed_pending(client, "act_aud")
+    r = _try_activate(client, "act_aud", "Wrong-Pass-9", salt)
+    assert r.status_code == 401
+    s = client.app.dependency_overrides[get_session]
+    gen = s()
+    sess = next(gen)
+    try:
+        rows = (
+            sess.query(AccountAdminLog)
+            .filter_by(action="activate_failed", username="act_aud")
+            .all()
+        )
+        assert len(rows) == 1 and rows[0].detail  # detail=失败原因码（可审计）
+        assert rows[0].ts is not None
+    finally:
+        gen.close()
+    # 再发 4 发（累计 5）→ 全部 401 入账；第 6 发 429 不入账
+    for _ in range(4):
+        _try_activate(client, "act_aud", "Wrong-Pass-9", salt)
+    gen = s()
+    sess = next(gen)
+    try:
+        n5 = _admin_log_count(sess, "act_aud")
+        assert n5 == 5
+    finally:
+        gen.close()
+    r6 = _try_activate(client, "act_aud", "Wrong-Pass-9", salt)
+    assert r6.status_code == 429
+    gen = s()
+    sess = next(gen)
+    try:
+        assert _admin_log_count(sess, "act_aud") == 5  # 429 那发未入账
+    finally:
+        gen.close()
+
+
+def test_activation_code_demo_off_by_default(client, monkeypatch):
+    """件③档位：demo 档（非 production+env 未设）缺省关——演示流程零影响。"""
+    import app.accounts.service as svc
+
+    monkeypatch.delenv("FZ_ACTIVATION_CODE_REQUIRED", raising=False)
+    assert svc.activation_code_required() is False
+
+
+def test_activation_code_dual_factor_flow(client, monkeypatch):
+    """件③：档位开（env 显式）→prelogin 下发 require_code→出码（库内只存
+    SM3）→缺码 403 指引/错码 401 不焚码/对码激活 200+码焚→码一次性（重放 409）。"""
+    from app.accounts.models import Account as Acc
+    from app.accounts.service import activation_code_required, issue_activation_code
+
+    monkeypatch.setenv("FZ_ACTIVATION_CODE_REQUIRED", "1")
+
+    assert activation_code_required() is True
+    salt = _seed_pending(client, "act_2fa")
+    pre = client.get("/auth/prelogin/act_2fa").json()["data"]
+    assert pre["mode"] == "activation" and pre["require_code"] is True
+    s = client.app.dependency_overrides[get_session]
+    gen = s()
+    sess = next(gen)
+    try:
+        row = sess.query(Acc).filter_by(username="act_2fa").one()
+        code = issue_activation_code(sess, row)
+        sess.commit()
+        stored_hash = sess.query(Acc.activation_code_hash).filter_by(username="act_2fa").scalar()
+    finally:
+        gen.close()
+    assert len(code) == 16  # 8B CSPRNG=16 hex（一次性激活码）
+    assert stored_hash is not None and stored_hash != code  # 库内=哈希非明码
+    gen = s()
+    sess = next(gen)
+    try:
+        import app.accounts.service as svc
+
+        assert svc.sm3_bytes(code.encode()).hex() == stored_hash  # SM3 对拍
+    finally:
+        gen.close()
+    # 缺码=403（指引管理员出码）；错码=401 且不焚码
+    r0 = _try_activate(client, "act_2fa", "Init-Pass-1", salt)
+    assert r0.status_code == 403 and r0.json()["code"] == "activation_code_required"
+    r1 = _try_activate(client, "act_2fa", "Init-Pass-1", salt, act_code="0" * 16)
+    assert r1.status_code == 401 and r1.json()["code"] == "activation_code_invalid"
+    gen = s()
+    sess = next(gen)
+    try:
+        row = sess.query(Acc).filter_by(username="act_2fa").one()
+        assert row.activation_code_hash is not None and row.status == "pending_activation"
+    finally:
+        gen.close()
+    # 对码激活=200；码焚（一次性）
+    r2 = _try_activate(client, "act_2fa", "Init-Pass-1", salt, act_code=code)
+    assert r2.status_code == 200, r2.text
+    gen = s()
+    sess = next(gen)
+    try:
+        row = sess.query(Acc).filter_by(username="act_2fa").one()
+        assert row.status == "active" and row.activation_code_hash is None
+    finally:
+        gen.close()
+    # 账户已激活：同码重放激活=409 not_activatable（状态机兜底）
+    r3 = _try_activate(client, "act_2fa", "Init-Pass-1", salt, act_code=code)
+    assert r3.status_code == 409
+
+
+def test_reset_clears_activation_code_and_rate_bucket(client):
+    """重置=新激活生命周期：限速桶清零（重置后可立即再激活）+旧激活码作废。"""
+    from app.accounts.models import Account as Acc
+    from app.accounts.models import RateLimitBucket
+    from app.accounts.service import (
+        activation_rate_key,
+        issue_activation_code,
+        reset_institutional_account,
+    )
+
+    salt = _seed_pending(client, "act_rs")
+    for _ in range(5):
+        _try_activate(client, "act_rs", "Wrong-Pass-9", salt)  # 桶灌满（5 发）
+    s = client.app.dependency_overrides[get_session]
+    gen = s()
+    sess = next(gen)
+    try:
+        row = sess.query(Acc).filter_by(username="act_rs").one()
+        issue_activation_code(sess, row)  # 出一枚旧码（重置后须作废）
+        sess.commit()
+    finally:
+        gen.close()
+    gen = s()
+    sess = next(gen)
+    try:
+        reset_institutional_account(sess, "act_rs", "Re-Pass-3")
+        assert (
+            sess.query(RateLimitBucket).filter_by(bucket_key=activation_rate_key("act_rs")).count()
+            == 0
+        )
+        row = sess.query(Acc).filter_by(username="act_rs").one()
+        assert row.activation_code_hash is None  # 旧码作废
+        salt2 = row.init_kdf_salt_hex
+    finally:
+        gen.close()
+    # 重置后第 1 发即 401（非 429——桶已清）
+    r = _try_activate(client, "act_rs", "Wrong-Pass-9", salt2)
+    assert r.status_code == 401
+
+
 def test_logout_burns_session(client):
     sk, _ = _register_pilot(client, "pilot_out")
     _login(client, "pilot_out", sk)
