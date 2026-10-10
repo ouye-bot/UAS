@@ -580,12 +580,13 @@ def unwrap_any(
     """信封版本分派：v5=门限路径（三份额域 2-of-3 合成 Kₑ），legacy=旧单钥。
 
     v5 路径的 unlock_ctx（warrant_hash_hex/cred_hash_hex/request_sha256_hex）
-    供份额域三关校验与审计；缺省即拒（门限信封无上下文=不得解）。"""
+    供份额域四关校验与审计（第④关=owner-set 同步，1.3 件④）；缺省即拒
+    （门限信封无上下文=不得解）。"""
     if not blob or blob[0] != _V5_TAG:
         return unwrap_secret(blob, aad)
     if unlock_ctx is None:
         raise AuthzError(
-            "threshold_ctx_required", "门限信封解锁须携带解锁上下文（份额域三关校验用）", 400
+            "threshold_ctx_required", "门限信封解锁须携带解锁上下文（份额域四关校验用）", 400
         )
     from app.crypto.sm4 import SM4GCM
     from app.crypto.threshold import threshold_decrypt

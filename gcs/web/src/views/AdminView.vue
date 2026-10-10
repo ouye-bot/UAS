@@ -490,8 +490,9 @@ async function checkSigs(r: ReqView): Promise<void> {
         style="color:#c0392b;border:1px solid #e6b0aa;border-radius:8px;padding:8px 12px;margin-top:10px"
       >
         ⛔ 份额域失同步：治理席位已变更（owner-set 指纹漂移）而份额未重分割
-        ——门限解锁已被 fail-closed 拦截。reshare 提案已自动起草（待多签确认+
-        时间锁执行）；执行后自动恢复。
+        ——门限解锁已被 fail-closed 拦截。同步 watcher 将自动起草重分割提案
+        （待治理多签确认+时间锁执行）；公示落地后系统自动完成份额重分割并
+        解除拦截（人工需完成多签确认与执行两步）。
       </p>
       <div class="req-meta" style="margin-top:6px">
         治理席位（{{ gov.chain.owner_count }}）：

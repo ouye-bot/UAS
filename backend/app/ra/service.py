@@ -131,9 +131,10 @@ class RaDeps:
     # （服务层单测默认）；fake 档经 anchor.call("revoke_auth",…) 留痕供断言；
     # 真链档由 API 层注入 FlightAuthRegistry 路径。返回 {"ok": bool, "detail": str}。
     auth_revoke: Callable[[int], dict] | None = None
-    # ④站门限份额域三关 hooks（None=默认真实现——request_registered 台账/
-    # warrant_on_chain 走 anchor/collab_approved 走 SessionLocal）。测试注入
-    # 本地判定（真模型真查——非网络替身）；API 层默认即真实现。
+    # ④站门限份额域四关 hooks（None=默认真实现——request_registered 台账/
+    # warrant_on_chain 走 anchor/collab_approved 走 SessionLocal/owner_set_
+    # synced 走同步面单源——1.3 审查批钉死生产 fallback 恒含第④关）。测试
+    # 注入本地判定（真模型真查——非网络替身）；API 层默认即真实现。
     threshold_hooks: dict | None = None
 
 
@@ -147,6 +148,12 @@ def _threshold_hook_collab_approved():
     from app.ra.threshold_hooks import collab_approved
 
     return collab_approved
+
+
+def _threshold_hook_owner_set_synced():
+    from app.ra.threshold_hooks import owner_set_synced
+
+    return owner_set_synced
 
 
 def _ra_store_wrap(plaintext: bytes) -> bytes:
@@ -750,6 +757,10 @@ class RaService:
                         _wh
                     ),
                     "collab_approved": _threshold_hook_collab_approved(),
+                    # 1.3 审查批钉死：第④关（份额域与治理席位同步）在生产默认
+                    # fallback 恒在——缺此键=漂移态 unlock 面放行而 audit 面拒
+                    # （同域双入口判罚不一致，审查实证）。单源=threshold_hooks。
+                    "owner_set_synced": _threshold_hook_owner_set_synced(),
                 },
                 unlock_ctx={
                     "warrant_hash_hex": warrant_hash_hex,

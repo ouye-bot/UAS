@@ -230,6 +230,170 @@ def test_owner_set_synced_lazy_bind(fresh_root, monkeypatch):
     assert sync.owner_set_synced() is False
 
 
+def test_finalize_after_publish_restores(fresh_root, monkeypatch):
+    """审查批②：execute 落地后 finalize 收尾=自动恢复（治理决策已由人工
+    execute 完成，backend 侧技术步不越 k-of-n 边界）；未 execute=not_published
+    拒（不越权）。"""
+    sync.bind_domain_fp(CHAIN_FP_A)
+    monkeypatch.setattr(sync, "chain_owner_set", _chain(CHAIN_FP_B))  # 漂移态
+    monkeypatch.setattr(
+        sync,
+        "draft_reshare_proposal",
+        lambda: {
+            "action": "drafted",
+            "proposal_id": 9,
+            "version": "threshold-epoch-2",
+            "fp_hex": CHAIN_FP_B,
+        },
+    )
+    r = sync.run_sync_check_once()
+    assert r["action"] == "drafted"
+    # 治理未 execute：公示行缺席=finalize 拒（not_published）
+    monkeypatch.setattr(sync, "policy_published", lambda v: False)
+    with pytest.raises(sync.SyncError) as ei:
+        sync.finalize_reshare_from_published()
+    assert ei.value.code == "not_published"
+    # 人工 execute 落地：公示行在案→finalize 自动收尾（纪元+1+fp 换绑+红牌清）
+    monkeypatch.setattr(sync, "policy_published", lambda v: True)
+    fin = sync.finalize_reshare_from_published()
+    assert fin["epoch"] == 2 and fin["fp_hex"] == CHAIN_FP_B
+    assert sync.read_domain_fp() == CHAIN_FP_B and sync.owner_set_synced() is True
+    state = json.loads((ts._root_dir() / "sync_state.json").read_text(encoding="utf-8"))
+    assert state["drift"] is False and "drafted_proposal_id" not in state
+
+
+def test_watcher_auto_finalizes_after_publish(fresh_root, monkeypatch):
+    """审查批②：漂移+起草后公示行落地→watcher 下一轮自动 finalized（『执行后
+    自动恢复』为真——非文案虚设）。"""
+    sync.bind_domain_fp(CHAIN_FP_A)
+    monkeypatch.setattr(sync, "chain_owner_set", _chain(CHAIN_FP_B))
+    monkeypatch.setattr(
+        sync,
+        "draft_reshare_proposal",
+        lambda: {
+            "action": "drafted",
+            "proposal_id": 5,
+            "version": "threshold-epoch-2",
+            "fp_hex": CHAIN_FP_B,
+        },
+    )
+    assert sync.run_sync_check_once()["action"] == "drafted"
+    monkeypatch.setattr(sync, "policy_published", lambda v: True)
+    r = sync.run_sync_check_once()
+    assert r["action"] == "finalized" and r["synced"] is True
+    assert sync.read_domain_fp() == CHAIN_FP_B
+
+
+def test_propose_and_reshare_fp_drift_auto_recover(fresh_root, monkeypatch):
+    """审查批③：公示成功后执行窗席位再漂移→指纹门拒→自动 finalize 收尾
+    （version 烧毁不弃局——携执行时点 fp 完成 re-share+correction 记录双源）。"""
+    import app.chain.signer as signer_mod
+    from app.chain import governor as gov_mod
+    from app.crypto.sm3 import sm3_bytes
+
+    # 测试进程无链上交易钥 env——TxSigner 替位（地址=SM3(钥) 稳定派生，
+    # admin/ra 异钥异址——run_proposal 的异址断言可过）
+    class _FakeSigner:
+        def __init__(self, key):
+            self.address = "0x" + sm3_bytes(str(key).encode()).hex()[:40]
+
+    monkeypatch.setattr(signer_mod, "TxSigner", _FakeSigner)
+
+    monkeypatch.setattr(sync, "chain_owner_set", _chain(CHAIN_FP_A))
+    # 链写替位：真 run_proposal 走 fake gov/pr（propose→confirm×2→eta 已到期
+    # →execute=公示登记——version 从 description 尾段解析）
+
+    class _FakePR:
+        def __init__(self):
+            self.address = "0x" + "99" * 20
+            self.published = {}
+            self._calldata = {}
+
+        def call_fn(self, fn, args):
+            assert fn == "getPolicy", fn
+            h = self.published.get(args[0])
+            return [h or bytes(32), 12345]
+
+        def encode_calldata(self, fn, args):
+            blob = f"{fn}:{args[0]}:{bytes(args[1]).hex()}".encode()
+            self._calldata[blob] = (args[0], bytes(args[1]))
+            return blob
+
+        def decode_logs(self, receipt):
+            return [{"event": "PolicyPublished"}]
+
+    class _FakeGov:
+        def __init__(self, pr):
+            self.address = "0x" + "88" * 20
+            self.pr = pr
+            self.pid = 0
+            self.pending = {}
+            self.props = {}
+
+        def call_fn(self, fn, args):
+            if fn == "proposalOfCall":
+                return [self.pending.get((args[0], bytes(args[1])), 0)]
+            if fn == "getProposal":
+                p = self.props[args[0]]
+                return [p["target"], p["chash"], p.get("desc", ""), p["eta"], 2, 1]
+            raise AssertionError(fn)
+
+        def send_fn(self, signer, fn, args):
+            if fn == "propose":
+                target, chash, desc = args
+                key = (target, bytes(chash))
+                assert self.pending.get(key, 0) == 0, "dup pending"
+                self.pid += 1
+                self.pending[key] = self.pid
+                self.props[self.pid] = {
+                    "target": target,
+                    "chash": bytes(chash),
+                    "eta": 1,  # 已到期（execute 的 timelock 门恒过）
+                    "version": f"threshold-epoch-{desc.rsplit('-', 1)[-1]}",
+                }
+                return {"event": "Proposed", "proposalId": self.pid}
+            if fn == "confirm":
+                return {"event": "Confirmed"}
+            if fn == "execute":
+                target, _v, call_data = args
+                pid = self.pending[(target, sm3_bytes(call_data))]
+                prop = self.props[pid]
+                _version, params_hash = self.pr._calldata[call_data]
+                self.pr.published[_version] = params_hash  # 公示行=paramsHash 参数
+                del self.pending[(target, prop["chash"])]
+                return {"event": "Executed"}
+            raise AssertionError(fn)
+
+        def decode_logs(self, receipt):
+            return [receipt]  # send_fn 返回值即事件 dict（Proposed/Executed）
+
+    fake_pr = _FakePR()
+    fake_gov = _FakeGov(fake_pr)
+
+    def _fake_binding(name, client, addr):
+        return fake_gov if name == "AdminGovernor" else fake_pr
+
+    monkeypatch.setattr(gov_mod, "load_binding", _fake_binding)
+    monkeypatch.setattr(sync, "policy_published", lambda v: True)  # 公示行已在案（execute 落地）
+
+    # 指纹门链读序列：提案时点=A→公示后执行时点漂移为=B（ceremonial 内链读）
+    reads = {"n": 0}
+
+    def _flip():
+        reads["n"] += 1
+        return _chain(CHAIN_FP_A if reads["n"] == 1 else CHAIN_FP_B)()
+
+    monkeypatch.setattr(sync, "chain_owner_set", _flip)
+    # ceremonial 的指纹门读链也在 sync 域——同 _flip 序列：A（预检）→B（门拒）
+    out = sync.propose_and_reshare(gov=fake_gov, pr=fake_pr)
+    assert out["epoch"] == 2 and out["note"] == "fingerprint_recovered"
+    assert out["owner_set_fp"] == CHAIN_FP_B  # 执行时点 fp（恢复收尾）
+    state = json.loads((ts._root_dir() / "sync_state.json").read_text(encoding="utf-8"))
+    assert state.get("correction", {}).get("published_fp_hex") == CHAIN_FP_A
+    assert state.get("correction", {}).get("executed_fp_hex") == CHAIN_FP_B
+    assert sync.owner_set_synced() is True
+
+
 def test_owner_set_fp_sm3_sorted_deterministic():
     """owner_set_fp=SM3(sorted(owners))：排序无关+大小写归一（任务书钉定）。"""
     a = sync.owner_set_fp_of(["0xBB", "0x AA".replace(" ", ""), "0xaa"])

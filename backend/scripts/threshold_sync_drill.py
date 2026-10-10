@@ -99,8 +99,8 @@ def main() -> int:
     epoch0 = int(meta0["epoch"])
     drifted_pre = domain0 != fp0
     expect(
-        drifted_pre or domain0 == fp0,
-        "起测态：对齐（走完整除名段）或漂移（上轮残留——幂等续跑）",
+        domain0 is not None and bool(fp0),
+        "起测前提：份额域指纹已绑定且链读在案（漂移检测判定源就绪）",
     )
 
     # ---- ② 治理除名 owner（k-of-n 时间锁仪式——治理面变更不绕过治理面）

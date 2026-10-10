@@ -214,12 +214,17 @@ def draft_reshare_proposal() -> dict:
             "reshare_already_published",
             f"{version} 已公示（本纪元已执行过重分割）",
         )
+    # 双口径统一（审查批⑤钉死）：起草与 propose_and_reshare 同为 5 键元数据
+    # （含 owner_set_fp）——同 version 族单套 params_hash 口径，第三方独立对拍
+    # 单源；两路提案 calldata 同⟹proposalOfCall 查重互斥（不再并存双提案）。
+    fp_at_draft = chain_owner_set()["fp_hex"]
     announcement = json.dumps(
         {
             "epoch": target_epoch,
             "pub_hex": meta["pub_hex"],
             "roles": meta["roles"],
             "threshold": meta["threshold"],
+            "owner_set_fp": fp_at_draft,
         },
         sort_keys=True,
         separators=(",", ":"),
@@ -247,7 +252,68 @@ def draft_reshare_proposal() -> dict:
         }
     )
     _sync_state_path().write_text(json.dumps(state, ensure_ascii=False, indent=1), encoding="utf-8")
-    return {"action": "drafted", "proposal_id": pid, "version": version}
+    return {
+        "action": "drafted",
+        "proposal_id": pid,
+        "version": version,
+        "fp_hex": fp_at_draft,
+    }
+
+
+def policy_published(version: str) -> bool | None:
+    """公示行在案判定（True=已公示/False=未公示/None=链不可达——注入位）。"""
+    try:
+        from app.chain.client import ChainClient
+        from app.chain.contracts import load_binding
+        from app.chain.signer import TxSigner
+        from app.kms import chain_admin_tx_key
+
+        addresses = json.loads(_addr_path().read_text(encoding="utf-8"))
+        signer = TxSigner(chain_admin_tx_key())
+        client = ChainClient(rpc_url=_rpc_url(), from_addr=signer.address)
+        pr = load_binding("PolicyRegistry", client, addresses["PolicyRegistry"]["address"])
+        prev_hash, _ts0 = pr.call_fn("getPolicy", [version])
+        return bool(bytes(prev_hash).strip(b"\x00"))
+    except SyncError:
+        raise
+    except Exception:  # noqa: BLE001 —— 链不可达=None（调用方 fail-closed 分派）
+        return None
+
+
+def finalize_reshare_from_published() -> dict:
+    """已公示 version 的重分割收尾（审查批②③钉死的恢复入口）：治理人工
+    execute 落地后，由 watcher 下一轮自动调用（backend 侧技术步——治理决策
+    已由 execute 完成，不越 k-of-n 边界）；亦为指纹门拒后的恢复路径（version
+    烧毁后携执行时点 fp 收尾，公示行(起草时点 fp)与执行 fp 的口径差异落
+    sync_state correction 记录双源可对）。流程=读起草账→链验公示行在案（未
+    execute=not_published 拒，不越权）→链读执行时点 fp→ceremonial_reshare
+    （⑤站纪元门+指纹门+canary 全套）→换绑+红牌清账。"""
+    from app.ra import threshold_shares as ts
+
+    state = _read_sync_state()
+    version = state.get("drafted_version")
+    if not version:
+        raise SyncError("no_drafted_version", "无起草账（watcher 未起草过 reshare 提案）")
+    if not policy_published(version):
+        raise SyncError(
+            "not_published",
+            f"{version} 公示行未落地（治理尚未 execute——收尾不越 k-of-n 边界）",
+        )
+    chain = chain_owner_set()
+    target_epoch = int(version.rsplit("-", 1)[-1])
+    r = ts.ceremonial_reshare(gov_confirmed_epoch=target_epoch, owner_set_fp=chain["fp_hex"])
+    state = _read_sync_state()
+    if state.get("drafted_params_fp_hex") and state["drafted_params_fp_hex"] != chain["fp_hex"]:
+        state["correction"] = {
+            "published_fp_hex": state["drafted_params_fp_hex"],
+            "executed_fp_hex": chain["fp_hex"],
+            "corrected_ts": time.time(),
+        }
+    state.update({"drift": False, "resolved_ts": time.time()})
+    for k in ("drafted_proposal_id", "drafted_version", "drafted_ts", "drafted_params_fp_hex"):
+        state.pop(k, None)
+    _sync_state_path().write_text(json.dumps(state, ensure_ascii=False, indent=1), encoding="utf-8")
+    return {"action": "finalized", "epoch": r["epoch"], "fp_hex": chain["fp_hex"]}
 
 
 def run_sync_check_once() -> dict:
@@ -274,8 +340,13 @@ def run_sync_check_once() -> dict:
             )
         return {"action": "ok", "synced": True}
     _write_red_flag(chain)
-    # 幂等序：先查已起草账（本轮漂移窗内只起草一次），后起草
-    if _read_sync_state().get("drafted_proposal_id"):
+    # 幂等序：起草账在案→公示行已落地（人工 execute 完成）=自动收尾（审查批
+    # ②：执行后自动恢复为真）；未落地=already_drafted（等人工多签）
+    state = _read_sync_state()
+    if state.get("drafted_version"):
+        if policy_published(state["drafted_version"]):
+            fin = finalize_reshare_from_published()
+            return {"action": "finalized", "synced": True, **fin}
         return {"action": "already_drafted", "synced": False}
     try:
         draft = draft_reshare_proposal()
@@ -290,6 +361,7 @@ def run_sync_check_once() -> dict:
             "drafted_proposal_id": draft.get("proposal_id"),
             "drafted_version": draft.get("version"),
             "drafted_ts": time.time(),
+            "drafted_params_fp_hex": draft.get("fp_hex"),
         }
     )
     _sync_state_path().write_text(json.dumps(state, ensure_ascii=False, indent=1), encoding="utf-8")
@@ -349,7 +421,35 @@ def propose_and_reshare(gov=None, pr=None) -> dict:
     onchain_hash, onchain_ts = pr.call_fn("getPolicy", [version])
     if bytes(onchain_hash) != params_hash:
         raise SyncError("publish_mismatch", "getPolicy 对拍失败（paramsHash 不一致）")
-    r = ts.ceremonial_reshare(gov_confirmed_epoch=target, owner_set_fp=fp)
+    # 起草账落盘（本函数=起草+execute 一体——指纹门拒后的 finalize 恢复依赖
+    # 此账定位 version；与 watcher 起草账同构）
+    st = _read_sync_state()
+    st.update(
+        {
+            "drafted_version": version,
+            "drafted_params_fp_hex": fp,
+            "drafted_ts": time.time(),
+        }
+    )
+    _sync_state_path().write_text(json.dumps(st, ensure_ascii=False, indent=1), encoding="utf-8")
+    try:
+        r = ts.ceremonial_reshare(gov_confirmed_epoch=target, owner_set_fp=fp)
+    except ts.ShareDomainError as e:
+        if e.code == "fingerprint_mismatch":
+            # 审查批③：执行窗席位再漂移→公示行已落地（version 烧毁）——不弃局，
+            # 自动收尾（finalize 携执行时点 fp 完成 re-share+换绑；口径差异落
+            # correction 记录双源可对），调用方拿到一致终态
+            fin = finalize_reshare_from_published()
+            return {
+                "epoch": fin["epoch"],
+                "prev_epoch": target - 1,
+                "pub_hex": meta["pub_hex"],
+                "owner_set_fp": fin["fp_hex"],
+                "version": version,
+                "announce_ts": int(onchain_ts),
+                "note": "fingerprint_recovered",
+            }
+        raise
     if r["epoch"] != target or r["pub_hex"] != meta["pub_hex"]:
         raise SyncError("reshare_mismatch", f"刷新对拍失败: {r}")
     return {
