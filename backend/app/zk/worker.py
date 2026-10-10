@@ -494,6 +494,12 @@ def process_pending(session: Session, deps: WorkerDeps, limit: int = 4) -> dict:
                 stats = _process_one(session, deps, row, stats)
             except Exception as e:  # noqa: BLE001  瞬时错误轴：链写/文件系统/子进程崩溃
                 session.rollback()
+                # 瞬时轴可观测性（2026-10-10 ②站 e2e 实弹）：retried 只进 stats
+                # 不进日志——首轮必败二轮过的形态无法从 stdout 定位。零语义打印。
+                print(
+                    f"[fz-worker] process #{row.id} transient: {type(e).__name__}: {e}",
+                    flush=True,
+                )
                 row = session.get(Application, row.id)
                 row.attempts = (row.attempts or 0) + 1
                 if row.attempts >= _max_attempts():

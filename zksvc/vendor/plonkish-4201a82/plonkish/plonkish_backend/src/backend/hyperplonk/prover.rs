@@ -427,23 +427,32 @@ pub(super) fn prove_zero_check<F: PrimeField>(
     // 声称值全部取自开口世界（open_polys）：掩蔽列=ṽ 旋转点求值、公开列=本体。
     // A2：掩蔽列即时算——v 与 m 分别求值后逐元素 v+λ·m（求值线性 ⟹ 与
     // 物化 ṽ 的求值逐位同）。
-    let evals = pcs_query
+    // ②站调用级并行（2026-10-10）：并行粒度从「每次求值内部的逐 fold rayon
+    // spawn」上移到「跨 query」——probe 实测教训：2048 元素表 / 16 线程 =
+    // 128 元素/线程，spawn 开销≈工作量（evals 段并行效率 ~50%）。本处
+    // par_map_collect 为 Indexed 保序收集 ⟹ (query, 节点值) 序与串行逐位同，
+    // 转录字节零变化；单 query 内折叠链串行（evaluate_for_rotation v4）。
+    let queries: Vec<_> = pcs_query.iter().collect();
+    let nodes: Vec<Vec<F>> = par_map_collect(&queries, |query| {
+        let plain = open_polys[query.poly()].evaluate_for_rotation(&x, query.rotation());
+        match mask.and_then(|(m, slots)| {
+            slots
+                .iter()
+                .find(|(s, _)| *s == query.poly())
+                .map(|(_, l)| (m, *l))
+        }) {
+            Some((m, l)) => plain
+                .into_iter()
+                .zip(m.evaluate_for_rotation(&x, query.rotation()))
+                .map(|(v, mi)| v + l * mi)
+                .collect_vec(),
+            None => plain,
+        }
+    });
+    let evals = queries
         .iter()
-        .flat_map(|query| {
-            let plain = open_polys[query.poly()].evaluate_for_rotation(&x, query.rotation());
-            let vals = match mask.and_then(|(m, slots)| {
-                slots
-                    .iter()
-                    .find(|(s, _)| *s == query.poly())
-                    .map(|(_, l)| (m, *l))
-            }) {
-                Some((m, l)) => plain
-                    .into_iter()
-                    .zip(m.evaluate_for_rotation(&x, query.rotation()))
-                    .map(|(v, mi)| v + l * mi)
-                    .collect_vec(),
-                None => plain,
-            };
+        .zip(nodes)
+        .flat_map(|(query, vals)| {
             (point_offset[&query.rotation()]..)
                 .zip(vals)
                 .map(|(point, eval)| Evaluation::new(query.poly(), point, eval))

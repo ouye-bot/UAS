@@ -1,7 +1,7 @@
 {
  "pin_commit": "4201a82",
  "file_count": 148,
- "aggregate_sm3": "e6481fb56957dd8520acd94236f9880a93264e04ee48b00f9a1ebcdb974a86e8",
+ "aggregate_sm3": "e53078a0bdc395bb6d2202bf9269419de9f53f6e881e60b4e724bb1561db914b",
  "files": [
   {
    "path": "plonkish/.gitignore",
@@ -145,8 +145,8 @@
   },
   {
    "path": "plonkish/plonkish_backend/src/backend/hyperplonk/prover.rs",
-   "bytes": 20054,
-   "sm3": "e0b8d3a8b39801e792b9377ea426106d863b9fb64e9f3bb8ec6c8f36d03d0860"
+   "bytes": 20617,
+   "sm3": "e40718e3372adf7c6dcaf807b6b0df69c16906a67a380afdcbf4c7dc806e98a5"
   },
   {
    "path": "plonkish/plonkish_backend/src/backend/hyperplonk/util.rs",
@@ -300,8 +300,8 @@
   },
   {
    "path": "plonkish/plonkish_backend/src/poly/multilinear.rs",
-   "bytes": 25620,
-   "sm3": "43e0c74fb9f208781aba80dba0eab81f4f922f5e16df4292e35652b1ff4bf12c"
+   "bytes": 34426,
+   "sm3": "aea15d8beeb0cd828ec3391c810a5b11d2119555bceb499ee87948e0b089cae1"
   },
   {
    "path": "plonkish/plonkish_backend/src/poly/univariate.rs",

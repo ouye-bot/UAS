@@ -206,6 +206,152 @@ impl<F: Field> MultilinearPolynomial<F> {
             return vec![self.evaluate(x)];
         }
 
+        // ── ②站中继化（2026-10-10，零语义：输出与旧逐节点独立全量 merge
+        //    路径逐位同——等价性由多线性折叠的结合律保证，行为锁=
+        //    evaluate_for_rotation / evaluate_for_rotation_relay_matches_point_evals
+        //    双测试）。
+        // 旧路径对 2^d 个节点各自从原列做 nv 轮全量 merge（≈2^d·2N 域操作）；
+        // 中继化先按「变量分组」把全部节点取值相同的公共变量折叠一次（≈N），
+        // 再在 ≤2^(d+翻转位) 的小表上逐节点插值（d=1 服务档 ≈4× 提速，
+        // 探针 evals-13799 段 4.28s → ~1.1s [推得，完工实测定谳]）。
+        // 分派边界：distance ≥ 4 时节点数/分叉位多，中继化的逐节点小折叠链
+        // 分配开销反超收益（nv 全距离穷举测试实测 307s vs 旧 0.53s）⟹ 回退
+        // legacy 路径（双路径共用全部行为锁；生产档 AUTH 查询面 distance≤2）。
+        if rotation.distance() >= 4 {
+            return self.evaluate_for_rotation_legacy(x, rotation);
+        }
+        let distance = rotation.distance();
+        let num_x = self.num_vars - distance;
+        let next = rotation > Rotation::cur();
+        let pattern = if next {
+            rotation_eval_point_pattern::<true>(self.num_vars, distance)
+        } else {
+            rotation_eval_point_pattern::<false>(self.num_vars, distance)
+        };
+        let num_nodes = 1usize << distance;
+
+        // 节点 k 在变量 j 上的坐标（与 rotation_eval_points 的 chain 顺序同构，
+        // 免中间 Vec<Vec<F>> 分配）：
+        //   next：j<d=布尔(pat.nth_bit(j))；j=d+idx=nth_bit(idx+d)? 1−x[idx] : x[idx]
+        //   prev：idx<num_x 处=nth_bit(idx)? 1−x[idx+d] : x[idx+d]；num_x+j=布尔
+        let coord = |j: usize, k: usize| -> F {
+            let pat = pattern[k];
+            if next {
+                if j < distance {
+                    bit_to_field(pat.nth_bit(j))
+                } else {
+                    let idx = j - distance;
+                    if pat.nth_bit(idx + distance) {
+                        flip(&x[idx])
+                    } else {
+                        x[idx]
+                    }
+                }
+            } else if j < num_x {
+                if pat.nth_bit(j) {
+                    flip(&x[j + distance])
+                } else {
+                    x[j + distance]
+                }
+            } else {
+                // prev 布尔位（对齐 rotation_eval_points：nth_bit(idx + num_x)，
+                // j = num_x + idx ⟹ 即 nth_bit(j)）。
+                bit_to_field(pat.nth_bit(j))
+            }
+        };
+
+        // 变量分组：公共位（全部节点同值）/ 分叉位（保序）。
+        let mut common: Vec<(usize, F)> = Vec::with_capacity(self.num_vars);
+        let mut split: Vec<usize> = Vec::new();
+        for j in 0..self.num_vars {
+            let v0 = coord(j, 0);
+            if (1..num_nodes).all(|k| coord(j, k) == v0) {
+                common.push((j, v0));
+            } else {
+                split.push(j);
+            }
+        }
+
+        // 全列位折叠原语：out[b'] = (hi−lo)·v + lo，覆盖位 p 的全部 len/2 个对
+        // （位 <bit 保持、位 ≥bit 右移一位）。v4（2026-10-10 probe 三版实测教训）：
+        // ①首折直接吃借用切片（旧路径首合并零拷贝——to_vec 整表拷贝是纯损）；
+        // ②输出缓冲 set_len 免零填充（resize 的 memset 随后被整段覆盖=双倍写）。
+        //   声音性：F 为纯数据域元素（无 Drop、任意位型合法），扩容后 [0,out_len)
+        //   每槽位在本函数内先写后读、并行写块两两不相交。
+        // ③大表 parallelize、小表标量（rayon fork-join 固定开销在小表上是纯损失）。
+        fn fold_bit<F: Field>(src: &[F], buf: &mut Vec<F>, bit: usize, val: &F) {
+            let stride = 1usize << bit;
+            let out_len = src.len() >> 1;
+            if buf.len() < out_len {
+                buf.reserve(out_len - buf.len());
+            }
+            // SAFETY: 见上——纯数据类型 + 先写后读全覆盖 + 不相交写块。
+            unsafe { buf.set_len(out_len) };
+            if src.len() >= 8192 {
+                let out = &mut buf[..];
+                parallelize(out, |(out, start)| {
+                    for (i, out) in (start..).zip(out.iter_mut()) {
+                        let src_idx = ((i >> bit) << (bit + 1)) | (i & (stride - 1));
+                        let lo = src[src_idx];
+                        let hi = src[src_idx | stride];
+                        *out = (hi - &lo) * val + &lo;
+                    }
+                });
+            } else {
+                for (i, out) in buf.iter_mut().enumerate() {
+                    let src_idx = ((i >> bit) << (bit + 1)) | (i & (stride - 1));
+                    let lo = src[src_idx];
+                    let hi = src[src_idx | stride];
+                    *out = (hi - &lo) * val + &lo;
+                }
+            }
+        }
+
+        // 公共位折叠：live 位序表实时跟踪剩余变量，折叠顺序数学上任意
+        // （多线性结合律）；取升序=先折低位。首折借用源零拷贝，后续 buf 交替。
+        let mut folded: Vec<F> = Vec::new();
+        let mut buf: Vec<F> = Vec::new();
+        let mut live: Vec<usize> = (0..self.num_vars).collect();
+        for &(j, v) in common.iter() {
+            let pos = live.iter().position(|&l| l == j).expect("live var");
+            let src: &[F] = if folded.is_empty() {
+                self.evals()
+            } else {
+                &folded
+            };
+            fold_bit(src, &mut buf, pos, &v);
+            mem::swap(&mut folded, &mut buf);
+            live.remove(pos);
+        }
+        if folded.is_empty() {
+            folded = self.evals().to_vec();
+        }
+
+        // 分叉小表插值：live 升序迭代 ⟹ 每步折叠的都是当前表位 0（前序折叠
+        // 使后续变量位号顺移）⟹ 就地成对插值即可（写 i 读 2i/2i+1，读位恒在
+        // 写头之后=未覆盖区），零分配零零填充；small 跨节点复用仅 memcpy。
+        let mut small: Vec<F> = folded.clone();
+        let mut results = Vec::with_capacity(num_nodes);
+        for k in 0..num_nodes {
+            small.copy_from_slice(&folded);
+            let mut len = small.len();
+            for &j in live.iter() {
+                let v = coord(j, k);
+                for i in 0..(len >> 1) {
+                    let lo = small[i << 1];
+                    let hi = small[(i << 1) + 1];
+                    small[i] = (hi - &lo) * &v + &lo;
+                }
+                len >>= 1;
+            }
+            results.push(small[0]);
+        }
+        results
+    }
+
+    /// ②站中继化的回退路径（distance ≥ 4）＝上游原实现逐字节保留
+    /// （节点维 parallelize + last_buf 缓冲复用——大节点数下的分配形态最优）。
+    fn evaluate_for_rotation_legacy(&self, x: &[F], rotation: Rotation) -> Vec<F> {
         let distance = rotation.distance();
         let num_x = self.num_vars - distance;
         let mut evals = vec![F::ZERO; 1 << distance];
@@ -650,7 +796,7 @@ pub(crate) use zip_self;
 mod test {
     use crate::{
         poly::{
-            multilinear::{rotation_eval, zip_self, MultilinearPolynomial},
+            multilinear::{rotation_eval, rotation_eval_points, zip_self, MultilinearPolynomial},
             Polynomial,
         },
         util::{
@@ -770,6 +916,38 @@ mod test {
                 assert_eq!(
                     rotation_eval(&x, rotation, &f.evaluate_for_rotation(&x, rotation)),
                     f_rotated.evaluate(&x),
+                );
+            }
+        }
+    }
+
+    /// ②站中继化行为锁（2026-10-10）：evaluate_for_rotation 的输出必须与
+    /// 「f 在 rotation_eval_points 各点的规范多线性求值」逐位相等——这是中继化
+    /// 重写（公共位折叠+分叉位插值）与旧「逐节点独立全量 merge」路径等价性的
+    /// 第二锚点（与既有 evaluate_for_rotation 测试互补：那个锚 LFSR 旋转语义且
+    /// 全距离穷举，这个锚逐点规范求值；服务档 nv=12 在列，rotation 抽样控制
+    /// 基准侧时长）。
+    #[test]
+    fn evaluate_for_rotation_relay_matches_point_evals() {
+        let mut rng = OsRng;
+        for num_vars in 2..13usize {
+            let f = MultilinearPolynomial::new(rand_vec(1 << num_vars, &mut rng));
+            let x = rand_vec::<Fr>(num_vars, &mut rng);
+            let nv = num_vars as i32;
+            let mut rotations: Vec<i32> = vec![-1, 1, -2, 2];
+            if nv > 4 {
+                rotations.extend([-(nv / 2), nv / 2, -(nv - 1), nv - 1]);
+            }
+            for rot in rotations.into_iter().filter(|&r| r > -nv && r < nv) {
+                let rotation = Rotation(rot);
+                let expect: Vec<Fr> = rotation_eval_points(&x, rotation)
+                    .iter()
+                    .map(|point| f.evaluate(point))
+                    .collect();
+                let got = f.evaluate_for_rotation(&x, rotation);
+                assert_eq!(
+                    got, expect,
+                    "nv={num_vars} rot={rot}: 中继化节点值≠逐点规范求值"
                 );
             }
         }
