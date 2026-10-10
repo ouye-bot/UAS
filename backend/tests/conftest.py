@@ -3,7 +3,23 @@
 import sys
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+
+@pytest.fixture(autouse=True)
+def _threshold_root_isolated(tmp_path, monkeypatch):
+    """门限根目录全套件强制隔离（⑤站实弹教训，2026-10-10）。
+
+    threshold_root 含 append-only 域审计与密封份额——单测令状行混入=审计可
+    信度红线（16:13 污染实锤：无隔离运行把 abababab 标记令状写入生产审计，
+    详见 MEMORY ⑤站节）。本 fixture 对全套件 autouse 生效：任何测试无论
+    有无模块级隔离，FZ_THRESHOLD_ROOT_DIR 一律重定向 tmp；模块级隔离
+    （test_threshold_envelope/_reshare）与此叠加无害。生产目录只由实弹
+    （e2e/仪式脚本/运行中的 backend）触碰。"""
+    monkeypatch.setenv("FZ_THRESHOLD_ROOT_DIR", str(tmp_path / "threshold_root"))
+    yield
 
 
 def seed_sn_chain(session, msg: bytes, serial: bytes):

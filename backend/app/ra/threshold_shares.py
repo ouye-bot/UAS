@@ -21,7 +21,7 @@ import time
 from pathlib import Path
 
 from app.crypto.sm2 import generate_keypair, pubkey_from_priv
-from app.crypto.threshold import decrypt_share, shamir_split
+from app.crypto.threshold import decrypt_share, proactive_reshare, shamir_split
 
 # 根目录：env FZ_THRESHOLD_ROOT_DIR 优先（单测隔离到 tmp——生产/测试共用
 # 目录会让 append-only 审计混入测试行，实弹教训=审计可信度红线）。
@@ -29,7 +29,10 @@ from app.crypto.threshold import decrypt_share, shamir_split
 # 隔离静默失效（实弹踩过）。
 _ROLES = ("admin", "ra", "auditor")
 _THRESHOLD_K = 2
-_lock = threading.Lock()
+# RLock（可重入）：ceremonial_reshare 全程持锁、函数体内 _audit 再入同锁——
+# 用 Lock 曾自死锁（pytest 全量挂起实锤，⑤站教训=仪式面持锁范围必须与
+# 审计面再入兼容）；非重入路径（request_decrypt_share/_audit）行为不变。
+_lock = threading.RLock()
 
 
 class ShareDomainError(Exception):
@@ -187,6 +190,99 @@ def root_pub_hex() -> str:
         initialize_if_absent()
     meta = json.loads((_root_dir() / "root.json").read_text(encoding="utf-8"))
     return meta["pub_hex"]
+
+
+def ceremonial_reshare(gov_confirmed_epoch: int) -> dict:
+    """⑤站 proactive re-share 仪式（治理提案 execute 后由 backend 侧执行）。
+
+    语义（任务书钉定）：**D_pub 不变、无需根钥 d**——从任意 ≥2 份现存份额
+    出发（app.crypto.threshold.proactive_reshare：δ(0)=0 随机增项+拉格朗日
+    换基外推），新份额入三域+纪元+1 ⟹ 存量 v5 信封零影响（C₁ 密文与根公
+    钥均不涉）；旧份额值/旧纪元密封钥同时作废（epoch 参与密封钥派生）。
+
+    纪元门（fail-closed）：gov_confirmed_epoch 必须等于当前纪元+1——脚本面
+    在 governor 提案（description=『threshold-reshare:epoch-N』）execute 并
+    链上回读对拍后才携 N 调用；直调不带正确治理纪元即拒（仪式不被绕过）。
+
+    原子序：先内存全量自证（canary=SM2(D_pub) 加解对拍走 decrypt_share/
+    combine_decrypt_shares/threshold_decrypt 真实原语），后落盘（先份额后
+    纪元——窗内解封请求开封失败=域拒绝=fail-closed，无安全面）。三域审计
+    append-only 各记一行（零份额材料）。中途任何失败=零持久变更。
+    """
+    if not isinstance(gov_confirmed_epoch, int) or isinstance(gov_confirmed_epoch, bool):
+        raise ShareDomainError("bad_epoch_arg", "gov_confirmed_epoch 须为整数纪元")
+    if gov_confirmed_epoch < 2:
+        raise ShareDomainError("bad_epoch_arg", "目标纪元须 ≥2（纪元 1=初始化态）")
+    with _lock:
+        if not is_initialized():
+            raise ShareDomainError("not_initialized", "门限根未初始化（先 initialize_if_absent）")
+        meta = json.loads((_root_dir() / "root.json").read_text(encoding="utf-8"))
+        old_epoch = int(meta["epoch"])
+        new_epoch = old_epoch + 1
+        if gov_confirmed_epoch != new_epoch:
+            raise ShareDomainError(
+                "epoch_mismatch",
+                f"治理公示纪元 {gov_confirmed_epoch} ≠ 下一纪元 {new_epoch}",
+            )
+        # ① 开封现存份额（逐域尝试，取先开成功的前 k 份——损毁域跳过）
+        opened: list[tuple[int, str]] = []
+        for idx, role in enumerate(_ROLES, start=1):
+            if len(opened) >= _THRESHOLD_K:
+                break
+            try:
+                plain = _open_share(
+                    role, old_epoch, _domain_share_sealed_path(role).read_bytes()
+                )
+                opened.append((idx, plain.decode()))
+            except Exception:  # noqa: BLE001 —— 域损即跳过（≥k 份可开即可刷新）
+                continue
+        if len(opened) < _THRESHOLD_K:
+            raise ShareDomainError(
+                "insufficient_shares",
+                f"可开封份额 {_THRESHOLD_K} 不足（仅 {len(opened)}）——刷新中止",
+            )
+        # ② 标量域 re-share（d 不重组——proactive_reshare 域内无 d 路径）
+        new_shares = proactive_reshare(
+            [(i, int(s, 16)) for i, s in opened], len(_ROLES), _THRESHOLD_K
+        )
+        # ③ 内存自证（先于任何落盘）：canary 对 D_pub 加解全对拍
+        canary = b"FZ-RESHARE-CANARY|" + str(new_epoch).encode()
+        from app.crypto.sm2 import encrypt as sm2_encrypt
+        from app.crypto.threshold import threshold_decrypt
+
+        pub_hex = meta["pub_hex"]
+        ct = sm2_encrypt(pub_hex, canary)
+        c1_hex = ct[:64].hex()
+        pts = [
+            (i, decrypt_share(f"{d_i:064x}", c1_hex)) for i, d_i in new_shares[:_THRESHOLD_K]
+        ]
+        if threshold_decrypt(ct, pts) != canary:
+            raise ShareDomainError("canary_mismatch", "新份额对 D_pub 自证失败（未落盘，零变更）")
+        # ④ 持久化：先份额（新纪元域钥重封=旧份额值+旧密封钥同时作废）后纪元
+        for (_i, d_i), role in zip(new_shares, _ROLES, strict=True):
+            _domain_share_sealed_path(role).write_bytes(
+                _seal_share(role, new_epoch, f"{d_i:064x}".encode())
+            )
+        meta["epoch"] = new_epoch
+        meta["prev_epoch"] = old_epoch
+        meta["reshared_ts"] = time.time()
+        (_root_dir() / "root.json").write_text(
+            json.dumps(meta, ensure_ascii=False, indent=1), encoding="utf-8"
+        )
+        # ⑤ 三域仪式审计（append-only；记录纪元不含任何份额材料）
+        for role in _ROLES:
+            _audit(
+                role,
+                {
+                    "action": "reshare",
+                    "decision": "ok",
+                    "from_epoch": old_epoch,
+                    "to_epoch": new_epoch,
+                },
+            )
+        # 中间值出栈即焚（opened 旧份额/new_shares 新份额不外溢本函数域）
+        del opened, new_shares, pts
+        return {"epoch": new_epoch, "prev_epoch": old_epoch, "pub_hex": pub_hex}
 
 
 def _default_hooks() -> dict:

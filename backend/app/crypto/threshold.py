@@ -56,6 +56,55 @@ def lagrange_coeff(i: int, xs: list[int]) -> int:
     return acc
 
 
+def lagrange_coeff_at(t: int, i: int, xs: list[int]) -> int:
+    """点 t 的拉格朗日系数 λᵢ(t)=Π_{j≠i}(t-xⱼ)/(xᵢ-xⱼ) mod n——
+    proactive re-share 的换基外推消费面（t=0 时与 lagrange_coeff 同值）。"""
+    acc = 1
+    for xj in xs:
+        if xj != i:
+            acc = acc * ((t - xj) % _N) % _N * _inv_mod((i - xj) % _N, _N) % _N
+    return acc
+
+
+def proactive_reshare(
+    old_shares: list[tuple[int, int]], n: int, k: int
+) -> list[tuple[int, int]]:
+    """proactive re-share（⑤站份额刷新核心原语）——**根钥 d 不重组**。
+
+    数学：随机增项多项式 δ(x)=Σ_{j=1..k-1} b_j·xʲ（**无常数项 ⟹ δ(0)=0**），
+    新多项式 g=f+δ 满足 g(0)=f(0)=d 恒不变；新份额 g(i)=f(i)+δ(i)。旧份额
+    只持 ≥k 份，未持有下标的 f(i) 经拉格朗日标量外推（lagrange_coeff_at）
+    补全——全程 [1,n-1] 标量域加乘，d 从不在本函数域出现（与 decrypt 侧
+    「d 不在此重组」同纪律：重建 d 需要离散对数级信息，本函数连数值外推
+    d 的路径都不走——增项只加在份额点上）。
+
+    安全语义：单纪元内 ≤k-1 份泄露跨纪元不累积（旧份额值对新多项式无效，
+    混合合成 ⟹ ECIES C3 必败）；D_pub 侧零变化（存量信封零影响）。
+    """
+    if not 1 <= k <= n:
+        raise ValueError("门限参数非法（须 1≤k≤n）")
+    if len(old_shares) < k:
+        raise ValueError(f"re-share 须 ≥k={k} 份现存份额（得 {len(old_shares)}）")
+    idx = [i for i, _ in old_shares]
+    if len(set(idx)) != len(idx):
+        raise ValueError("份额下标重复（同域两份不构成独立份额）")
+    for i, s in old_shares:
+        if not 1 <= i <= n or not 0 < s < _N:
+            raise ValueError(f"份额形态非法：下标 {i} 值域越界")
+    # 随机增项系数 b_j∈[1,n-1]（j=1..k-1；k=2 即 δ(x)=b·x）
+    bs = [secrets.randbelow(_N - 1) + 1 for _ in range(k - 1)]
+    out: list[tuple[int, int]] = []
+    for i in range(1, n + 1):
+        f_i = 0
+        for j, s in old_shares:
+            f_i = (f_i + lagrange_coeff_at(i, j, idx) * s) % _N
+        delta_i = 0
+        for p, b in enumerate(bs, start=1):
+            delta_i = (delta_i + b * pow(i, p, _N)) % _N
+        out.append((i, (f_i + delta_i) % _N))
+    return out
+
+
 def _jac_to_affine(jac: str) -> str:
     """gmssl _add_point 的 Jacobian (x‖y‖z, 192hex) → 仿射 (x‖y, 128hex)；
     z=0=无穷远点 ⟹ 全零 128hex（本模块内作为加法单位元 O）。"""

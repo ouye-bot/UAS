@@ -64,7 +64,27 @@ def app_client(tmp_path, monkeypatch):
             call=ra_call,
             warrant_on_chain=lambda wh: wh in ra_state["warrants"],
         )
-        return RaService(session, RaDeps(ra_priv_hex=priv, ra_pub_hex=pub, anchor=anchor))
+        return RaService(
+            session,
+            RaDeps(
+                ra_priv_hex=priv,
+                ra_pub_hex=pub,
+                anchor=anchor,
+                # ④站门限三关（分层注入，test_ra_warrant 同式）：①warrant_unlock
+                # 解封前已登记 unlock_requests 台账；②令状在案=测试 fake 链共享
+                # 态（与 anchor.warrant_on_chain 同源）；③双控批文=本测试以
+                # seal_collab_v2 直封替代审批流——批文台账判定由 test_collab_code
+                # 与实弹 e2e 覆盖。缺省 hooks 的 collab_approved 查全局
+                # SessionLocal（单测上下文必拒）——⑤站全量套件实跑发现④站
+                # 静默回归的根因即此。
+                threshold_hooks={
+                    "request_registered": lambda sha, wh, ch: True,
+                    "warrant_on_chain": lambda wh_hex: bytes.fromhex(wh_hex)
+                    in ra_state["warrants"],
+                    "collab_approved": lambda sha: True,
+                },
+            ),
+        )
 
     import app.ra.router as ra_router_mod
 
