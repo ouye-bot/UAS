@@ -66,7 +66,13 @@ ADDR_PATH = Path(__file__).resolve().parents[2] / "contracts" / ".chain_addresse
 RETIRED_PATH = ADDR_PATH.with_name(".chain_addresses.retired.json")
 RPC = os.environ.get("FZ_CHAIN_RPC", "http://127.0.0.1:8545")
 
-CONTRACTS = ("IdentityRegistry", "PolicyRegistry", "FlightAuthRegistry", "TelemetryAnchor")
+CONTRACTS = (
+    "IdentityRegistry",
+    "PolicyRegistry",
+    "FlightAuthRegistry",
+    "TelemetryAnchor",
+    "FedRegistry",
+)
 
 _checks = 0
 
@@ -918,6 +924,132 @@ def main() -> int:
         and GOV.call_fn("required", [])[0] == 2
         and GOV.call_fn("isOwner", [owner_e.address])[0] is False,
         "⑧-i 部署态收口（count=3, required=2, E 已移除——幂等烟测不破坏部署态）",
+    )
+
+    # ===== ⑨ 互认注册表（⑥站多机构一期——FedRegistry：governor 准入面+逐域
+    # 撤销锚+全局聚合根。一期诚实口径=共享树机构署名锚（电路 pk_RA 单钥不动），
+    # org-a/org-b 锚保持 epoch0=与服务面 revEpoch 锁步预留；org-c 全生命周期
+    # （登记→推根→聚合对拍→退出冻结→推根拒）钉聚合与冻结语义。幂等：已登记
+    # 即断言读面。）=====
+    print("== ⑨ 互认注册表（FedRegistry）==")
+    FED = B["FedRegistry"]
+    expect(
+        FED.call_fn("admin", [])[0].lower() == GOV.address.lower(),
+        "⑨-a FedRegistry admin==AdminGovernor（治理面移交）",
+    )
+
+    def _oid(s: str) -> bytes:
+        return s.encode().ljust(32, b"\x00")
+
+    def _fed_orgs() -> list[bytes]:
+        out = []
+        for i in range(16):
+            try:
+                oid = bytes(FED.call_fn("orgIds", [i])[0])
+            except Exception:  # noqa: BLE001 —— 越界=枚举完（public 数组无 length 面）
+                break
+            if oid.strip(b"\x00"):
+                out.append(oid)
+        return out
+
+    def _fed_aggregate() -> bytes:
+        buf = b""
+        for oid in _fed_orgs():
+            epoch, root, _ts = FED.call_fn("revAnchors", [oid])
+            buf += oid + int(epoch).to_bytes(8, "big") + bytes(root)
+        return sm3_bytes(buf)
+
+    # ⑨-b 机构登记走治理仪式（org-a/org-b——deploy 后首跑登记，幂等跑断言读面）
+    ra_org_row = FED.call_fn("orgs", [_oid("org-a")])
+    if int(ra_org_row[0]) == 0:
+        run_proposal(
+            GOV, admin, ra, FED, "registerOrg",
+            [_oid("org-a"), _oid("org-a"), ra.address],
+            "smoke: registerOrg org-a",
+        )
+        ok("⑨-b org-a 治理提案登记（propose→confirm×2→execute）")
+    expect(int(FED.call_fn("orgs", [_oid("org-a")])[0]) == 1, "⑨-b org-a active（幂等收口）")
+    rb_row = FED.call_fn("orgs", [_oid("org-b")])
+    if int(rb_row[0]) == 0:
+        run_proposal(
+            GOV, admin, ra, FED, "registerOrg",
+            [_oid("org-b"), _oid("org-b"), ra.address],
+            "smoke: registerOrg org-b",
+        )
+        ok("⑨-b org-b 治理提案登记")
+    expect(int(FED.call_fn("orgs", [_oid("org-b")])[0]) == 1, "⑨-b org-b active（幂等收口）")
+    expect(
+        str(FED.call_fn("orgs", [_oid("org-a")])[2]).lower() == ra.address.lower(),
+        "⑨-b org-a.ra=RA 钥（一期推根署名钥——电路单 pk_RA 同构口径）",
+    )
+
+    # ⑨-c org-c 全生命周期：登记（治理）→推根（org ra 直调）→聚合对拍
+    rc_row = FED.call_fn("orgs", [_oid("org-c")])
+    if int(rc_row[0]) == 0:
+        run_proposal(
+            GOV, admin, ra, FED, "registerOrg",
+            [_oid("org-c"), _oid("org-c"), ra.address],
+            "smoke: registerOrg org-c",
+        )
+    if int(FED.call_fn("revAnchors", [_oid("org-c")])[0]) == 0:
+        root_c1 = sm3_bytes(b"FZ-FED-SMOKE|org-c|epoch1")
+        FED.send_fn(ra, "setOrgRevRoot", [_oid("org-c"), 1, root_c1])
+        ok("⑨-c org-c 推根 epoch1（org ra 署名）")
+    g_on = bytes(FED.call_fn("globalRevRoot", [])[0])
+    expect(
+        g_on == _fed_aggregate() and g_on != b"\x00" * 32,
+        "⑨-c 全局聚合根对拍：链上 keccak256==离线 SM3 同构（逐机构 orgId‖epoch‖root）",
+    )
+    expect(
+        int(FED.call_fn("globalRevEpoch", [])[0]) >= 1,
+        "⑨-c 聚合纪元单调推进（globalRevEpoch≥1）",
+    )
+    # ⑨-d 逐域单调负例：同纪元重推 → revert
+    expect_revert(
+        client, ra, FED, "setOrgRevRoot",
+        [_oid("org-c"), 1, sm3_bytes(b"replay")],
+        "⑨-d org-c 同纪元重推 → revert（逐域纪元单调）",
+    )
+    # ⑨-e 退出冻结：retire（治理）→推根 revert→聚合根不变（锚冻结保留）
+    if int(FED.call_fn("orgs", [_oid("org-c")])[0]) == 1:
+        run_proposal(GOV, admin, ra, FED, "retireOrg", [_oid("org-c")], "smoke: retireOrg org-c")
+        ok("⑨-e org-c 退出（治理提案 retireOrg）")
+    expect(int(FED.call_fn("orgs", [_oid("org-c")])[0]) == 2, "⑨-e org-c retired")
+    expect_revert(
+        client, ra, FED, "setOrgRevRoot",
+        [_oid("org-c"), 2, sm3_bytes(b"zombie")],
+        "⑨-e 退出机构推根 → revert（锚冻结——不得以退出换撤销失效）",
+    )
+    expect(
+        bytes(FED.call_fn("globalRevRoot", [])[0]) == g_on,
+        "⑨-e 退出后聚合根不变（org-c 锚冻结保留在聚合内——历史吊销永久互认）",
+    )
+    # ⑨-f 未知机构/非 org ra/非 governor 负例
+    expect_revert(
+        client, ra, FED, "setOrgRevRoot",
+        [_oid("org-z"), 1, sm3_bytes(b"ghost")],
+        "⑨-f 未知机构推根 → revert",
+    )
+    expect_revert(
+        client, admin, FED, "setOrgRevRoot",
+        [_oid("org-a"), 1, sm3_bytes(b"squat")],
+        "⑨-f 非 org ra（admin 钥）推根 → revert（推根署名面=机构 ra 地址）",
+    )
+    expect_revert(
+        client, admin, FED, "registerOrg",
+        [_oid("org-e"), _oid("org-e"), ra.address],
+        "⑨-f 非 governor（admin 直调）registerOrg → revert（机构准入=治理面）",
+    )
+    # ⑨-g 服务面锁步预留：org-a/org-b 锚保持 epoch0（与服务 revEpoch 同起步——
+    # 首次真实吊销 setOrgRevRoot(epoch1) 与 IdentityRegistry.setRevocationRoot(epoch1) 锁步）
+    expect(
+        int(FED.call_fn("revAnchors", [_oid("org-a")])[0]) == 0
+        and int(FED.call_fn("revAnchors", [_oid("org-b")])[0]) == 0,
+        "⑨-g org-a/org-b 锚 epoch=0（与服务面撤销纪元锁步预留——首次吊销同推 epoch1）",
+    )
+    expect(
+        int(FED.call_fn("orgActive", [])[0]) == 2,
+        "⑨-g orgActive=2（org-a/org-b 活跃——org-c 已退出）",
     )
 
     print(f"== chain_smoke 全绿：{_checks} 项断言 [OK] ==")

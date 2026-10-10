@@ -22,8 +22,10 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.accounts.models import Account  # noqa: E402
-from app.accounts.service import reset_institutional_account  # noqa: E402
-from app.accounts.service import seed_institutional_account  # noqa: E402
+from app.accounts.service import (
+    reset_institutional_account,  # noqa: E402
+    seed_institutional_account,  # noqa: E402
+)
 from app.ra.models import Base  # noqa: E402
 
 
@@ -41,6 +43,12 @@ def main() -> int:
                     help="重置已激活机构账户密码（焚毁旧钥+清会话——下次登录重新激活）")
     ap.add_argument("--auditor-pw", help="指定审计员密码（默认随机）")
     ap.add_argument("--admin-pw", help="指定管理员密码（默认随机）")
+    ap.add_argument("--no-org-b", action="store_true",
+                    help="跳过第二机构 demo 种子（⑥站多机构：auditor-b/admin-b@org-b）")
+    ap.add_argument("--auditor-b-pw", default="auditorb123",
+                    help="第二机构审计员初始密码（固定缺省=演示拍板纪律同 org-a）")
+    ap.add_argument("--admin-b-pw", default="adminb123",
+                    help="第二机构管理员初始密码（固定缺省=演示拍板纪律同 org-a）")
     args = ap.parse_args()
 
     _ensure_tables()
@@ -50,10 +58,23 @@ def main() -> int:
     out_lines: list[str] = []
     s = SessionLocal()
     try:
-        for username, role, env_key, pw_flag in (
-            (args.auditor, "auditor", "FZ_SEED_AUDITOR_PASSWORD", args.auditor_pw),
-            (args.admin, "admin", "FZ_SEED_ADMIN_PASSWORD", args.admin_pw),
-        ):
+        seeds = [
+            (args.auditor, "auditor", "org-a", "FZ_SEED_AUDITOR_PASSWORD", args.auditor_pw),
+            (args.admin, "admin", "org-a", "FZ_SEED_ADMIN_PASSWORD", args.admin_pw),
+        ]
+        if not args.no_org_b:
+            # ⑥站多机构一期：第二机构 demo 域种子（固定口令=拍板 7 同纪律——
+            # 每次种子显式传入，不随机；口令不入库不入文档，本文件例外面=%TEMP% seed）
+            seeds.append(("auditor-b", "auditor", "org-b", None, args.auditor_b_pw))
+            seeds.append(("admin-b", "admin", "org-b", None, args.admin_b_pw))
+        def _pw_of(env_key: str | None, pw_flag: str | None) -> str:
+            return (
+                pw_flag
+                or (os.environ.get(env_key) if env_key else None)
+                or secrets.token_urlsafe(12)
+            )
+
+        for username, role, org_id, env_key, pw_flag in seeds:
             existing = (
                 s.query(Account).filter(Account.username == username).one_or_none()
             )
@@ -61,12 +82,12 @@ def main() -> int:
                 if not args.reset:
                     out_lines.append(f"{username}（{role}）：已激活——跳过（不触碰已激活账户）")
                     continue
-                pw = pw_flag or os.environ.get(env_key) or secrets.token_urlsafe(12)
+                pw = _pw_of(env_key, pw_flag)
                 reset_institutional_account(s, username, pw)
                 out_lines.append(f"{username}（{role}）：已重置——新密码 {pw}（下次登录重新激活）")
                 continue
-            pw = pw_flag or os.environ.get(env_key) or secrets.token_urlsafe(12)
-            seed_institutional_account(s, username, role, pw)
+            pw = _pw_of(env_key, pw_flag)
+            seed_institutional_account(s, username, role, pw, org_id=org_id)
             out_lines.append(f"{username}（{role}）：初始密码 {pw}")
     finally:
         s.close()

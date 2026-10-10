@@ -10,6 +10,9 @@
 | AdminGovernor.abi | 46ebf2cb1d8adcb8f48841daf43707ed4d1aa942730132df52692fda9ecf3e4a |
 | AdminGovernor.bin | f6e04c86c2f51e7e2df189144369f26ad6c412761c219872b005b6b3b89a6de9 |
 | AdminGovernor.runtime.bin | 7deb0b3b2647de9be57eb3dd9ae618194aa3f9b7debb64ab027593fbd80f0ad4 |
+| FedRegistry.abi | 354838f51aa3415f9994f128ca1ad8da3f542c5a987dddf3123d55ab87c06157 |
+| FedRegistry.bin | bb8e6e51c87358012ae3d4bbc36d55b7a94c71357daee204f5b0498340dfb317 |
+| FedRegistry.runtime.bin | dc36fb081a444e360104025989291027f385f626093771e7421c3bb4b969f754 |
 | FlightAuthRegistry.abi | f551f2c10e6c2f89bf78b60ef9e8a5a7a26912a96f78228dcf4a7138245ded24 |
 | FlightAuthRegistry.bin | 5a52acbd709859cf3c3cd80b9c889499825ba94cdb553eb9759c744ecced1561 |
 | FlightAuthRegistry.runtime.bin | 0cfbe9ab98ddef3bc9c2504b37fd88942402a434842c7684a069bb6fd44a93a5 |

@@ -72,6 +72,8 @@ class ProfileIn(BaseModel):
     cert_level: int = Field(ge=1, le=4)
     sn: str = Field(min_length=1, max_length=64)
     class_id: int = Field(ge=0, le=255)
+    # ⑥站多机构：受理机构域（缺省=账户 org_id→org-a——用户选机构受理面的域键）
+    org_id: str | None = Field(default=None, pattern=r"^[a-z0-9][a-z0-9-]{0,31}$")
 
 
 class ProfileKeepIn(BaseModel):
@@ -214,6 +216,7 @@ def profile_route(
             cert_level=body.cert_level,
             sn=body.sn,
             class_id=body.class_id,
+            org_id=body.org_id,
         )
     except AccountError as exc:
         return _err(exc)
@@ -274,13 +277,23 @@ def logout_route(request: Request, session: Session = Depends(get_session)):
 
 
 @router.get("/whoami")
-def whoami_route(p=Depends(require_role("pilot", "auditor", "admin"))):
-    """角色守卫自检面（前端路由诊断用）：401/403 语义与业务端点一致。"""
+def whoami_route(
+    p=Depends(require_role("pilot", "auditor", "admin")),
+    session: Session = Depends(get_session),
+):
+    """角色守卫自检面（前端路由诊断用）：401/403 语义与业务端点一致。
+    ⑥站多机构：org_id=机构域键（org-a 缺省域/org-b 第二机构 demo 域）。"""
+    row = get_account(session, p.username)
     return JSONResponse(
         status_code=200,
         content={
             "code": "ok",
             "message": "",
-            "data": {"username": p.username, "role": p.role, "status": p.status},
+            "data": {
+                "username": p.username,
+                "role": p.role,
+                "status": p.status,
+                "org_id": row.org_id if row is not None else "org-a",
+            },
         },
     )

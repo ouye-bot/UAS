@@ -172,6 +172,17 @@ def _real_chain_call(fn: str, args: list) -> None:
     client = ChainClient(
         rpc_url=os.environ.get("FZ_CHAIN_RPC", "http://127.0.0.1:8545"), from_addr=ra.address
     )
+    # ⑥站多机构一期：set_org_rev_root 走 FedRegistry（机构署名锚——orgId 为
+    # ASCII 右补零 bytes32；推根钥=系统 RA 钥=各登记域 orgs[orgId].ra 一期同构）
+    if fn == "set_org_rev_root":
+        addr_path = Path(__file__).resolve().parents[3] / "contracts" / ".chain_addresses.json"
+        fed_addr = json.loads(addr_path.read_text())["FedRegistry"]["address"]
+        fed = load_binding("FedRegistry", client, fed_addr)
+        args = [b32(a) for a in args]
+        receipt = fed.send_fn(ra, "setOrgRevRoot", args)
+        if str(receipt.get("status", "0x0")) != "0x0":  # pragma: no cover
+            raise RuntimeError("链上 setOrgRevRoot 回执异常")
+        return
     binding = load_binding("IdentityRegistry", client, _identity_address())
     fn_map = {
         "register_commitment": "registerCommitment",
@@ -197,6 +208,7 @@ class RegisterIn(BaseModel):
     sn: str = Field(min_length=1, max_length=64)
     user_pub_hex: str = Field(min_length=128, max_length=128)
     class_id: int = Field(default=0, ge=0, le=255)  # 机型类（B4/A4：进 C 原像）
+    org_id: str = Field(default="org-a", pattern=r"^[a-z0-9][a-z0-9-]{0,31}$")  # ⑥站：受理机构域
 
 
 class SubCredIn(BaseModel):

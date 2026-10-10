@@ -339,6 +339,41 @@ def governance_face(limit: int = 20):
             },
             "mode": "real",
         }
+        # ⑥站多机构一期：互认注册表公示（机构域+逐域撤销锚+全局聚合根——
+        # FedRegistry 在册才读；缺=一期前部署，字段缺席不报错）
+        if "FedRegistry" in addrs:
+            try:
+                fed = _binding_cached("FedRegistry")
+                orgs = []
+                for i in range(16):
+                    try:
+                        oid = bytes(fed.call_fn("orgIds", [i])[0])
+                    except Exception:  # noqa: BLE001 —— 越界=枚举完
+                        break
+                    if not oid.strip(b"\x00"):
+                        continue
+                    st, _name, ra_addr, ts = fed.call_fn("orgs", [oid])
+                    epoch, root, ats = fed.call_fn("revAnchors", [oid])
+                    orgs.append(
+                        {
+                            "org_id": oid.rstrip(b"\x00").decode("ascii", "replace"),
+                            "name": oid.rstrip(b"\x00").decode("ascii", "replace"),
+                            "status": int(st),
+                            "ra": str(ra_addr),
+                            "rev_epoch": int(epoch),
+                            "rev_root_hex": bytes(root).hex(),
+                            "registered_ts": int(ts),
+                            "anchor_ts": int(ats),
+                        }
+                    )
+                data["federation"] = {
+                    "orgs": orgs,
+                    "org_active": int(fed.call_fn("orgActive", [])[0]),
+                    "global_rev_root_hex": bytes(fed.call_fn("globalRevRoot", [])[0]).hex(),
+                    "global_rev_epoch": int(fed.call_fn("globalRevEpoch", [])[0]),
+                }
+            except Exception:  # noqa: BLE001 —— 互认面读败=字段缺席（不破治理面）
+                pass
         with _face_lock:
             _gov_cache.update(at=time.monotonic(), data=data)
         return {"ok": True, "data": {**data, "proposals": proposals[:limit]}}

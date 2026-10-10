@@ -32,6 +32,9 @@ class User(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     username: Mapped[str] = mapped_column(String(64), unique=True)
     pub_key_hex: Mapped[str] = mapped_column(String(128))  # 用户 SM2 公钥（ECIES 目标）
+    # 机构域键（⑥站多机构一期）：注册受理机构域（org-a 缺省域/org-b 第二机构
+    # demo 域）——归属标注面；电路 pk_RA 单钥不动（受理门控零变化）。
+    org_id: Mapped[str] = mapped_column(String(32), default="org-a", server_default="org-a")
     created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=dt.datetime.utcnow)
 
 

@@ -223,11 +223,19 @@ def test_negative_revoked(svc):
     s, anchor = svc
     reg = _register(s, "pilot-rev")
     _revoke(s, reg["master_cred_hash_hex"])
-    # 链上双调用：setStatus(2)+setRevocationRoot(epoch=1)
+    # 链上三调用：setStatus(2)+setRevocationRoot(epoch=1)+setOrgRevRoot（⑥站
+    # 机构署名锚——org-a 域共享树根归因公示，与 IdentityRegistry 纪元锁步）
     fns = [c[0] for c in anchor.calls]
-    assert fns == ["register_commitment", "set_status", "set_revocation_root"]
+    assert fns == [
+        "register_commitment",
+        "set_status",
+        "set_revocation_root",
+        "set_org_rev_root",
+    ]
     assert anchor.calls[1][1][1] == 2
     assert anchor.calls[2][1][0] == 1
+    assert anchor.calls[3][1][0] == "0x6f72672d61" + "00" * 27  # b"org-a" 右补零 bytes32
+    assert anchor.calls[3][1][1] == 1  # 机构锚与共享树纪元锁步
     with pytest.raises(RaError) as ei:
         s.issue_sub_credential(
             master_cred_hash_hex=reg["master_cred_hash_hex"],

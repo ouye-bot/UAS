@@ -58,6 +58,18 @@ REASON_MIN = 4  # 理由≥4 字（公示面最小信息量——无理由强制
 # B4 联动撤销的链上 reason 码（FlightAuthRegistry.revokeAuth(uint256,uint8)）：
 # 2=凭证吊销联动（1 预留监管紧急禁飞）
 AUTH_REVOKE_REASON_LINKAGE = 2
+# ⑥站多机构一期：机构域登记集（demo 域常量——FedRegistry 链面为公示权威，
+# 治理仪式登记同集；二期=链面读回）。org-a=缺省机构域（现网存量全部归属）。
+ORG_DOMAINS = ("org-a", "org-b")
+DEFAULT_ORG = "org-a"
+
+
+def _b32_org(org_id: str) -> str:
+    """机构域键 → 链上 bytes32（ASCII 右补零——org-a/org-b 可读透明）。"""
+    raw = org_id.encode()
+    if not 1 <= len(raw) <= 32:
+        raise RaError("bad_input", "org_id 须 1..32 字节")
+    return "0x" + raw.hex() + "00" * (32 - len(raw))
 
 
 def revoke_msg(handles: list[str], reason: str, epoch: int) -> str:
@@ -167,9 +179,15 @@ class RaService:
         user_pub_hex: str,
         class_id: int = 0,
         expires_at: dt.datetime | None = None,
+        org_id: str = "org-a",
     ) -> dict:
         if len(id_number) != 18:
             raise RaError("bad_input", "身份证号须 18 字符")
+        # ⑥站多机构一期：注册受理机构域（org-a=缺省域）。登记集=一期 demo 域
+        # 常量（org-a/org-b——FedRegistry 链面为公示权威，治理仪式登记同集）；
+        # 未登记域 422 拒（fail-closed）。
+        if org_id not in ORG_DOMAINS:
+            raise RaError("unknown_org", f"未登记的机构域: {org_id}", 422)
         if not 1 <= cert_level <= 4:
             raise RaError("bad_input", "资质等级 1..4")
         # 信封字段注入封堵（红队评审高危 #2）：username/sn 走 "|" 拼接信封——
@@ -220,7 +238,7 @@ class RaService:
         sig = sign_credential(self._d.ra_priv_hex, msg)
         user = self._s.scalar(select(User).where(User.username == username))
         if user is None:
-            user = User(username=username, pub_key_hex=user_pub_hex)
+            user = User(username=username, pub_key_hex=user_pub_hex, org_id=org_id)
             self._s.add(user)
             self._s.flush()
         cred = Credential(
@@ -393,6 +411,14 @@ class RaService:
         led = self._s.scalar(select(func.max(RevocationLedger.epoch))) or 0
         revoked0 = self._s.scalars(select(Revocation)).all()
         return max(max((r.epoch for r in revoked0), default=0), int(led))
+
+    def _creds_org(self, creds: list[Credential]) -> str:
+        """被撤销凭证的机构域（首凭证归属用户——按 username 撤销=同用户同域）。"""
+        for cred in creds:
+            u = self._s.get(User, cred.user_id)
+            if u is not None and u.org_id:
+                return u.org_id
+        return DEFAULT_ORG
 
     def _link_authz_axis(self, creds: list[Credential]) -> tuple[list[int], list[dict]]:
         """B4 吊销联动授权轴：解析该（些）凭证名下全部在案且未过期未撤销的
@@ -599,6 +625,12 @@ class RaService:
         for cred in creds:
             self._d.anchor.call("set_status", ["0x" + cred.master_cred_hash_hex, 2])
         self._d.anchor.call("set_revocation_root", [epoch, "0x" + root.hex()])
+        # ⑥站多机构一期：机构署名锚同步公示（FedRegistry.setOrgRevRoot——
+        # 共享树根的机构归因锚；本域吊销直接进本域树=跨域即时生效的任务书④语义）
+        self._d.anchor.call(
+            "set_org_rev_root",
+            [_b32_org(self._creds_org(creds)), epoch, "0x" + root.hex()],
+        )
         # B4：凭证轴落定后联动授权轴（失败不回滚主行为——明细如实入台账/响应）
         linked, link_errors = self._link_authz_axis(creds)
         action = "revoke" if len(creds) == 1 else "revoke_by_username"
@@ -834,6 +866,15 @@ class RaService:
             if cred is not None:
                 self._d.anchor.call("set_status", ["0x" + row.handle_hex, 1])
             self._d.anchor.call("set_revocation_root", [epoch, "0x" + root.hex()])
+            # ⑥站：恢复同样推机构署名锚（共享树根回退后的归因公示——逐域严格递增）
+            self._d.anchor.call(
+                "set_org_rev_root",
+                [
+                    _b32_org(self._creds_org([cred]) if cred is not None else DEFAULT_ORG),
+                    epoch,
+                    "0x" + root.hex(),
+                ],
+            )
         except Exception as e:  # noqa: BLE001  链面失败：整体回滚，请求留 pending
             self._s.rollback()
             row.execute_error = f"{type(e).__name__}: {e}"[:500]

@@ -53,6 +53,10 @@ class Account(Base):
     init_verifier_hex: Mapped[str | None] = mapped_column(String(64), nullable=True)
     init_verifier_ver: Mapped[str | None] = mapped_column(String(8), nullable=True)
     init_kdf_salt_hex: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    # 机构域键（⑥站多机构一期）：账户归属机构域（org-a=缺省机构域；org-b=第二
+    # 机构 demo 种子）——管理/公示面归属标注；受理门控与电路零变化（一期=链面
+    # 互认：FedRegistry 机构准入+逐域撤销锚+全局聚合根）。
+    org_id: Mapped[str] = mapped_column(String(32), default="org-a", server_default="org-a")
     created_ts: Mapped[dt.datetime] = mapped_column(DateTime, default=dt.datetime.utcnow)
     last_login_ts: Mapped[dt.datetime | None] = mapped_column(DateTime, nullable=True)
 

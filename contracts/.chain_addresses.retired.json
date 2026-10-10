@@ -254,5 +254,28 @@
       "address": "0xcdb0486704574fcf039ae5bed32ee150935f5e00",
       "block": 7911
     }
+  },
+  {
+    "retired_at": 1791625726,
+    "AdminGovernor": {
+      "address": "0x41a58d4e1b4fa8b1a7dc2aea43b4a28c27dbc3eb",
+      "block": 8026
+    },
+    "IdentityRegistry": {
+      "address": "0x166e78c966f55bae2b605a8a6aef9d8086f5006c",
+      "block": 8027
+    },
+    "PolicyRegistry": {
+      "address": "0x85947a548d211b6521242803c052784a986a8897",
+      "block": 8028
+    },
+    "FlightAuthRegistry": {
+      "address": "0x47553aca6e2d6f2a15f1fe3ee2edc52f155ecfb0",
+      "block": 8029
+    },
+    "TelemetryAnchor": {
+      "address": "0xc79a82c185897d50ec66c8b6dedba9be76dd85a8",
+      "block": 8030
+    }
   }
 ]

@@ -526,14 +526,15 @@ def v3_envelope_stock_report(session: Session) -> str | None:
 
 
 def seed_institutional_account(
-    session: Session, username: str, role: str, initial_password: str
+    session: Session, username: str, role: str, initial_password: str, org_id: str = "org-a"
 ) -> Account:
     """预置机构账户（审计员/管理员）：初始密码→激活核对子；首登激活后焚毁。
     批 2-2.2：核对子=独立派生域（derive_activation_verifier——info=
     FZ-ACTIVATE-VERIFY|v1 入盐域），与 KEK 派生域分离——库泄露拿到的核对子
     不是可用 KEK，只有与正文密封件同级的离线猜测面。init_verifier_ver="v1"
     标记格式（旧种子 NULL=兼容读取面）。幂等：待激活态可重置核对子（落
-    台账）；active 态拒绝（防误覆盖已激活钥对）。"""
+    台账）；active 态拒绝（防误覆盖已激活钥对）。
+    ⑥站多机构：org_id=机构域键（org-a 缺省域/org-b 第二机构 demo 域）。"""
     if role not in ("auditor", "admin"):
         raise AccountError("bad_role", "预置账户角色限 auditor/admin")
     row = session.execute(select(Account).where(Account.username == username)).scalar_one_or_none()
@@ -553,6 +554,7 @@ def seed_institutional_account(
     row = Account(
         username=username,
         role=role,
+        org_id=org_id,
         status="pending_activation",
         init_kdf_salt_hex=salt,
         init_verifier_ver="v1",
@@ -606,9 +608,12 @@ def submit_profile(
     cert_level: int,
     sn: str,
     class_id: int,
+    org_id: str | None = None,
 ) -> dict:
     """资料补全→RA 签发上链（"上链注册"的时点）：复用 RA register 仪式原路
-    （承诺计算+主凭证签发+链锚定）。密封资料经 keep_profile 二相回存。"""
+    （承诺计算+主凭证签发+链锚定）。密封资料经 keep_profile 二相回存。
+    ⑥站多机构：org_id=受理机构域（缺省=账户 org_id→org-a；未登记域由 RA
+    register 422 拒——fail-closed）。"""
     if account.role != "pilot":
         raise AccountError("not_pilot", "仅飞手账户需要补全飞行资料", 403)
     if account.status not in ("pending_profile", "active"):
@@ -626,6 +631,7 @@ def submit_profile(
             sn=sn,
             user_pub_hex=account.pubkey_hex,
             class_id=class_id,
+            org_id=org_id or account.org_id or "org-a",
         )
     except RaError as exc:
         raise AccountError(exc.code, str(exc), exc.status) from exc
