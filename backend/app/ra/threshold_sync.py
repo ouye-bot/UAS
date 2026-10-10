@@ -111,13 +111,29 @@ def _sync_state_path():
 
 
 def _read_sync_state() -> dict:
-    p = _sync_state_path()
-    if not p.exists():
-        return {}
-    try:
-        return json.loads(p.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError):
-        return {}
+    """同步账读（持份额域 RLock——watcher/解锁第④关/API 三方并发防撕裂写，
+    审查批⑤）。JSONDecodeError 降级 {}（自愈——抖动窗不累积故障）。"""
+    from app.ra.threshold_shares import _lock
+
+    with _lock:
+        p = _sync_state_path()
+        if not p.exists():
+            return {}
+        try:
+            return json.loads(p.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            return {}
+
+
+def _write_sync_state(state: dict) -> None:
+    """同步账写（持锁——与读同锁互斥）。"""
+    from app.ra.threshold_shares import _lock
+
+    with _lock:
+        _sync_state_path().parent.mkdir(parents=True, exist_ok=True)
+        _sync_state_path().write_text(
+            json.dumps(state, ensure_ascii=False, indent=1), encoding="utf-8"
+        )
 
 
 def owner_set_synced() -> bool:
@@ -155,7 +171,7 @@ def _write_red_flag(chain: dict) -> None:
             "drift_detected_ts": state.get("drift_detected_ts") or time.time(),
         }
     )
-    _sync_state_path().write_text(json.dumps(state, ensure_ascii=False, indent=1), encoding="utf-8")
+    _write_sync_state(state)
 
 
 def sync_status() -> dict:
@@ -294,13 +310,27 @@ def finalize_reshare_from_published() -> dict:
     version = state.get("drafted_version")
     if not version:
         raise SyncError("no_drafted_version", "无起草账（watcher 未起草过 reshare 提案）")
+    # 纪元适配先于链读（审查批①：起草账滞留自愈）——无漂移主动 reshare/
+    # 上轮收尾后账目滞留，下次漂移时旧账 target<=当前纪元=刷新早已完成：丢弃
+    # 过期账（零仪式零写面零链读），watcher 本轮继续为**新漂移**重新起草。
+    target_epoch = int(version.rsplit("-", 1)[-1])
+    current_epoch = int(_root_meta().get("epoch", 0))
+    if target_epoch <= current_epoch:
+        state = _read_sync_state()
+        for k in ("drafted_proposal_id", "drafted_version", "drafted_ts", "drafted_params_fp_hex"):
+            state.pop(k, None)
+        _write_sync_state(state)
+        return {
+            "action": "stale_draft_discarded",
+            "epoch": current_epoch,
+            "stale_version": version,
+        }
     if not policy_published(version):
         raise SyncError(
             "not_published",
             f"{version} 公示行未落地（治理尚未 execute——收尾不越 k-of-n 边界）",
         )
     chain = chain_owner_set()
-    target_epoch = int(version.rsplit("-", 1)[-1])
     r = ts.ceremonial_reshare(gov_confirmed_epoch=target_epoch, owner_set_fp=chain["fp_hex"])
     state = _read_sync_state()
     if state.get("drafted_params_fp_hex") and state["drafted_params_fp_hex"] != chain["fp_hex"]:
@@ -335,19 +365,24 @@ def run_sync_check_once() -> dict:
             state.pop("drafted_proposal_id", None)
             state.pop("drafted_version", None)
             state.pop("drafted_ts", None)
-            _sync_state_path().write_text(
-                json.dumps(state, ensure_ascii=False, indent=1), encoding="utf-8"
-            )
+            _write_sync_state(state)
         return {"action": "ok", "synced": True}
     _write_red_flag(chain)
     # 幂等序：起草账在案→公示行已落地（人工 execute 完成）=自动收尾（审查批
     # ②：执行后自动恢复为真）；未落地=already_drafted（等人工多签）
     state = _read_sync_state()
-    if state.get("drafted_version"):
-        if policy_published(state["drafted_version"]):
+    drafted = state.get("drafted_version")
+    if drafted:
+        if policy_published(drafted):
             fin = finalize_reshare_from_published()
-            return {"action": "finalized", "synced": True, **fin}
-        return {"action": "already_drafted", "synced": False}
+            if fin.get("action") == "stale_draft_discarded":
+                # 过期账已清（本漂移窗的刷新尚未发生）——本轮继续为新漂移
+                # 重新起草（新 version），不卡死在旧账（审查批①实证场景）
+                pass
+            else:
+                return {"action": "finalized", "synced": True, **fin}
+        else:
+            return {"action": "already_drafted", "synced": False}
     try:
         draft = draft_reshare_proposal()
     except SyncError as e:
@@ -364,7 +399,7 @@ def run_sync_check_once() -> dict:
             "drafted_params_fp_hex": draft.get("fp_hex"),
         }
     )
-    _sync_state_path().write_text(json.dumps(state, ensure_ascii=False, indent=1), encoding="utf-8")
+    _write_sync_state(state)
     return {"action": draft["action"], "synced": False, **draft}
 
 
@@ -463,23 +498,31 @@ def propose_and_reshare(gov=None, pr=None) -> dict:
 
 
 def start_background_watcher(interval_s: float = 10.0) -> None:
-    """真链档守护线程（create_app 挂载——同 event indexer 工艺，进程内幂等）。"""
+    """真链档守护线程（create_app 挂载——同 event indexer 工艺，进程内幂等）。
+    _watcher_stop 事件可控停（conftest autouse 每测试置位——防 daemon 跨测试
+    存活轮询干扰，审查批⑤）。"""
     global _watcher_started
+    _watcher_stop.clear()
     if _watcher_started:
         return
     _watcher_started = True
 
     def loop() -> None:
-        while True:
+        while not _watcher_stop.wait(interval_s):
             try:
                 r = run_sync_check_once()
                 if r.get("action") not in ("ok", "bound", "already_drafted"):
                     print(f"[threshold-watcher] {r}", flush=True)
             except Exception as e:  # noqa: BLE001 —— 抖动下一轮重试
                 print(f"[threshold-watcher] 轮询失败（下轮重试）: {e}", flush=True)
-            time.sleep(interval_s)
 
     threading.Thread(target=loop, daemon=True, name="fz-threshold-watcher").start()
 
 
+def stop_watcher() -> None:
+    """可控停（conftest/测试隔离用——daemon 线程在 wait 上退出）。"""
+    _watcher_stop.set()
+
+
 _watcher_started = False
+_watcher_stop = threading.Event()

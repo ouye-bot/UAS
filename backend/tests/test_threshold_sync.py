@@ -394,6 +394,63 @@ def test_propose_and_reshare_fp_drift_auto_recover(fresh_root, monkeypatch):
     assert sync.owner_set_synced() is True
 
 
+def test_finalize_stale_draft_discarded(fresh_root, monkeypatch):
+    """审查批①：起草账过期（target<=当前纪元=刷新早已完成）→finalize 丢弃
+    过期账（零仪式零写面），不再撞纪元门。"""
+    sync.bind_domain_fp(CHAIN_FP_A)
+    sync._write_sync_state(
+        {
+            "drift": False,
+            "drafted_version": "threshold-epoch-1",
+            "drafted_params_fp_hex": CHAIN_FP_A,
+        }
+    )
+    monkeypatch.setattr(sync, "policy_published", lambda v: True)  # 旧账公示行在案（历史行）
+    r = sync.finalize_reshare_from_published()
+    assert r["action"] == "stale_draft_discarded" and r["epoch"] == 1
+    state = sync._read_sync_state()
+    assert "drafted_version" not in state  # 过期账已清
+    audit_p = ts._audit_path("admin")
+    if audit_p.exists():
+        rows = [
+            json.loads(x)
+            for x in audit_p.read_text(encoding="utf-8").splitlines()
+            if json.loads(x)["action"] == "reshare"
+        ]
+        assert rows == []  # 零仪式（丢弃非执行）
+
+
+def test_stale_draft_discarded_then_redraft(fresh_root, monkeypatch):
+    """审查批①实证场景：主动 reshare 后账滞留→席位漂移→过期账丢弃+**新
+    version 重新起草**（旧实现卡 already_drafted→finalize 撞纪元门每轮异常
+    ——新漂移永不自动起草的可达态已根修）。"""
+    sync.bind_domain_fp(CHAIN_FP_A)
+    # 滞留账：version-1（当前纪元 1——target<=current=过期）
+    sync._write_sync_state(
+        {
+            "drift": False,
+            "drafted_version": "threshold-epoch-1",
+            "drafted_params_fp_hex": CHAIN_FP_A,
+        }
+    )
+    monkeypatch.setattr(sync, "chain_owner_set", _chain(CHAIN_FP_B))  # 漂移
+    monkeypatch.setattr(sync, "policy_published", lambda v: True)  # 旧账 version 已公示（历史行）
+    monkeypatch.setattr(
+        sync,
+        "draft_reshare_proposal",
+        lambda: {
+            "action": "drafted",
+            "proposal_id": 42,
+            "version": "threshold-epoch-2",
+            "fp_hex": CHAIN_FP_B,
+        },
+    )
+    r = sync.run_sync_check_once()
+    assert r["action"] == "drafted" and r["synced"] is False  # 为新漂移重新起草
+    state = sync._read_sync_state()
+    assert state["drafted_version"] == "threshold-epoch-2" and state["drafted_proposal_id"] == 42
+
+
 def test_owner_set_fp_sm3_sorted_deterministic():
     """owner_set_fp=SM3(sorted(owners))：排序无关+大小写归一（任务书钉定）。"""
     a = sync.owner_set_fp_of(["0xBB", "0x AA".replace(" ", ""), "0xaa"])

@@ -1,13 +1,16 @@
-"""④站份额域三关校验真实现（2026-10-10）。
+"""④站份额域四关校验真实现（2026-10-10 三关；1.3 件④增第④关 owner-set
+同步关——审查批④补本源模块 docstring 换代）。
 
-三关与数据源（全部真实组件——零替身）：
+四关与数据源（全部真实组件——零替身）：
 ① 解锁请求台账在案：threshold_root/unlock_requests.jsonl（append-only，
    合成方受理面登记 warrant/cred/C₁ 指纹三元组——域与合成方同读此文件，
    域独立判定）；
 ② 令状链上在案：IdentityRegistry.warrants 链查（WarrantLog——与
    warrant_unlock 流程双控第一关同源）；
 ③ 双控批文在案：collab_issued 台账（FZC2 出函=双控批准的产物行——
-   warrant+cred 命中）。
+   warrant+cred 命中）；
+④ 份额域与治理席位同步：链上 owner-set 指纹 vs root.json 绑定指纹对拍
+   （漂移=治理席位变更后未重分割——fail-closed 拒直至对齐）。
 
 链不可达=校验 fail-closed 拒绝（不静默放行——份额出借面红线）。
 """

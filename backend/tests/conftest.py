@@ -9,6 +9,21 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 
 @pytest.fixture(autouse=True)
+def _threshold_watcher_isolated():
+    """1.3 审查批⑤：threshold watcher daemon 隔离（真链档测试经 create_app
+    拉起的 daemon 跨测试存活轮询——[threshold-watcher] unavailable 打印实证
+    的潜在测试干扰源）。每测试前：停 daemon+复位进程内幂等标志；测试后同样
+    收口（线程在 Event.wait 上退出）。"""
+    from app.ra import threshold_sync as _tsw
+
+    _tsw.stop_watcher()
+    _tsw._watcher_started = False
+    yield
+    _tsw.stop_watcher()
+    _tsw._watcher_started = False
+
+
+@pytest.fixture(autouse=True)
 def _threshold_root_isolated(tmp_path, monkeypatch):
     """门限根目录全套件强制隔离（⑤站实弹教训，2026-10-10）。
 
