@@ -62,9 +62,13 @@ VEC_DIR = BACKEND / "app" / "crypto" / "vectors"
 # 电路 pin 链上公示值（prove 级 vendor 双根修重钉 2026-10-06：缺陷 A=交织档批次树
 # serde 丢树确定性重建+根对账（zk_cache 命中路径）；缺陷 B=窗口累加 P=Q 行仿射
 # 完备化（倍点斜率）。电路本体（约束/列布局）零变化，MANIFEST 就地重钉 148 文件/
-# aggregate e6481fb5…；重公示 tx=0xc215983bcafc6f0808cd8dc3373c386542ad9702652ccdd3fa687ad4202e7b8d）
-PIN_LOCAL_EXPECTED = "SM3(4201a82|e6481fb56957dd8520acd94236f9880a93264e04ee48b00f9a1ebcdb974a86e8)"
-PIN_CHAIN_DIGEST_EXPECTED = "5bc38e56230f35ce927fe8ef6858521ab6e691a364c2b7acd00d875094eb8374"
+# aggregate e6481fb5…；重公示 tx=0xc215983b…（②站前）
+# ②站提速换代重钉 2026-10-10（bd76361）：vendor 中继化+evals 并行（电路本体/
+# proof 字节/实例零语义），MANIFEST aggregate e53078a0…；重公示 tx=0x1a78fb6c——
+# 本常量第一批判门兜底（2026-10-11）随代：此前停在 e6481fb5（10-06 态）致 C3-15
+# 假红（本地三源=黄金向量 zk_pin_fingerprint/build_manifest/此表现已一致）。
+PIN_LOCAL_EXPECTED = "SM3(4201a82|e53078a0bdc395bb6d2202bf9269419de9f53f6e881e60b4e724bb1561db914b)"
+PIN_CHAIN_DIGEST_EXPECTED = "01140a45502fc154ac0b3f6024332acb02da11bedaed5ac9eb9d95c3faebc05b"
 
 
 def _load_json(path: Path):
