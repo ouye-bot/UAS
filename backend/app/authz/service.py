@@ -570,8 +570,13 @@ def threshold_wrap(plaintext: bytes, aad: bytes = b"FZ-WRAP") -> bytes:
     return bytes([_V5_TAG]) + len(ct_ecies).to_bytes(2, "big") + ct_ecies + inner
 
 
-def unwrap_any(blob: bytes, aad: bytes = b"FZ-WRAP", *, share_hooks: dict | None = None,
-               unlock_ctx: dict | None = None) -> bytes:
+def unwrap_any(
+    blob: bytes,
+    aad: bytes = b"FZ-WRAP",
+    *,
+    share_hooks: dict | None = None,
+    unlock_ctx: dict | None = None,
+) -> bytes:
     """信封版本分派：v5=门限路径（三份额域 2-of-3 合成 Kₑ），legacy=旧单钥。
 
     v5 路径的 unlock_ctx（warrant_hash_hex/cred_hash_hex/request_sha256_hex）
@@ -622,4 +627,3 @@ def unwrap_any(blob: bytes, aad: bytes = b"FZ-WRAP", *, share_hooks: dict | None
     g = SM4GCM(k_e)
     nonce, ct, tag = inner[:12], inner[12:-16], inner[-16:]
     return g.decrypt(nonce, ct, tag, aad)
-

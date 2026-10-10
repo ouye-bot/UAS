@@ -88,11 +88,15 @@ def test_reshare_old_envelope_still_decrypts(fresh_root):
 
     assert r["epoch"] == 2 and r["pub_hex"] == pub_before
     assert ts.root_pub_hex() == pub_before  # D_pub 逐字不变
-    out = unwrap_any(blob, share_hooks=_all_true_hooks(), unlock_ctx={
-        "warrant_hash_hex": "aa" * 32,
-        "cred_hash_hex": "bb" * 32,
-        "request_sha256_hex": "cc" * 32,
-    })
+    out = unwrap_any(
+        blob,
+        share_hooks=_all_true_hooks(),
+        unlock_ctx={
+            "warrant_hash_hex": "aa" * 32,
+            "cred_hash_hex": "bb" * 32,
+            "request_sha256_hex": "cc" * 32,
+        },
+    )
     assert out == plaintext
 
 
@@ -195,9 +199,13 @@ def test_reshare_twice_epoch_accumulates(fresh_root):
     assert ts.ceremonial_reshare(gov_confirmed_epoch=2)["epoch"] == 2
     assert ts.ceremonial_reshare(gov_confirmed_epoch=3)["epoch"] == 3
     assert ts.root_pub_hex() == pub_before
-    out = unwrap_any(blob, share_hooks=_all_true_hooks(), unlock_ctx={
-        "warrant_hash_hex": "dd" * 32,
-        "cred_hash_hex": "ee" * 32,
-        "request_sha256_hex": "ff" * 32,
-    })
+    out = unwrap_any(
+        blob,
+        share_hooks=_all_true_hooks(),
+        unlock_ctx={
+            "warrant_hash_hex": "dd" * 32,
+            "cred_hash_hex": "ee" * 32,
+            "request_sha256_hex": "ff" * 32,
+        },
+    )
     assert out == plaintext

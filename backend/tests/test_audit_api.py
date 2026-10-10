@@ -79,8 +79,9 @@ def app_client(tmp_path, monkeypatch):
                 # 静默回归的根因即此。
                 threshold_hooks={
                     "request_registered": lambda sha, wh, ch: True,
-                    "warrant_on_chain": lambda wh_hex: bytes.fromhex(wh_hex)
-                    in ra_state["warrants"],
+                    "warrant_on_chain": lambda wh_hex: (
+                        bytes.fromhex(wh_hex) in ra_state["warrants"]
+                    ),
                     "collab_approved": lambda sha: True,
                 },
             ),

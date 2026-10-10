@@ -66,9 +66,7 @@ def lagrange_coeff_at(t: int, i: int, xs: list[int]) -> int:
     return acc
 
 
-def proactive_reshare(
-    old_shares: list[tuple[int, int]], n: int, k: int
-) -> list[tuple[int, int]]:
+def proactive_reshare(old_shares: list[tuple[int, int]], n: int, k: int) -> list[tuple[int, int]]:
     """proactive re-share（⑤站份额刷新核心原语）——**根钥 d 不重组**。
 
     数学：随机增项多项式 δ(x)=Σ_{j=1..k-1} b_j·xʲ（**无常数项 ⟹ δ(0)=0**），

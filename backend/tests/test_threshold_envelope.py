@@ -18,6 +18,7 @@ def _isolated_root(tmp_path, monkeypatch):
     monkeypatch.setenv("FZ_THRESHOLD_ROOT_DIR", str(tmp_path / "threshold_root"))
     yield
 
+
 _CTX = {
     "warrant_hash_hex": "ab" * 32,
     "cred_hash_hex": "cd" * 32,

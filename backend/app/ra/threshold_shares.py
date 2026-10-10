@@ -230,9 +230,7 @@ def ceremonial_reshare(gov_confirmed_epoch: int) -> dict:
             if len(opened) >= _THRESHOLD_K:
                 break
             try:
-                plain = _open_share(
-                    role, old_epoch, _domain_share_sealed_path(role).read_bytes()
-                )
+                plain = _open_share(role, old_epoch, _domain_share_sealed_path(role).read_bytes())
                 opened.append((idx, plain.decode()))
             except Exception:  # noqa: BLE001 —— 域损即跳过（≥k 份可开即可刷新）
                 continue
@@ -253,9 +251,7 @@ def ceremonial_reshare(gov_confirmed_epoch: int) -> dict:
         pub_hex = meta["pub_hex"]
         ct = sm2_encrypt(pub_hex, canary)
         c1_hex = ct[:64].hex()
-        pts = [
-            (i, decrypt_share(f"{d_i:064x}", c1_hex)) for i, d_i in new_shares[:_THRESHOLD_K]
-        ]
+        pts = [(i, decrypt_share(f"{d_i:064x}", c1_hex)) for i, d_i in new_shares[:_THRESHOLD_K]]
         if threshold_decrypt(ct, pts) != canary:
             raise ShareDomainError("canary_mismatch", "新份额对 D_pub 自证失败（未落盘，零变更）")
         # ④ 持久化：先份额（新纪元域钥重封=旧份额值+旧密封钥同时作废）后纪元

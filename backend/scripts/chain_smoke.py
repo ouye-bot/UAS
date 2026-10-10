@@ -1040,12 +1040,17 @@ def main() -> int:
         [_oid("org-e"), _oid("org-e"), ra.address],
         "⑨-f 非 governor（admin 直调）registerOrg → revert（机构准入=治理面）",
     )
-    # ⑨-g 服务面锁步预留：org-a/org-b 锚保持 epoch0（与服务 revEpoch 同起步——
-    # 首次真实吊销 setOrgRevRoot(epoch1) 与 IdentityRegistry.setRevocationRoot(epoch1) 锁步）
+    # ⑨-g 服务面锁步不变式：org 锚纪元**永不超前**共享树纪元（IdentityRegistry
+    # revEpoch=唯一时钟——初态锚=0；服务面首次真实吊销起 org 锚随推根同步前进，
+    # 幂等烟测在任意时点重跑都只验不变式不验初态快照——⑥站初版硬编码 =0 在
+    # 服务面推根后幂等重跑必红，⑨站审查补跑抓出即根修）
+    ir_rev_epoch = int(B["IdentityRegistry"].call_fn("revEpoch", [])[0])
+    org_a_epoch = int(FED.call_fn("revAnchors", [_oid("org-a")])[0])
+    org_b_epoch = int(FED.call_fn("revAnchors", [_oid("org-b")])[0])
     expect(
-        int(FED.call_fn("revAnchors", [_oid("org-a")])[0]) == 0
-        and int(FED.call_fn("revAnchors", [_oid("org-b")])[0]) == 0,
-        "⑨-g org-a/org-b 锚 epoch=0（与服务面撤销纪元锁步预留——首次吊销同推 epoch1）",
+        org_a_epoch <= ir_rev_epoch and org_b_epoch <= ir_rev_epoch,
+        f"⑨-g org 锚不超前共享树纪元（锁步不变式——org-a={org_a_epoch}"
+        f" org-b={org_b_epoch} ≤ revEpoch={ir_rev_epoch}）",
     )
     expect(
         int(FED.call_fn("orgActive", [])[0]) == 2,

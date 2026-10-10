@@ -695,10 +695,7 @@ class RaService:
         blob = bytes(cred.id_store_cipher)
         request_sha = (
             _hl.sha256(
-                warrant_hash_hex.encode()
-                + master_cred_hash_hex.encode()
-                + blob[1:3]
-                + blob[3:67]
+                warrant_hash_hex.encode() + master_cred_hash_hex.encode() + blob[1:3] + blob[3:67]
             ).hexdigest()
             if blob[:1] == b""
             else _hl.sha256(warrant_hash_hex.encode() + master_cred_hash_hex.encode()).hexdigest()
@@ -714,8 +711,8 @@ class RaService:
                 share_hooks=self._d.threshold_hooks
                 or {
                     "request_registered": _threshold_hook_request_registered(),
-                    "warrant_on_chain": lambda _wh_hex, _wh=wh: (
-                        self._d.anchor.warrant_on_chain(_wh)
+                    "warrant_on_chain": lambda _wh_hex, _wh=wh: self._d.anchor.warrant_on_chain(
+                        _wh
                     ),
                     "collab_approved": _threshold_hook_collab_approved(),
                 },
