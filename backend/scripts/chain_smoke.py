@@ -1057,6 +1057,39 @@ def main() -> int:
         "⑨-g orgActive=2（org-a/org-b 活跃——org-c 已退出）",
     )
 
+    # ===== ⑩ 机构机队接口（3.1——credKind=2 预留面激活实证；合约字节零触碰：
+    # IdentityRegistry.registerCommitment 建库即接受 kind∈{1,2}，本段=链面语义
+    # 钉定——kind=2 登记读回/越界 kind 拒/kind=2 凭证撤销面同构。服务面批量
+    # 登记动线=e2e_fleet.py 实弹。）=====
+    print("== ⑩ 机构机队接口（credKind=2 预留面）==")
+    _IR = B["IdentityRegistry"]
+    fleet_hash = sm3_bytes(b"FZ-FLEET-SMOKE|" + secrets.token_bytes(8))
+    r_fleet = _IR.send_fn(ra, "registerCommitment", [fleet_hash, 2])
+    ev_fleet = [ev for ev in _IR.decode_logs(r_fleet) if ev["event"] == "CommitmentRegistered"]
+    status_f, kind_f, _ts_f = _IR.call_fn("getCred", [fleet_hash])
+    expect(
+        len(ev_fleet) == 1 and int(status_f) == 1 and int(kind_f) == 2,
+        "⑩-a registerCommitment(kind=2) 登记读回 credKind=2（机构机队承诺——预留面激活）",
+    )
+    _kind_bad_caught = False
+    try:
+        _IR.send_fn(
+            ra,
+            "registerCommitment",
+            [sm3_bytes(b"FZ-FLEET-BAD-KIND|" + secrets.token_bytes(8)), 3],
+        )
+    except Exception:  # noqa: BLE001 —— 合约 require "bad kind" revert=预期拒绝
+        _kind_bad_caught = True
+    expect(
+        _kind_bad_caught,
+        "⑩-b 越界 kind=3 登记 → revert（合约只接受 1/2——预留面零外扩）",
+    )
+    _IR.send_fn(ra, "setStatus", [fleet_hash, 2])
+    expect(
+        bool(_IR.call_fn("isRevoked", [fleet_hash])[0]),
+        "⑩-c kind=2 凭证吊销面同构（setStatus(2)→isRevoked True——撤销权威不分支）",
+    )
+
     print(f"== chain_smoke 全绿：{_checks} 项断言 [OK] ==")
     return 0
 
