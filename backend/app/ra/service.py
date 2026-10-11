@@ -1146,6 +1146,7 @@ class RaService:
             cred_hash_hex=master_cred_hash_hex,
         )
         try:
+            ceremony: dict = {}
             plain = unwrap_any(
                 blob,
                 share_hooks=self._d.threshold_hooks
@@ -1165,11 +1166,18 @@ class RaService:
                     "cred_hash_hex": master_cred_hash_hex,
                     "request_sha256_hex": request_sha,
                 },
+                ceremony_out=ceremony,
             )
         except Exception as e:  # GCM 认证/份额拒绝归一（SM4GCMError+ShareDomainError 族）
             code = getattr(e, "code", None)
             if code == "share_denied":
                 raise RaError("share_denied", str(e), 403) from e
+            if code == "threshold_denied":
+                # 仪式留痕随判词携带（响应面 message 已含域拒绝明细；trace 附
+                # 异常属性供诊断/测试面——HTTP 负例 data 仍为 None 不扩面）
+                err = RaError("threshold_denied", str(e), 403)
+                err.ceremony = getattr(e, "ceremony", None)
+                raise err from e
             raise RaError("unwrap_failed", f"通道② 解密失败: {e}") from e
         # 信封解析单源（2026-09-28 深检收尾：v3=0x01 前缀+四段含 SN₁；旧式
         # 三段 sn 诚实缺省——含历史信封。分派逻辑此前内联双份，与
@@ -1184,6 +1192,10 @@ class RaService:
             "id_number": d["id_number"],
             "sn": d["sn"],
             "master_cred_hash_hex": master_cred_hash_hex,
+            # 门限仪式留痕（2026-10-12 辖区分账案甲——响应附带）：四关判定+
+            # 已出份额域列表（上限 k 域如实——凑足即停，第三域未被征询）；
+            # legacy 信封路径无仪式（ceremony 保持缺省 None）。
+            "ceremony": ceremony or None,
         }
 
     def snapshot(self) -> dict:
@@ -1368,10 +1380,11 @@ class RaService:
         self._s.commit()
         return self.restore_view(row)
 
-    def restore_view(self, r: RestoreRequest) -> dict:
+    def restore_view(self, r: RestoreRequest, org_id: str | None = None) -> dict:
         return {
             "id": r.id,
             "handle_hex": r.handle_hex,
+            "org_id": org_id,
             "reason": r.reason,
             "status": r.status,
             "requested_by": r.requested_by,
@@ -1381,11 +1394,22 @@ class RaService:
             "executed_ts": r.executed_ts.isoformat() if r.executed_ts else None,
         }
 
-    def restore_requests_list(self) -> list[dict]:
+    def restore_requests_list(self, operator_org_id: str | None = None) -> list[dict]:
+        """恢复请求列表（读面按域——辖区分账 2026-10-12 枚举清单面④）：
+        operator_org_id 传定时按句柄归属域过滤（org-a 一律到底——监管全景归审计台）；
+        句柄不在案=未定域恒保留（历史行如实）。"""
+        from app.ra.scope import cred_org_of
+
         rows = self._s.scalars(
             select(RestoreRequest).order_by(RestoreRequest.id.desc()).limit(50)
         ).all()
-        return [self.restore_view(r) for r in rows]
+        out = []
+        for r in rows:
+            org = cred_org_of(self._s, r.handle_hex)
+            if operator_org_id is not None and org is not None and org != operator_org_id:
+                continue
+            out.append(self.restore_view(r, org))
+        return out
 
     def _account_pub(self, username: str) -> str:
         """动作签名人当前公钥（accounts 表——collab 双控同源）。"""

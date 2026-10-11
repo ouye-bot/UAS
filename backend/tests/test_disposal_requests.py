@@ -262,11 +262,12 @@ def test_verified_close_creates_disposal_todo(dsp):
     items = _todos(c)
     assert len(items) == 1, items
     it = items[0]
-    # 契约面逐字锚（前端并行开发）：恰此七字段，无多余
+    # 契约面逐字锚（前端并行开发）：恰此八字段（org_id=2026-10-12 辖区分账契约换代）
     assert set(it.keys()) == {
         "id",
         "case_no",
         "username",
+        "org_id",
         "conclusion",
         "created_ts",
         "status",
@@ -278,6 +279,7 @@ def test_verified_close_creates_disposal_todo(dsp):
     assert it["status"] == "pending"
     assert it["resolved_note"] is None
     assert it["created_ts"]
+    assert it["org_id"] == "org-a"  # 派生归属域（读时 join）
     # 建单幂等锚=req_hash（与请求行同源）
     gen = c.app.dependency_overrides[get_session]()
     sess = next(gen)

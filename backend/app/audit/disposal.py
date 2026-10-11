@@ -33,13 +33,16 @@ def _utcnow() -> dt.datetime:
     return dt.datetime.now(dt.UTC).replace(tzinfo=None)
 
 
-def todo_view(r: DisposalRequest) -> dict:
+def todo_view(r: DisposalRequest, org_id: str | None = None) -> dict:
     """待办视图（契约面，前端并行开发逐字锚）。conclusion 恒为 verified——
-    本表只收属实证，误报/无法查证根本不入表。"""
+    本表只收属实证，误报/无法查证根本不入表。
+    org_id（2026-10-12 辖区分账）：目标实名归属域读时派生——None=未定域
+    （实名缺位/用户不可得），前端「全域待办」徽标语义。"""
     return {
         "id": r.id,
         "case_no": r.case_no,
         "username": r.username,
+        "org_id": org_id,
         "conclusion": "verified",
         "created_ts": r.created_ts.isoformat() if r.created_ts else None,
         "status": r.status,
@@ -83,19 +86,33 @@ def create_disposal_request(
     return row
 
 
-def list_todos(session: Session) -> list[dict]:
-    """全部处置待办（admin 可见全部），按 created_ts 倒序（id 作稳定次序锚）。"""
+def list_todos(session: Session, operator_org_id: str | None = None) -> list[dict]:
+    """处置待办清单（读面按域——辖区分账 2026-10-12 枚举清单面②）：
+    operator_org_id 传定时按目标实名归属域过滤（org-a 一律到底——监管全景
+    归审计台）；未定域（实名缺位/用户不可得）恒保留——「全域待办」语义
+    （跨域结办在写面守卫兜底）。按 created_ts 倒序（id 作稳定次序锚）。"""
+    from app.ra.scope import username_org_of
+
     rows = session.scalars(
         select(DisposalRequest).order_by(
             DisposalRequest.created_ts.desc(), DisposalRequest.id.desc()
         )
     ).all()
-    return [todo_view(r) for r in rows]
+    out: list[dict] = []
+    for r in rows:
+        org = username_org_of(session, r.username)
+        if operator_org_id is not None and org is not None and org != operator_org_id:
+            continue
+        out.append(todo_view(r, org))
+    return out
 
 
 def resolve_todo(session: Session, *, todo_id: int, note: str | None) -> dict:
     """处置完成（pending→done）：条件 UPDATE 数据库仲裁——并发/重复处置恰一
-    胜者，输家 409（already_resolved）。说明入库（管理员处置留痕），时间戳落定。"""
+    胜者，输家 409（already_resolved）。说明入库（管理员处置留痕），时间戳落定。
+    返回视图携带派生归属域（2026-10-12 辖区分账——契约八字段）。"""
+    from app.ra.scope import username_org_of
+
     row = session.get(DisposalRequest, todo_id)
     if row is None:
         raise DisposalError("todo_not_found", "处置待办不存在", 404)
@@ -116,4 +133,4 @@ def resolve_todo(session: Session, *, todo_id: int, note: str | None) -> dict:
         session.expire(row)
         raise DisposalError("already_resolved", "该处置待办已完成——不可重复处置", 409)
     session.expire(row)  # 条件 UPDATE 绕过会话缓存——读视图前强制刷新
-    return todo_view(row)
+    return todo_view(row, username_org_of(session, row.username))

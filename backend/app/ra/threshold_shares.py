@@ -145,12 +145,17 @@ def assert_threshold_config() -> dict:
 
 
 class ShareDomainError(Exception):
-    """份额域拒绝（域校验失败/未初始化/域损）。"""
+    """份额域拒绝（域校验失败/未初始化/域损）。
 
-    def __init__(self, code: str, message: str, status: int = 403):
+    meta（2026-10-12 辖区分账仪式可视化）：拒绝时随异常携带该域判定元数据
+    {role, checks, decision}——unwrap_any 聚合为 ceremony trace（响应附带，
+    案甲），逐域四关判词上 UI 不再隐形。"""
+
+    def __init__(self, code: str, message: str, status: int = 403, meta: dict | None = None):
         super().__init__(message)
         self.code = code
         self.status = status
+        self.meta = meta
 
 
 def _root_dir() -> Path:
@@ -272,7 +277,8 @@ def request_decrypt_share(
     cred_hash_hex: str,
     request_sha256_hex: str,
     verify_hooks: dict | None = None,
-) -> str:
+    with_meta: bool = False,
+) -> str | tuple[str, dict]:
     """份额域三关校验 → 出 [dᵢ]C₁（dᵢ 不出域）。
 
     三关（每域独立执行、独立审计）：
@@ -285,7 +291,16 @@ def request_decrypt_share(
        hooks 恒含——生产解锁恒过第④关）。
     hooks 缺省=真实现（app.ra.threshold_hooks）；单测可注入本地真实现
     （判定逻辑同码路径——非网络替身，诚实标注）。
-    """
+
+    with_meta（2026-10-12 仪式可视化案甲）：True 时返回 (份额点, 判定元数据)
+    二元组——元数据={role, checks(四关逐项布尔), decision}；拒绝路径元数据
+    随 ShareDomainError.meta 携带（unwrap_any 聚合不丢行）。缺省 False=返回
+    份额点字符串（既有调用面零变化）。"""
+    meta: dict | None = None
+
+    def _meta(decision: str, checks: dict) -> dict:
+        return {"role": role, "checks": checks, "decision": decision}
+
     _, domains = threshold_config()
     if role not in domains:
         raise ShareDomainError("bad_role", f"未知份额域 {role}（现配置域集: {','.join(domains)}）")
@@ -311,17 +326,80 @@ def request_decrypt_share(
         "decision": "granted" if not failed else f"denied:{'+'.join(failed)}",
     }
     _audit(role, row)
+    meta = _meta(row["decision"], checks)
     if failed:
-        raise ShareDomainError("share_denied", f"份额域 {role} 校验未过：{'+'.join(failed)}")
+        raise ShareDomainError(
+            "share_denied", f"份额域 {role} 校验未过：{'+'.join(failed)}", meta=meta
+        )
     sealed = _domain_share_sealed_path(role).read_bytes()
     plain = _open_share(role, _epoch(), sealed)
     d_i_hex = plain.decode()
-    return decrypt_share(d_i_hex, c1_hex)
+    point = decrypt_share(d_i_hex, c1_hex)
+    return (point, meta) if with_meta else point
 
 
 def _epoch() -> int:
     meta = json.loads((_root_dir() / "root.json").read_text(encoding="utf-8"))
     return int(meta["epoch"])
+
+
+def ceremony_replay(warrant_hash_hex: str) -> dict:
+    """门限仪式回放（2026-10-12 辖区分账案乙——只读面，B3 审计报告原建议）：
+    按 warrant_hash_hex 过滤各份额域 append-only 审计（audit_{role}.jsonl 的
+    decrypt_share 行）+ 合成方受理登记（unlock_requests.jsonl），聚合为
+    UI 可渲染的仪式 trace。零侵入 unwrap 主径；只能事后回看（即时呈现由
+    案甲响应附带承担——两案并用）。
+
+    返回 {warrant_hash_hex, k, domains, threshold, requests, rows}；域审计
+    文件缺席（该域从未被征询/未初始化）=该域零行——如实，不臆造。"""
+    k, domains = threshold_config()
+    rows: list[dict] = []
+    for role in domains:
+        p = _audit_path(role)
+        if not p.exists():
+            continue
+        for line in p.read_text(encoding="utf-8").splitlines():
+            try:
+                row = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if (
+                row.get("action") == "decrypt_share"
+                and row.get("warrant_hash_hex") == warrant_hash_hex
+            ):
+                rows.append(
+                    {
+                        "ts": row.get("ts"),
+                        "role": row.get("role", role),
+                        "checks": row.get("checks") or {},
+                        "decision": row.get("decision") or "",
+                    }
+                )
+    rows.sort(key=lambda r: r.get("ts") or 0)
+    requests: list[dict] = []
+    req_path = _root_dir() / "unlock_requests.jsonl"
+    if req_path.exists():
+        for line in req_path.read_text(encoding="utf-8").splitlines():
+            try:
+                row = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if row.get("warrant_hash_hex") == warrant_hash_hex:
+                requests.append(
+                    {
+                        "ts": row.get("ts"),
+                        "request_sha256_hex": row.get("request_sha256_hex"),
+                        "cred_hash_hex": row.get("cred_hash_hex"),
+                    }
+                )
+    return {
+        "warrant_hash_hex": warrant_hash_hex,
+        "k": k,
+        "domains": list(domains),
+        "threshold": f"{k}-of-{len(domains)}",
+        "requests": requests,
+        "rows": rows,
+    }
 
 
 def root_pub_hex() -> str:

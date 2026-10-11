@@ -152,7 +152,12 @@ class AuditService:
         row.unlocked_id_number = result["id_number"]
         row.unlocked_sn = result.get("sn")  # SN v2：设备交叉审计数据源
         self._s.commit()
-        return self._warrant_view(row)
+        view = self._warrant_view(row)
+        # 门限仪式留痕（2026-10-12 辖区分账案甲——响应附带，B3 仪式可视化）：
+        # 四关判定+已出份额域列表（上限 k 域如实）；legacy 信封=None 如实缺省。
+        if result.get("ceremony") is not None:
+            view["ceremony"] = result["ceremony"]
+        return view
 
     def list_warrants(self) -> list[dict]:
         from sqlalchemy import select
@@ -176,6 +181,14 @@ class AuditService:
                 )
         out["chain_fingerprint"] = self._d.anchor.chain_fingerprint()
         out["closure"] = self._closure_view(row)
+        # 门限仪式回放（2026-10-12 案乙——结案浮层自然继承）：该令状名下的
+        # 份额域 decrypt_share 留痕聚合；无任何留痕（未走门限/历史数据）=None
+        # 如实缺省，不装一致。
+        from app.ra.threshold_shares import ceremony_replay
+
+        ceremony = ceremony_replay(warrant_hash_hex)
+        if ceremony["rows"]:
+            out["ceremony"] = ceremony
         return out
 
     def _closure_view(self, w: Warrant) -> dict | None:

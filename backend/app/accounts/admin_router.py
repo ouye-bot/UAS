@@ -58,16 +58,22 @@ class ResolveDisposalIn(BaseModel):
 
 @router.get("/collab-requests")
 def list_collab_requests(
+    request: Request,
     status: str = "",
     session: Session = Depends(get_session),
     _p=Depends(require_role("admin")),
 ):
+    """协作请求列表（读面按域——辖区分账 2026-10-12：目标归属域过滤，org-a
+    一律到底；未定域=全域待批保留）。"""
+    p = principal_from(request, session)
     return JSONResponse(
         status_code=200,
         content={
             "code": "ok",
             "message": "",
-            "data": {"items": collab_svc.list_requests(session, status or None)},
+            "data": {
+                "items": collab_svc.list_requests(session, status or None, p.org_id),
+            },
         },
     )
 
@@ -160,16 +166,23 @@ def reject(
 
 @router.get("/disposal-todos")
 def list_disposal_todos(
+    request: Request,
     session: Session = Depends(get_session),
     _p=Depends(require_role("admin")),
 ):
     """处置待办清单（admin）：全部待办按 created_ts 倒序——审计定谳（verified）
-    的下一棒是机构处置，逐单可见状态与处置说明。"""
+    的下一棒是机构处置，逐单可见状态与处置说明。读面按域（辖区分账
+    2026-10-12）：按目标实名归属域过滤，org-a 一律到底；未定域保留。"""
     from app.audit import disposal as disposal_svc
 
+    p = principal_from(request, session)
     return JSONResponse(
         status_code=200,
-        content={"code": "ok", "message": "", "data": {"items": disposal_svc.list_todos(session)}},
+        content={
+            "code": "ok",
+            "message": "",
+            "data": {"items": disposal_svc.list_todos(session, p.org_id)},
+        },
     )
 
 
@@ -315,16 +328,44 @@ def threshold_reshare(
 
 
 @router.get("/overview")
-def overview(session: Session = Depends(get_session), _p=Depends(require_role("admin"))):
-    """机构台总览：待解锁令状/出具台账/账户概况/账户管理台账——签发台账是机构本职的可视面。"""
-    warrants = session.scalars(select(Warrant).order_by(Warrant.id.desc()).limit(50)).all()
-    ledger = session.scalars(select(CollabIssued).order_by(CollabIssued.id.desc()).limit(50)).all()
-    accounts = session.scalars(select(Account).order_by(Account.id)).all()
+def overview(
+    request: Request,
+    session: Session = Depends(get_session),
+    _p=Depends(require_role("admin")),
+):
+    """机构台总览：待解锁令状/出具台账/账户概况/账户管理台账——签发台账是机构本职的可视面。
+    读面按域（辖区分账 2026-10-12 枚举清单面③，org-a 一律到底——监管全景
+    归审计台）：四表逐行派生归属域过滤；未定域行恒保留（「全域」语义）。
+    - warrants：target_auth_id→授权链凭证域，缺位回落解锁实名→用户域；
+    - collab_ledger：出函凭证句柄→凭证域；
+    - accounts/reset_log：账户 org_id 列直读（reset_log 按账户名派生）。"""
+    from app.ra.scope import auth_org_of, cred_org_of, username_org_of
+
+    p = principal_from(request, session)
+    warrants_raw = session.scalars(select(Warrant).order_by(Warrant.id.desc()).limit(50)).all()
+    ledger_raw = session.scalars(
+        select(CollabIssued).order_by(CollabIssued.id.desc()).limit(50)
+    ).all()
+    accounts_raw = session.scalars(select(Account).order_by(Account.id)).all()
     from app.accounts.models import AccountAdminLog
 
-    reset_log = session.scalars(
+    reset_raw = session.scalars(
         select(AccountAdminLog).order_by(AccountAdminLog.id.desc()).limit(50)
     ).all()
+
+    def _keep(org: str | None) -> bool:
+        return org is None or p.org_id == org
+
+    warrant_orgs = {
+        w.warrant_hash_hex: (
+            auth_org_of(session, w.target_auth_id) or username_org_of(session, w.unlocked_username)
+        )
+        for w in warrants_raw
+    }
+    ledger_orgs = {
+        c.master_cred_hash_hex: cred_org_of(session, c.master_cred_hash_hex) for c in ledger_raw
+    }
+    reset_orgs = {g.id: username_org_of(session, g.username) for g in reset_raw}
     return JSONResponse(
         status_code=200,
         content={
@@ -336,28 +377,34 @@ def overview(session: Session = Depends(get_session), _p=Depends(require_role("a
                         "warrant_hash_hex": w.warrant_hash_hex,
                         "case_no": w.case_no,
                         "target_auth_id": w.target_auth_id,
+                        "org_id": warrant_orgs.get(w.warrant_hash_hex),
                         "unlocked": w.unlocked_ts is not None,
                         "created_ts": w.created_ts.isoformat() if w.created_ts else None,
                     }
-                    for w in warrants
+                    for w in warrants_raw
+                    if _keep(warrant_orgs.get(w.warrant_hash_hex))
                 ],
                 "collab_ledger": [
                     {
                         "warrant_hash_hex": c.warrant_hash_hex,
                         "master_cred_hash_hex": c.master_cred_hash_hex,
+                        "org_id": ledger_orgs.get(c.master_cred_hash_hex),
                         "code_fingerprint_hex": c.code_fingerprint_hex,
                         "issued_at": c.issued_at.isoformat() if c.issued_at else None,
                     }
-                    for c in ledger
+                    for c in ledger_raw
+                    if _keep(ledger_orgs.get(c.master_cred_hash_hex))
                 ],
                 "accounts": [
                     {
                         "username": a.username,
                         "role": a.role,
                         "status": a.status,
+                        "org_id": a.org_id,
                         "created_ts": a.created_ts.isoformat() if a.created_ts else None,
                     }
-                    for a in accounts
+                    for a in accounts_raw
+                    if _keep(a.org_id)
                 ],
                 "reset_log": [
                     {
@@ -367,7 +414,8 @@ def overview(session: Session = Depends(get_session), _p=Depends(require_role("a
                         "operator": g.operator,
                         "detail": g.detail,
                     }
-                    for g in reset_log
+                    for g in reset_raw
+                    if _keep(reset_orgs.get(g.id))
                 ],
             },
         },

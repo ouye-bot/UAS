@@ -618,12 +618,20 @@ def unwrap_any(
     *,
     share_hooks: dict | None = None,
     unlock_ctx: dict | None = None,
+    ceremony_out: dict | None = None,
 ) -> bytes:
     """信封版本分派：v5=门限路径（三份额域 2-of-3 合成 Kₑ），legacy=旧单钥。
 
     v5 路径的 unlock_ctx（warrant_hash_hex/cred_hash_hex/request_sha256_hex）
     供份额域四关校验与审计（第④关=owner-set 同步，1.3 件④）；缺省即拒
-    （门限信封无上下文=不得解）。"""
+    （门限信封无上下文=不得解）。
+
+    ceremony_out（2026-10-12 仪式可视化案甲）：调用方传入可变 dict——解锁
+    过程逐域四关判定聚合写入：{k, domains, summoned, granted, not_summoned,
+    rows:[{role, checks, decision}]}。**上限 k 域如实**：凑足 k 域即停
+    （granted>=k break——少一次份额点出借是正确安全姿态），第三域不被征询
+    也无审计行；失败路径全域留痕（denied 行）。legacy 路径不写（保持缺省
+    空 dict 原样——调用方以 None 判「非门限路径」）。"""
     if not blob or blob[0] != _V5_TAG:
         return unwrap_secret(blob, aad)
     if unlock_ctx is None:
@@ -648,28 +656,54 @@ def unwrap_any(
     shares: list[tuple[int, str]] = []
     granted = 0
     errors = []
+    rows: list[dict] = []
+    summoned: list[str] = []
+    granted_domains: list[str] = []
     for idx, role in enumerate(_domains, start=1):
         try:
-            pt = threshold_shares.request_decrypt_share(
+            pt, meta = threshold_shares.request_decrypt_share(
                 role,
                 c1_hex,
                 verify_hooks=share_hooks,
                 warrant_hash_hex=ctx["warrant_hash_hex"],
                 cred_hash_hex=ctx["cred_hash_hex"],
                 request_sha256_hex=ctx["request_sha256_hex"],
+                with_meta=True,
             )
             shares.append((idx, pt))
             granted += 1
+            granted_domains.append(role)
+            rows.append(meta)
         except Exception as e:  # noqa: BLE001 —— 单域拒绝如实记录（≥k 域放行才可解）
             errors.append(f"{role}: {e}")
+            meta = getattr(e, "meta", None)
+            if meta is not None:
+                rows.append(meta)
+        summoned.append(role)
         if granted >= _k:
             break
+    if ceremony_out is not None:
+        ceremony_out.clear()
+        ceremony_out.update(
+            {
+                "k": _k,
+                "domains": list(_domains),
+                "summoned": summoned,
+                "granted": granted_domains,
+                "not_summoned": [d for d in _domains if d not in summoned],
+                "rows": rows,
+            }
+        )
     if granted < _k:
-        raise AuthzError(
+        err = AuthzError(
             "threshold_denied",
             f"份额域放行不足 {_k}/{len(_domains)}（{'；'.join(errors) or '无域响应'}）",
             403,
         )
+        # 失败路径仪式留痕随异常携带（响应面 message 已人话；trace 供诊断面）
+        if ceremony_out is not None:
+            err.ceremony = dict(ceremony_out)
+        raise err
     # 合成 [d]C₁ → 解 Kₑ（ECIES 段门限解密，C3 校验内建）——k 显式透传
     # （放水残留封死：即便 shares 数异常少于 _k，合成面按配置门限拒而非缺省 2）。
     # 合成失败（份额与信封不匹配/根域漂移同域名跨根形态——R3 审查①残留面）

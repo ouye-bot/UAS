@@ -195,7 +195,9 @@ def request_view(session: Session, r: CollabRequest) -> dict:
     """请求视图（两台共用）：附上双方公钥指纹——批准人核对"谁签的"。
 
     指纹按**签名时点**的公钥纪元取（2026-09-30 公钥历史批）：换钥后历史
-    请求行的指纹不漂移——指纹与行内签名恒同纪元（append-only 史保证可回取）。"""
+    请求行的指纹不漂移——指纹与行内签名恒同纪元（append-only 史保证可回取）。
+    org_id（2026-10-12 辖区分账）：目标归属域读时派生（request_target_org）
+    ——None=未定域（匿名立案位令状），前端「全域待批」徽标语义。"""
     from app.accounts.service import pubkey_at
 
     auditor_pk = pubkey_at(session, r.auditor_username, r.created_ts)
@@ -211,6 +213,7 @@ def request_view(session: Session, r: CollabRequest) -> dict:
         "warrant_hash_hex": r.warrant_hash_hex,
         "case_no": r.case_no,
         "target_auth_id": r.target_auth_id,
+        "org_id": request_target_org(session, r),
         "legal_basis_text": r.legal_basis_text,
         "note": r.note,
         "req_hash_hex": r.req_hash_hex,
@@ -233,11 +236,23 @@ def request_view(session: Session, r: CollabRequest) -> dict:
     }
 
 
-def list_requests(session: Session, status: str | None = None) -> list[dict]:
+def list_requests(
+    session: Session, status: str | None = None, operator_org_id: str | None = None
+) -> list[dict]:
+    """协作请求列表（读面按域——辖区分账 2026-10-12 枚举清单面①）：
+    operator_org_id 传定时按目标归属域过滤（org-a 也不例外——监管全景归
+    审计台）；未定域（target_auth_id=None/授权链不可解析）恒保留——「全域
+    待批」语义（跨域拒绝在写面守卫兜底）。"""
     q = select(CollabRequest).order_by(CollabRequest.id.desc()).limit(100)
     if status:
         q = q.where(CollabRequest.status == status)
-    return [request_view(session, r) for r in session.scalars(q).all()]
+    out = []
+    for r in session.scalars(q).all():
+        org = request_target_org(session, r)
+        if operator_org_id is not None and org is not None and org != operator_org_id:
+            continue
+        out.append(request_view(session, r))
+    return out
 
 
 def request_target_org(session: Session, r: CollabRequest) -> str | None:
@@ -806,4 +821,8 @@ def _execute(session: Session, *, r: CollabRequest, worker: str) -> dict:
     session.expire(r)
     view = request_view(session, r)
     view["unlocked"] = out
+    # 门限仪式留痕（2026-10-12 案甲继承）：unlock 结果内 ceremony 提升到请求
+    # 视图顶层——批准回执/机构台轮询行可直接渲染（响应附带，不落库不回放）。
+    if isinstance(out, dict) and out.get("ceremony") is not None:
+        view["ceremony"] = out["ceremony"]
     return view

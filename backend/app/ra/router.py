@@ -678,12 +678,15 @@ def restore_countersign(
 
 @router.get("/restore/requests")
 def restore_requests(
-    session: Session = Depends(get_session), _p=Depends(require_role("admin", "auditor"))
+    session: Session = Depends(get_session), p=Depends(require_role("admin", "auditor"))
 ):
     """双控恢复请求列表（admin+auditor 双面——机构台可视化面+审计员复核前置：
     复核人须先看到待复核列表（句柄/理由/发起人）才能拼 FZ-RESTORE-COUNTERSIGN
-    消息签名；pilot 恒 403）。"""
-    return _ok({"items": _svc(session).restore_requests_list()})
+    消息签名；pilot 恒 403）。读面按域（辖区分账 2026-10-12）：admin 按本域
+    过滤；auditor=治理份额域/监管全景职能，豁免（复核须跨域可见待复核集）。"""
+    return _ok(
+        {"items": _svc(session).restore_requests_list(p.org_id if p.role == "admin" else None)}
+    )
 
 
 @router.get("/revoke/by-username/preview")
@@ -732,11 +735,15 @@ class CollabIn(BaseModel):
 
 
 @router.get("/collab/pending")
-def collab_pending(session: Session = Depends(get_session), _p=Depends(require_role("admin"))):
-    """待协作令状列表（F 席改造：机构管理员的核验工作面）——未解锁令状。"""
+def collab_pending(session: Session = Depends(get_session), p=Depends(require_role("admin"))):
+    """待协作令状列表（F 席改造：机构管理员的核验工作面）——未解锁令状。
+    读面按域（辖区分账 2026-10-12 枚举清单面④）：目标授权归属域==操作者域
+    （org-a 一律到底）；未定域（匿名立案位令状）恒保留——「全域待批」徽标
+    语义（跨域出函在写面守卫兜底）。"""
     from sqlalchemy import select
 
     from app.audit.models import Warrant
+    from app.ra.scope import auth_org_of
 
     rows = (
         session.execute(
@@ -748,18 +755,22 @@ def collab_pending(session: Session = Depends(get_session), _p=Depends(require_r
         .scalars()
         .all()
     )
-    return _ok(
-        [
+    out = []
+    for w in rows:
+        org = auth_org_of(session, w.target_auth_id)
+        if org is not None and org != p.org_id:
+            continue
+        out.append(
             {
                 "warrant_hash_hex": w.warrant_hash_hex,
                 "case_no": w.case_no,
                 "target_auth_id": w.target_auth_id,
+                "org_id": org,
                 "legal_basis_text": w.legal_basis_text,
                 "created_ts": w.created_ts.isoformat() if w.created_ts else None,
             }
-            for w in rows
-        ]
-    )
+        )
+    return _ok(out)
 
 
 @router.post("/collab-code")
@@ -845,6 +856,23 @@ def collab_code(
             "data": {"code": code, "fingerprint": collab_fingerprint(code)},
         },
     )
+
+
+@router.get("/threshold/ceremony")
+def threshold_ceremony(
+    warrant_hash_hex: str,
+    _p=Depends(require_role("admin", "auditor")),
+):
+    """门限仪式回放（2026-10-12 辖区分账案乙——只读面，B3 审计报告原建议）：
+    按令状哈希聚合各份额域 append-only 审计的 decrypt_share 留痕+受理登记，
+    供机构台（admin）/审计台（auditor）解锁动线渲染「逐域四关」仪式 trace。
+    零身份纪律：行内仅 checks 布尔与决策词，无实名无份额材料（份额点永不出
+    审计行）。文件缺席=零行如实（不臆造）。"""
+    from app.ra.threshold_shares import ceremony_replay
+
+    if len(warrant_hash_hex) != 64:
+        return _deny(RaError("bad_input", "令状哈希须 64 hex"))
+    return _ok(ceremony_replay(warrant_hash_hex.lower()))
 
 
 @router.get("/healthz")

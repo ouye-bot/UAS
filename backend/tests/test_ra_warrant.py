@@ -141,6 +141,9 @@ def test_warrant_unlock_without_warrant_rejected(session):
 
 
 def test_warrant_unlock_tampered_cipher_rejected(session):
+    """GCM 完整性篡改负例：份额域三关**真过**（出函行在案——否则第③关先命中，
+    篡改根本到不了 GCM 层=负例名不副实；2026-10-12 threshold_denied 判词精确
+    化暴露此门序，随代根修为「三关全过+仅 GCM 篡改」→ unwrap_failed）。"""
     svc = _svc(session)
     out = _register_ok(svc)
     cred = session.query(Credential).one()
@@ -149,6 +152,20 @@ def test_warrant_unlock_tampered_cipher_rejected(session):
     cred.id_store_cipher = bytes(blob)
     session.commit()
     wh = secrets.token_bytes(32)
+    # 第③关前提（与 test_warrant_unlock_success 同构）：双控出函行在案
+    from datetime import datetime as _dt
+
+    from app.audit.models import CollabIssued
+
+    session.add(
+        CollabIssued(
+            warrant_hash_hex=wh.hex(),
+            master_cred_hash_hex=out["master_cred_hash_hex"],
+            code_fingerprint_hex="ab" * 8,
+            issued_at=_dt.utcnow(),
+        )
+    )
+    session.commit()
     svc2 = _svc(session, warrants={wh})
     with pytest.raises(RaError) as ei:
         svc2.warrant_unlock(
