@@ -41,7 +41,19 @@ class User(Base):
 class Credential(Base):
     __tablename__ = "credentials"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"))
+    # 机队行（cred_kind=2）user_id=NULL——设备非人，不占实名域（users=自然人
+    # 实名映射）；归属域权威=owner_org_id 列。个人行恒 user_id 在场。
+    user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    # 凭证种类（2026-10-11 3.1 机构机队接口实装——链上 IdentityRegistry
+    # credKind 镜像列：1=个人飞手 2=机构机队）。个人路径零变化（历史行回填 1）。
+    cred_kind: Mapped[int] = mapped_column(Integer, default=1, server_default="1")
+    # 归属机构域（域权威列）：个人行=注册受理域（register 同步写）；机队行=
+    # 登记操作者域（owner）。历史行 NULL——域解析回落 User.org_id（0025 既有
+    # 事实延续，非判空放松：新行恒写列）。0019 前历史行同款诚实缺口口径。
+    owner_org_id: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    # 机队设备登记号（机构编制 18 字符——C 承诺 id_number 槽的机构面填充）。
+    # 列表/管理面显示源；个人行 NULL。进不了承诺反推（SM3 加盐单向）。
+    device_no: Mapped[str | None] = mapped_column(String(18), nullable=True)
     commitment_hex: Mapped[str] = mapped_column(String(64), unique=True)  # C
     # 句柄=SM3(C)，链上 IdentityRegistry 键
     master_cred_hash_hex: Mapped[str] = mapped_column(String(64), unique=True)

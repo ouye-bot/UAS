@@ -50,6 +50,20 @@ SUB_CRED_QUOTA = 20  # 单主凭证未消费子凭证上限（框架 §7.1 配�
 SUB_CRED_TTL_HOURS = 24
 CRED_DEFAULT_DAYS = 365
 
+
+def fleet_pool_quota() -> int:
+    """机构机队共享池上限（3.1 机构机队接口实装）：本机构全部机队子凭证
+    （cred_kind=2）未消费∧未过期总数上限——机构级资源池语义，与个人
+    20/凭证配额（SUB_CRED_QUOTA）并行独立。env FZ_FLEET_POOL_QUOTA 可调
+    （函数形态=测试可注入；缺省 100）。"""
+    import os
+
+    try:
+        return max(1, int(os.environ.get("FZ_FLEET_POOL_QUOTA", "100")))
+    except ValueError:
+        return 100
+
+
 # ---- 签名消息域（B1/B6：撤销与恢复动作的可追责密码学绑定）----
 REVOKE_MSG_PREFIX = "FZ-REVOKE|v1|"
 RESTORE_MSG_PREFIX = "FZ-RESTORE|v1|"
@@ -250,6 +264,10 @@ class RaService:
             self._s.flush()
         cred = Credential(
             user_id=user.id,
+            # 3.1 机队接口：个人凭证 cred_kind=1（链上 credKind=1 镜像）+归属域
+            # 权威列同步写（owner_org_id=受理机构域——历史行 NULL 回落 User.org_id）
+            cred_kind=1,
+            owner_org_id=org_id,
             commitment_hex=c.hex(),
             master_cred_hash_hex=handle.hex(),
             sn_hash_hex=c.hex()[:32],
@@ -391,6 +409,274 @@ class RaService:
             "id_prime_hex": id_prime.hex(),  # 出示随机化身份（用户端见证自持）
         }
 
+    # ---- 机构机队接口（3.1：credKind=2 预留面激活——合约字节零触碰）----
+    #
+    # 机构管理员以 org 身份批量登记设备（kind=2 机构承诺主凭证）+机队设备
+    # 子凭证批量签发（配额=机构级共享池）。凭证面与个人同构（165B M_A′+同
+    # pk_RA+同 C 承诺+同 sub_credentials 表——AUTH 电路在电路内验 pk_RA 于
+    # M_A′，pk_RA=装配期常量锚烧进 pin，独立凭证面=电路换代）；差异全部在
+    # 签发面：签发主体=机构管理员（org 域）、id_number 槽=设备登记号（18 字
+    # 符，机构登记权威填充）、cert_level 槽=机构运营资质、配额=机构共享池。
+    # 撤销复用既有 revoke（org 署名推根——_creds_org 经 owner_org_id 列）。
+
+    def register_fleet_devices(self, *, operator_org_id: str | None, devices: list[dict]) -> dict:
+        """批量登记机队设备（kind=2 机构承诺主凭证）：每台 salt=CSPRNG→C→M_A
+        签发→链上 registerCommitment(kind=2)→credentials 行（cred_kind=2、
+        owner_org_id=操作者域、user_id=NULL、device_no=登记号）。
+
+        负例：未登记域 422 unknown_org（fail-closed 同 register）；登记号须
+        恰 18 字符（承诺原像契约 ID_NUMBER_LEN）；org 内登记号判重+机队集内
+        SN 全局判重（物理设备全局唯一——跨域同 SN=绑定歧义）409 device_exists。
+        salt 一次性回传操作者（机构自持原像——签发面原像知识认证输入；个人
+        场景 salt 不落 RA 库的同哲学，机队=机构 TCB 域内自持）。"""
+        if operator_org_id not in ORG_DOMAINS:
+            raise RaError("unknown_org", f"未登记的机构域: {operator_org_id}", 422)
+        if not devices or len(devices) > 50:
+            raise RaError("bad_input", "批量登记须 1..50 台设备")
+        out = []
+        for d in devices:
+            no = (d.get("device_no") or "").strip()
+            sn = (d.get("sn") or "").strip()
+            cert = d.get("cert_level")
+            class_id = d.get("class_id", 0)
+            if len(no) != 18 or any(not (c.isalnum() or c in "-_") for c in no):
+                raise RaError("bad_input", f"设备登记号须 18 字符（字母/数字/-/_）: {no!r}")
+            if not sn or "|" in sn or not 1 <= len(sn.encode()) <= 64:
+                raise RaError("bad_input", "设备序列号 1..64 字节（禁竖线）")
+            if not isinstance(cert, int) or not 1 <= cert <= 4:
+                raise RaError("bad_input", "机构运营资质等级 1..4")
+            if not isinstance(class_id, int) or not 0 <= class_id <= 255:
+                raise RaError("bad_input", "机型类须 u8")
+            dup_no = self._s.scalar(
+                select(Credential).where(
+                    Credential.cred_kind == 2,
+                    Credential.owner_org_id == operator_org_id,
+                    Credential.device_no == no,
+                    Credential.status == 1,
+                )
+            )
+            if dup_no is not None:
+                raise RaError("device_exists", f"登记号 {no} 在本机构已存在有效设备凭证", 409)
+            dup_sn = self._s.scalar(
+                select(Credential).where(
+                    Credential.cred_kind == 2,
+                    Credential.status == 1,
+                    Credential.serial_hex == sn.encode().hex(),
+                )
+            )
+            if dup_sn is not None:
+                raise RaError(
+                    "device_exists", f"序列号 {sn} 已登记在案有效机队凭证（物理设备全局唯一）", 409
+                )
+            salt = secrets.token_bytes(16)
+            c = commitment_c(salt, no.encode(), cert, sn.encode(), class_id)
+            handle = sm3_bytes(c)
+            exp = _utcnow() + dt.timedelta(days=CRED_DEFAULT_DAYS)
+            exp_u = int(exp.timestamp()) & 0xFFFFFFFF
+            msg = build_message(
+                self._d.ra_pub_hex,
+                secrets.token_bytes(32),
+                salt,
+                no.encode(),
+                cert,
+                sn.encode(),
+                self._d.ra_pub_hex,  # holder 槽占位（主凭证 M_A 不消费——出示面=子凭证）
+                exp_u,
+                class_id,
+            )
+            sig = sign_credential(self._d.ra_priv_hex, msg)
+            cred = Credential(
+                user_id=None,
+                cred_kind=2,
+                owner_org_id=operator_org_id,
+                device_no=no,
+                commitment_hex=c.hex(),
+                master_cred_hash_hex=handle.hex(),
+                sn_hash_hex=c.hex()[:32],
+                serial_hex=sn.encode().hex(),
+                # 设备无用户钥——原像密文落 RA 域（机构 salt 一次性回传为主通道）
+                id_cipher=sm2_ecies_encrypt(self._d.ra_pub_hex, salt + no.encode() + bytes([cert])),
+                id_store_cipher=None,  # 设备无实名映射信封（非人——令状解锁域不适用）
+                cert_level=cert,
+                class_id=class_id,
+                expires_at=exp,
+                status=1,
+            )
+            self._s.add(cred)
+            self._s.flush()
+            # 链上登记：credKind=2（预留面激活——合约字节零触碰）
+            self._d.anchor.call("register_commitment", ["0x" + handle.hex(), 2])
+            out.append(
+                {
+                    "device_no": no,
+                    "sn": sn,
+                    "cert_level": cert,
+                    "class_id": class_id,
+                    "master_cred_hash_hex": handle.hex(),
+                    "commitment_hex": c.hex(),
+                    "message_hex": msg.hex(),
+                    "sig_hex": sig,
+                    "expires_at": exp.isoformat(),
+                    "salt_hex": salt.hex(),  # 机构自持原像（签发面输入——一次性回传）
+                }
+            )
+        return {"devices": out}
+
+    def issue_fleet_sub_credentials(
+        self, *, operator_org_id: str | None, items: list[dict]
+    ) -> dict:
+        """机队设备子凭证批量签发（机构管理员席）：逐台原像知识认证（重算 C
+        比对——与个人同构）→机队共享池配额一次计数（cred_kind=2 全机构
+        未消费∧未过期 + 本批 ≤ FZ_FLEET_POOL_QUOTA）→SubCredential 行入
+        同表（受理/撤销/消费/B4 联动全链零双路径）。
+
+        负例：跨域 403 org_forbidden（域门先于原像验证——探测面收窄同
+        issue_sub_credential）；kind 语义错配 409 not_fleet_credential（对
+        cred_kind=1 个人凭证调机队端点=签发面 kind 分派拒绝）；原像错 403
+        bad_preimage；已吊销 403 cred_revoked；共享池超限 429 quota_exceeded。"""
+        if operator_org_id not in ORG_DOMAINS:
+            raise RaError("unknown_org", f"未登记的机构域: {operator_org_id}", 422)
+        if not items or len(items) > 50:
+            raise RaError("bad_input", "批量签发须 1..50 张")
+        rows = []
+        for it in items:
+            handle_hex = (it.get("master_cred_hash_hex") or "").lower()
+            cred = self._s.scalar(
+                select(Credential).where(Credential.master_cred_hash_hex == handle_hex)
+            )
+            if cred is None:
+                raise RaError("not_found", "设备凭证不存在")
+            # 域门先于 kind 判与原像验证（跨域操作者不获原像试探回显）
+            self._org_guard(cred.owner_org_id or DEFAULT_ORG, operator_org_id, "机队设备")
+            if cred.cred_kind != 2:
+                raise RaError(
+                    "not_fleet_credential",
+                    "该凭证为个人飞手凭证（credKind=1）——机队签发端点仅受理机构机队凭证（credKind=2）",
+                    409,
+                )
+            rows.append((cred, it))
+        # 机构共享池配额：一次计数+批内累计（先记账校验后逐台签发——超限零落库）
+        pool_used = len(
+            self._s.scalars(
+                select(SubCredential)
+                .join(Credential, SubCredential.credential_id == Credential.id)
+                .where(
+                    Credential.cred_kind == 2,
+                    Credential.owner_org_id == operator_org_id,
+                    SubCredential.consumed.is_(False),
+                    SubCredential.expires_at > _utcnow(),
+                )
+            ).all()
+        )
+        quota = fleet_pool_quota()
+        if pool_used + len(rows) > quota:
+            raise RaError(
+                "quota_exceeded",
+                f"机构共享池配额不足：本域机队未消费∧未过期子凭证 {pool_used} 张+本批 "
+                f"{len(rows)} 张 > 上限 {quota}（FZ_FLEET_POOL_QUOTA）",
+                429,
+            )
+        out = []
+        exp = _utcnow() + dt.timedelta(hours=SUB_CRED_TTL_HOURS)
+        for cred, it in rows:
+            device_no = cred.device_no or ""
+            serial = bytes.fromhex(cred.serial_hex or "")
+            try:
+                c = commitment_c(
+                    bytes.fromhex(it.get("salt_hex") or ""),
+                    device_no.encode(),
+                    cred.cert_level,
+                    serial,
+                    cred.class_id,
+                )
+            except Exception as exc:  # noqa: BLE001
+                raise RaError("bad_preimage", f"原像非法: {exc}") from exc
+            if c.hex() != cred.commitment_hex:
+                raise RaError("bad_preimage", "承诺不匹配（原像知识认证失败）")
+            if cred.status == 2:
+                raise RaError("cred_revoked", "设备凭证已吊销，拒新签发")
+            if cred.expires_at <= _utcnow():
+                raise RaError("cred_expired", "设备凭证已过期")
+            holder_pub = it.get("holder_pub_hex") or ""
+            if len(holder_pub) != 128:
+                raise RaError("bad_input", "出示公钥须 128 hex（SM2 x‖y）")
+            _pkx = holder_pub.lower()[:64]
+            if self._s.scalar(select(Revocation).where(Revocation.handle_hex == _pkx)) is not None:
+                raise RaError(
+                    "holder_revoked",
+                    "该出示公钥已并入撤销名单（原凭证吊销传播）——请换发新出示钥",
+                )
+            exp_u = int(min(exp, cred.expires_at).timestamp()) & 0xFFFFFFFF
+            exp_row = min(exp, cred.expires_at)
+            id_prime = secrets.token_bytes(32)
+            msg = build_message(
+                self._d.ra_pub_hex,
+                id_prime,
+                bytes.fromhex(it.get("salt_hex") or ""),
+                device_no.encode(),
+                cred.cert_level,
+                serial,
+                holder_pub,
+                exp_u,
+                cred.class_id,
+            )
+            sig = sign_credential(self._d.ra_priv_hex, msg)
+            sub = SubCredential(
+                credential_id=cred.id,
+                sub_cred_hash_hex=sm3_bytes(msg).hex(),
+                message_hex=msg.hex(),
+                sig_hex=sig,
+                holder_pub_hex=holder_pub,
+                expires_at=exp_row,
+            )
+            self._s.add(sub)
+            self._s.flush()
+            out.append(
+                {
+                    "device_no": device_no,
+                    "master_cred_hash_hex": cred.master_cred_hash_hex,
+                    "sub_cred_hash_hex": sub.sub_cred_hash_hex,
+                    "message_hex": msg.hex(),
+                    "sig_hex": sig,
+                    "expires_at": exp_row.isoformat(),
+                    "id_prime_hex": id_prime.hex(),  # 出示随机化身份（机构部署面自持）
+                }
+            )
+        return {"items": out}
+
+    def fleet_devices_list(self, *, operator_org_id: str | None) -> dict:
+        """本机构域机队设备列表（管理面数据源）：句柄/登记号/SN/资质/机型类/
+        状态/子凭证计数。域隔离=操作者域（跨域列表不可见——数据面收窄）。"""
+        if operator_org_id not in ORG_DOMAINS:
+            raise RaError("unknown_org", f"未登记的机构域: {operator_org_id}", 422)
+        rows = self._s.scalars(
+            select(Credential).where(
+                Credential.cred_kind == 2, Credential.owner_org_id == operator_org_id
+            )
+        ).all()
+        items = []
+        for r in rows:
+            subs = self._s.scalars(
+                select(SubCredential).where(SubCredential.credential_id == r.id)
+            ).all()
+            items.append(
+                {
+                    "master_cred_hash_hex": r.master_cred_hash_hex,
+                    "cred_kind": r.cred_kind,
+                    "device_no": r.device_no,
+                    "sn": bytes.fromhex(r.serial_hex).decode() if r.serial_hex else "",
+                    "cert_level": r.cert_level,
+                    "class_id": r.class_id,
+                    "status": r.status,
+                    "expires_at": r.expires_at.isoformat(),
+                    "sub_total": len(subs),
+                    "sub_unconsumed": sum(1 for x in subs if not x.consumed),
+                    "created_at": r.created_at.isoformat() if r.created_at else None,
+                }
+            )
+        items.sort(key=lambda x: (x["created_at"] or "", x["device_no"]))
+        return {"items": items, "pool_quota": fleet_pool_quota()}
+
     # ---- 吊销（D14：即时生效；B1 升格：签名+台账+黑名单；B4：联动授权轴）----
     def _verify_admin_sig(
         self,
@@ -425,9 +711,14 @@ class RaService:
         return max(max((r.epoch for r in revoked0), default=0), int(led))
 
     def _creds_org(self, creds: list[Credential]) -> str:
-        """被撤销凭证的机构域（首凭证归属用户——按 username 撤销=同用户同域）。"""
+        """被撤销凭证的机构域：**owner_org_id 列为单一权威**（3.1 机队接口——
+        机队行 user_id=NULL 且域=登记操作者域；个人行 register 同步写列）；
+        列缺失（0027 前历史行）回落 users.org_id（0025 既有事实延续——非判空
+        放松：新行恒写列，回落仅承载历史行的既有归属）。"""
         for cred in creds:
-            u = self._s.get(User, cred.user_id)
+            if getattr(cred, "owner_org_id", None):
+                return cred.owner_org_id
+            u = self._s.get(User, cred.user_id) if cred.user_id is not None else None
             if u is not None and u.org_id:
                 return u.org_id
         return DEFAULT_ORG

@@ -220,6 +220,89 @@ class SubCredIn(BaseModel):
     holder_pub_hex: str = Field(min_length=128, max_length=128)
 
 
+# ---- 3.1 机构机队接口（credKind=2 预留面激活——机构管理员 org 域动线）----
+
+
+class FleetDeviceIn(BaseModel):
+    """机队设备登记行：device_no=机构编制登记号（恰 18 字符——C 承诺 id_number
+    槽的机构面填充）；sn=设备真实序列号（SN 绑定权威源——桥第 6 查同构）；
+    cert_level=机构运营资质（1..4）；class_id=机型类（实例 24 等值钉）。"""
+
+    device_no: str = Field(min_length=18, max_length=18)
+    sn: str = Field(min_length=1, max_length=64)
+    cert_level: int = Field(ge=1, le=4)
+    class_id: int = Field(default=0, ge=0, le=255)
+
+
+class FleetRegisterIn(BaseModel):
+    devices: list[FleetDeviceIn] = Field(min_length=1, max_length=50)
+
+
+class FleetSubItemIn(BaseModel):
+    master_cred_hash_hex: str = Field(min_length=64, max_length=64)
+    salt_hex: str = Field(min_length=32, max_length=32)
+    holder_pub_hex: str = Field(min_length=128, max_length=128)
+
+
+class FleetSubCredIn(BaseModel):
+    items: list[FleetSubItemIn] = Field(min_length=1, max_length=50)
+
+
+@router.post("/fleet/devices")
+def fleet_register(
+    body: FleetRegisterIn,
+    session: Session = Depends(get_session),
+    p=Depends(require_role("admin")),
+):
+    """批量登记机队设备（kind=2 机构承诺主凭证）：操作者域=会话主体 org_id
+    （登记即本域——无跨域登记面）。链上逐台 registerCommitment(kind=2)
+    （RA 钥——合约预留面激活，字节零触碰）。"""
+    try:
+        return _ok(
+            _svc(session).register_fleet_devices(
+                operator_org_id=p.org_id,
+                devices=[d.model_dump() for d in body.devices],
+            )
+        )
+    except RaError as exc:
+        return _deny(exc)
+    except ChainError as e:
+        return _deny(RaError("chain_unavailable", str(e), 503))
+
+
+@router.post("/fleet/sub-credentials")
+def fleet_sub_credentials(
+    body: FleetSubCredIn,
+    session: Session = Depends(get_session),
+    p=Depends(require_role("admin")),
+):
+    """机队设备子凭证批量签发：域门（owner_org_id==操作者域，跨域 403）+
+    原像知识认证（重算 C——与个人同构）+机构共享池配额（FZ_FLEET_POOL_QUOTA
+    缺省 100）。机构管理员席=签发主体（签发面全部在登录会话域内——与个人
+    匿名原像路径不同，机队签发不设匿名面）。"""
+    try:
+        return _ok(
+            _svc(session).issue_fleet_sub_credentials(
+                operator_org_id=p.org_id,
+                items=[it.model_dump() for it in body.items],
+            )
+        )
+    except RaError as exc:
+        return _deny(exc)
+
+
+@router.get("/fleet/devices")
+def fleet_devices(
+    session: Session = Depends(get_session),
+    p=Depends(require_role("admin")),
+):
+    """本机构域机队设备列表（管理面数据源——域隔离：跨域设备不可见）。"""
+    try:
+        return _ok(_svc(session).fleet_devices_list(operator_org_id=p.org_id))
+    except RaError as exc:
+        return _deny(exc)
+
+
 # ---- ⑧站触达闭环：飞手被动获知面（吊销/违规/子凭证到期）----
 
 SUB_EXPIRY_WINDOW_DAYS = 7  # 子凭证到期提醒窗（过期前 N 天——⑧站拍板值）
