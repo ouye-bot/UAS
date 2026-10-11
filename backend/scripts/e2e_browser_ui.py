@@ -468,6 +468,26 @@ def run_tests(tmp: Path) -> None:
             mpage.locator("text=多签").first.inner_text().replace(chr(10), "")
             not in ("", "—", "读取中"),
                "⑨.2 治理大屏 k-of-n KPI 活数据（/chain/governance 回读填充）")
+        # ---- ⑨-b 机队设备管理动线（3.1——credKind=2 机构承诺主凭证；插入式
+        # 只增）：面板渲染（kind=2 一级动线在列）+批量登记一台（fake 链夹具=
+        # registerCommitment 留痕）→设备列表行「有效」徽章+登记回执原像盐在列。
+        # SN=夹具桥读数 FZ-SN-DEV-01（/engine_pub device_serial 单源——与第 6 查
+        # 同源的产品闭环）。----
+        fleet_panel = mpage.locator("[data-test='fleet-panel']")
+        expect(fleet_panel.count() == 1 and "机队设备管理" in fleet_panel.inner_text(),
+               "⑨-b.1 机队设备管理面板渲染（credKind=2 机构承诺一级动线）")
+        fleet_no = "FZ-BRW-E2E-" + "".join(secrets.choice("0123456789") for _ in range(7))
+        expect(len(fleet_no) == 18, "⑨-b.2 前置：随机登记号恰 18 字符", fleet_no)
+        fleet_panel.locator("button:has-text('添加设备行')").click()
+        fleet_panel.locator("input[placeholder^='设备登记号']").fill(fleet_no)
+        fleet_panel.locator("input[placeholder^='设备序列号']").fill("FZ-SN-DEV-01")
+        fleet_panel.locator("button:has-text('登记上链')").click()
+        fleet_panel.get_by_text("登记回执").wait_for(timeout=20000)
+        _receipt_txt = fleet_panel.locator("text=登记回执（原像盐一次性").first.inner_text()
+        expect(fleet_panel.locator(f"text={fleet_no}").count() >= 1
+               and "原像盐" in _receipt_txt,
+               "⑨-b.2 批量登记实弹（kind=2 上链+回执原像盐一次性在列+列表行回填）",
+               f"no={fleet_no}")
         mctx.close()
 
         # ---- ⑩ 跨域浏览器级（0.3 Gap2 增补——插入式）：org-b 种子语义的
@@ -504,21 +524,27 @@ def run_tests(tmp: Path) -> None:
         opage.click("button:has-text('进入飞证工作台')")
         opage.wait_for_url("**/#/record", timeout=30000)
         opage.wait_for_selector("text=登记编号", timeout=15000)
-        # 域归属翻转第一拍（夹具库直改 users.org_id=org-b；账户仍 org-a=域错配态）
+        # 域归属翻转第一拍（夹具库直改 users.org_id + credentials.owner_org_id
+        # =org-b；账户仍 org-a=域错配态。3.1 域权威换代注记：凭证归属域权威
+        # 列=owner_org_id（登记时写列）——夹具须同步翻凭证行，users 行单独翻
+        # 不再构成错配态（_creds_org 单一权威=列）。）
         _flip = subprocess.run(
             [PY, "-c",
              "import sys; sys.path.insert(0, r'%s'); "
              "from sqlalchemy import create_engine; "
              "from sqlalchemy.orm import sessionmaker; "
-             "from app.ra.models import User; "
+             "from app.ra.models import Credential, User; "
              "eng = create_engine(r'sqlite:///%s'); "
              "s = sessionmaker(bind=eng)(); "
              "u = s.query(User).filter_by(username='%s').one(); "
-             "u.org_id = 'org-b'; s.commit(); print(u.org_id)" % (
+             "u.org_id = 'org-b'; "
+             "n = s.query(Credential).filter_by(user_id=u.id)"
+             ".update({Credential.owner_org_id: 'org-b'}); "
+             "s.commit(); print(u.org_id, n)" % (
                  BACKEND, _db_path["path"], pilot2_user)],
             capture_output=True, text=True, timeout=60)
-        assert _flip.returncode == 0 and _flip.stdout.strip() == "org-b", \
-            f"org 域翻转失败: {_flip.stderr[-200:]}"
+        assert _flip.returncode == 0 and _flip.stdout.split() == ["org-b", "1"], \
+            f"org 域翻转失败（users 行+凭证行 owner_org_id 须同步翻）: {_flip.stderr[-200:]}"
         # ① 域错配态会话内签发 → 0.1 org 域门 403 org_forbidden 浏览器级呈现
         # （判词=目标凭证归属域/操作者域双域——跨域拒绝的人话呈现实弹）
         opage.click("button:has-text('签发一次性子凭证')")
