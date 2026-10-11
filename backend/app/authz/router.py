@@ -139,6 +139,10 @@ def _deps():
             # R3-1.3（评审 P2-3）：政策公示对拍改 per-apply 实时求值（此前进程级
             # 缓存一次求值终身冻结——先登记后公示 ⟹ 永远 409；公示后换版 ⟹ 检测失效）
             d.chain_policy_published = lambda: _policy_published(pr)
+            # 3.1 机构机队接口：链面 credKind 读数（IdentityRegistry.getCred[1]
+            # ——机队凭证受理路径链面对拍源；仅机队路径消费，个人零调用）。
+            _ir = _chain_binding("IdentityRegistry")
+            d.chain_cred_kind = lambda handle32: int(_ir.call_fn("getCred", [handle32])[1])
         _DEPS = d
     return _DEPS
 

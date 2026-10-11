@@ -49,6 +49,11 @@ class AuthzDeps:
         # B-P1-1：支持 callable（per-apply 真实现形态——router 注入 lambda），
         # 门控内形态归一；只认 bool/可调用两种，勿再引入第三形态
         self.chain_policy_published: bool | Callable[[], bool | None] | None = None
+        # 3.1 机构机队接口：链面 credKind 读数（IdentityRegistry.getCred[1]）——
+        # 机队凭证（DB cred_kind=2）受理路径的链面对拍源；None=无链面跳过
+        # （fake/CI——与 chain_pin 渐进可用同范式；production 档 router 注入）。
+        # **仅机队路径消费**——个人凭证零调用（单链语义零变化）。
+        self.chain_cred_kind: Callable[[bytes], int | None] = _stub_cred_kind
 
     def pin_fingerprint(self) -> str:
         """电路 pin 指纹（vendor MANIFEST——fail-closed 比对源）。"""
@@ -78,6 +83,10 @@ def _stub_sub_unused(cred_hash: bytes) -> bool:
 
 
 def _stub_chain_pin() -> bytes | None:
+    return None
+
+
+def _stub_cred_kind(_handle: bytes) -> int | None:
     return None
 
 
@@ -251,6 +260,36 @@ def admission_gate(
     # 链上 usedSubCreds 是授权单一性的完整事实
     if deps.chain_sub_used(bytes.fromhex(sub_cred_hash_hex)):
         raise AuthzError("sub_cred_used", "子凭证已使用（链级查重）", 409)
+    # ③''' credKind 分派（3.1 机构机队接口）：解析凭证行——机队凭证
+    # （cred_kind=2）走机队校验路径：①链面 kind 对拍（IdentityRegistry
+    # getCred.credKind==2——DB/链漂移或篡改 fail-closed，409 kind_mismatch）；
+    # ②归属域结构校验（owner_org_id 列=机队域权威，机队行恒有——缺失=DB
+    # 结构异常 409 fleet_org_unresolved）。设备序号绑定=实例 25 既有路径
+    # （server_sn_hash_hex 同构——机队设备 SN 与桥 device_serial 第 6 查
+    # 同构闭环）。**个人凭证（cred_kind=1）零动作零链读**——单链语义零变化。
+    from app.ra.models import Credential as _CredM
+    from app.ra.models import SubCredential as _SubM
+
+    _sub_row = session.scalar(
+        select(_SubM).where(_SubM.sub_cred_hash_hex == sub_cred_hash_hex.lower())
+    )
+    if _sub_row is not None:
+        _cred_row = session.get(_CredM, _sub_row.credential_id)
+        if _cred_row is not None and int(getattr(_cred_row, "cred_kind", 1) or 1) == 2:
+            if not _cred_row.owner_org_id:
+                raise AuthzError(
+                    "fleet_org_unresolved",
+                    "机队凭证归属域缺失（owner_org_id 结构不变式破坏）——拒绝受理",
+                    409,
+                )
+            onchain_kind = deps.chain_cred_kind(bytes.fromhex(_cred_row.master_cred_hash_hex))
+            if onchain_kind is not None and int(onchain_kind) != 2:
+                raise AuthzError(
+                    "kind_mismatch",
+                    f"机构机队凭证链面 credKind={onchain_kind}（应为 2）——"
+                    "数据库与链面凭证种类不一致（fail-closed）",
+                    409,
+                )
     # ③'' 政策公示对拍（fail-closed）：None=无链面跳过（fake/CI）。
     # 形态归一（B-P1-1 回归根修）：注入面支持 bool 或 callable（per-apply 求值
     # 的真实现=callable；测试替身多为 bool）——旧代码按 `is False` 比对，
