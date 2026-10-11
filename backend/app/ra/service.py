@@ -816,19 +816,19 @@ class RaService:
         执行项）：目标凭证归属域==操作者账户 org_id，跨域 403 org_forbidden
         fail-closed；判词带双域信息（目标凭证归属域/操作者域）便于审计。
 
-        operator_org_id=None=无操作者域上下文——按现行行为放行。形态仅存在于
-        ①服务层直调（既有测试调用点，无会话主体可比）；②匿名原像路径
-        （issue_sub_credential 飞手自持原像知识认证——B2-d4 既有设计）。HTTP
+        判定逻辑单源=app.ra.scope.org_guard（2026-10-12 辖区分账批——协作批准
+        族/出函/处置/账户写面同范式复用，本方法仅做 RaError 映射）；本处保留下
+        述形态注记：operator_org_id=None=无操作者域上下文——按现行行为放行。
+        形态仅存在于①服务层直调（既有测试调用点，无会话主体可比）；②匿名原像
+        路径（issue_sub_credential 飞手自持原像知识认证——B2-d4 既有设计）。HTTP
         授权边界（路由层）自会话主体恒传非 None（accounts.org_id NOT NULL
         server_default=org-a），校验在 API 面恒生效——详见提交信息决策②。"""
-        if operator_org_id is None or operator_org_id == target_org:
-            return
-        raise RaError(
-            "org_forbidden",
-            f"跨域操作拒绝：目标凭证归属域={target_org}，操作者域={operator_org_id}"
-            f"——机构账户仅可操作本机构域{object_noun}",
-            403,
-        )
+        from app.ra.scope import OrgForbidden, org_guard
+
+        try:
+            org_guard(target_org, operator_org_id, object_noun)
+        except OrgForbidden as exc:
+            raise RaError(exc.code, str(exc), exc.status) from exc
 
     def _link_authz_axis(self, creds: list[Credential]) -> tuple[list[int], list[dict]]:
         """B4 吊销联动授权轴：解析该（些）凭证名下全部在案且未过期未撤销的

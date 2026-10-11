@@ -765,6 +765,7 @@ def collab_pending(session: Session = Depends(get_session), _p=Depends(require_r
 @router.post("/collab-code")
 def collab_code(
     body: CollabIn,
+    request: Request,
     session: Session = Depends(get_session),
     _p=Depends(require_role("admin")),
 ):
@@ -772,13 +773,16 @@ def collab_code(
     - 必须针对在案且未解锁的令状出具（FZC2：函-令状-凭证三方 AAD 绑定，
       一函一令状——旧 FZC1 不绑定令状的缺陷封堵，FZC1 仅解析不再新发）；
     - 范围校验：令状目标授权编号 ↔ 凭证 不一致=409 scope_mismatch；
-    - 出具写台账（collab_issued）——出具行为自身可追溯。"""
+    - 出具写台账（collab_issued）——出具行为自身可追溯。
+    辖区分账 P0（2026-10-12）：跨域守卫——目标凭证归属域==操作者域
+    （跨域出函=实名解锁最敏感写面；未定域跳过——0.1 工艺同款）。"""
     from sqlalchemy import select
 
     from app.audit.models import CollabIssued, Warrant
     from app.ra.collab import collab_fingerprint, seal_collab_v2
-    from app.ra.scope import resolve_cred_for_auth
+    from app.ra.scope import OrgForbidden, cred_org_of, org_guard, resolve_cred_for_auth
 
+    p = principal_from(request, session)
     w_row = session.execute(
         select(Warrant).where(Warrant.warrant_hash_hex == body.warrant_hash_hex)
     ).scalar_one_or_none()
@@ -817,6 +821,13 @@ def collab_code(
                     "message": "该令状未指定目标授权——请同时提供凭证哈希（FZC2 仍与令状绑定）",
                 },
             )
+    try:
+        org_guard(cred_org_of(session, cred_hex), p.org_id if p else None, "凭证")
+    except OrgForbidden as exc:
+        return JSONResponse(
+            status_code=exc.status,
+            content={"code": exc.code, "message": str(exc)},
+        )
     code = seal_collab_v2(cred_hex, body.warrant_hash_hex)
     session.add(
         CollabIssued(

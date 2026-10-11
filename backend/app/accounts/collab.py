@@ -240,6 +240,30 @@ def list_requests(session: Session, status: str | None = None) -> list[dict]:
     return [request_view(session, r) for r in session.scalars(q).all()]
 
 
+def request_target_org(session: Session, r: CollabRequest) -> str | None:
+    """协作请求目标归属域（读时派生——辖区分账 P0）：令状 target_auth_id →
+    授权链解析凭证 → 凭证归属域（owner_org_id 权威）。匿名立案位令状
+    （target_auth_id=None）或授权链不可解析 → None（「未定域」——全域待批
+    语义，域门跳过；自动执行的 cred_required 兜底仍在）。"""
+    if r.target_auth_id is None:
+        return None
+    from app.ra.scope import auth_org_of
+
+    return auth_org_of(session, int(r.target_auth_id))
+
+
+def _org_guard(session: Session, r: CollabRequest, admin: Account) -> None:
+    """跨域写面守卫（2026-10-12 辖区分账 P0 安全补丁——批准/驳回/重试共用）：
+    目标案件归属域==操作者账户 org_id，跨域 403 org_forbidden 双域判词。域门
+    先于签名仪式与状态迁移（越权探测面收窄——0.1 工艺同款）。"""
+    from app.ra.scope import OrgForbidden, org_guard
+
+    try:
+        org_guard(request_target_org(session, r), admin.org_id or None, "案件")
+    except OrgForbidden as exc:
+        raise CollabError(exc.code, str(exc), exc.status) from exc
+
+
 def verify_request_sigs(session: Session, request_id: int) -> dict:
     """历史签名复验（公钥纪元史的直接消费面）：按**签名时点**的公钥复验
     双控两签。换钥（密码重置→重新激活）后旧签名仍验得过——双控不可抵赖
@@ -298,6 +322,7 @@ def approve_and_execute(
     r = session.get(CollabRequest, request_id)
     if r is None:
         raise CollabError("request_not_found", "协作请求不存在", 404)
+    _org_guard(session, r, admin)
     # 状态原子迁移（2026-09-30 评审 P1：ORM 读-改-写三步非原子——垃圾签名重批
     # 可把 executed 打回 execute_failed/并发双执行/approve-reject 竞态。条件
     # UPDATE 让数据库仲裁：仅 pending 可迁 approved，输家拿到 409 而非错态。）
@@ -339,6 +364,7 @@ def retry_execute(session: Session, *, admin: Account, request_id: int) -> dict:
     r = session.get(CollabRequest, request_id)
     if r is None:
         raise CollabError("request_not_found", "协作请求不存在", 404)
+    _org_guard(session, r, admin)
     if r.status != "execute_failed":
         raise CollabError("bad_state", f"请求状态为 {r.status}——仅执行失败态可重试", 409)
     r.status = "approved"
@@ -680,6 +706,7 @@ def reject_request(
     r = session.get(CollabRequest, request_id)
     if r is None:
         raise CollabError("request_not_found", "协作请求不存在", 404)
+    _org_guard(session, r, admin)
     if r.status != "pending":
         raise CollabError("bad_state", f"请求状态为 {r.status}——不可驳回", 409)
     if not reason.strip():

@@ -22,6 +22,11 @@ from app.db import get_session
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
+# 运营方域（辖区分账 P0，复审洞 2 推荐案）：全局治理域动作（份额刷新）的
+# operator 域限定=部署约定（org-a 为缺省部署域），非角色特权——监管全景归
+# 审计台（/audit/* 豁免读过滤），机构台读面按域一律到底（org-a 不豁免）。
+OPERATOR_DOMAIN = "org-a"
+
 
 def _deny(exc: Exception) -> JSONResponse:
     status = getattr(exc, "status", 400) or 400
@@ -172,14 +177,26 @@ def list_disposal_todos(
 def resolve_disposal_todo(
     todo_id: int,
     body: ResolveDisposalIn,
+    request: Request,
     session: Session = Depends(get_session),
     _p=Depends(require_role("admin")),
 ):
     """处置完成（pending→done）：说明入库留痕；已 done 再 resolve=409
-    （条件 UPDATE 数据库仲裁——重复处置恰一胜者）。"""
+    （条件 UPDATE 数据库仲裁——重复处置恰一胜者）。
+    辖区分账 P0（2026-10-12）：跨域守卫——待办目标实名归属域==操作者域
+    （实名缺位/用户不可得=未定域，域门跳过——0.1 工艺同款）。"""
     from app.audit import disposal as disposal_svc
+    from app.ra.scope import OrgForbidden, org_guard, username_org_of
 
+    p = principal_from(request, session)
     try:
+        row = session.get(disposal_svc.DisposalRequest, todo_id)
+        if row is None:
+            raise disposal_svc.DisposalError("todo_not_found", "处置待办不存在", 404)
+        try:
+            org_guard(username_org_of(session, row.username), p.org_id, "处置待办")
+        except OrgForbidden as exc:
+            return _deny(exc)
         out = disposal_svc.resolve_todo(session, todo_id=todo_id, note=body.note)
     except disposal_svc.DisposalError as exc:
         return _deny(exc)
@@ -197,12 +214,19 @@ def delete_orphan_account(
     _p=Depends(require_role("admin")),
 ):
     """删除孤儿账户（admin）：仅限「飞手+待补资料」态（半途注册残留——
-    无凭证无链上痕迹，删除即释放用户名）。任何已激活/已签发账户不可删。"""
+    无凭证无链上痕迹，删除即释放用户名）。任何已激活/已签发账户不可删。
+    辖区分账 P0（2026-10-12）：跨域守卫——目标账户 org_id==操作者域。"""
     from app.accounts.service import get_account
+    from app.ra.scope import OrgForbidden, org_guard
 
+    p = principal_from(request, session)
     try:
         row = get_account(session, username)
     except AccountError as exc:
+        return _deny(exc)
+    try:
+        org_guard(row.org_id or None, p.org_id, "账户")
+    except OrgForbidden as exc:
         return _deny(exc)
     if row.role != "pilot" or row.status != "pending_profile":
         return JSONResponse(
@@ -228,11 +252,24 @@ def delete_orphan_account(
 @router.get("/collab-requests/{req_id}/verify-sigs")
 def verify_collab_sigs(
     req_id: int,
+    request: Request,
     session: Session = Depends(get_session),
     _p=Depends(require_role("admin")),
 ):
     """历史签名复验（公钥纪元史消费面）：按签名时点公钥复核双控两签——
-    换钥后旧签名仍验得过（双控不可抵赖的演示判词）。"""
+    换钥后旧签名仍验得过（双控不可抵赖的演示判词）。
+    辖区分账 P0（2026-10-12）：跨域守卫（读面按域——按 id 越域可读同属越域
+    探测面）：目标请求归属域==操作者域（未定域跳过）。"""
+    from app.accounts.models import CollabRequest
+    from app.ra.scope import OrgForbidden, org_guard
+
+    p = principal_from(request, session)
+    r = session.get(CollabRequest, req_id)
+    if r is not None:
+        try:
+            org_guard(collab_svc.request_target_org(session, r), p.org_id, "案件")
+        except OrgForbidden as exc:
+            return _deny(exc)
     try:
         out = collab_svc.verify_request_sigs(session, req_id)
     except collab_svc.CollabError as exc:
@@ -241,13 +278,27 @@ def verify_collab_sigs(
 
 
 @router.post("/threshold/reshare")
-def threshold_reshare(_p=Depends(require_role("admin"))):
+def threshold_reshare(
+    request: Request,
+    session: Session = Depends(get_session),
+    _p=Depends(require_role("admin")),
+):
     """份额刷新 API 面（1.3 件③，J2 止损闭环）：包装⑤站三步提案+份额刷新
     仪式（governor k-of-n 时间锁——治理面写入不绕过治理面）。幂等=链上
     PolicyRegistry version exists 拒重放（同纪元不可重放——合约级幂等）。
     owner-set 指纹门：提案时点链读 fp 携入仪式，执行窗漂移即拒（fail-closed）。
-    耗时≈时间锁延迟（demo 档 FZ_GOVERNOR_DELAY_S=10s——管理面低频可接受）。"""
+    耗时≈时间锁延迟（demo 档 FZ_GOVERNOR_DELAY_S=10s——管理面低频可接受）。
+    辖区分账 P0（2026-10-12，复审洞 2 推荐案）：份额刷新=治理域动作——
+    operator org 限**运营方域 org-a**（部署约定，如实标注非角色特权：org-a
+    仅为缺省部署域；页面上该动作挂 /governance 治理语境呈现）。"""
+    from app.ra.scope import OrgForbidden, org_guard
     from app.ra.threshold_sync import SyncError, propose_and_reshare
+
+    p = principal_from(request, session)
+    try:
+        org_guard(OPERATOR_DOMAIN, p.org_id, "治理域动作（份额刷新）")
+    except OrgForbidden as exc:
+        return _deny(exc)
 
     try:
         out = propose_and_reshare()
