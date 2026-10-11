@@ -178,6 +178,8 @@ export interface TraceOut {
   chain_trace?: ChainTrace;
   chain_fingerprint?: string;
   closure?: ClosureView | null;
+  /** 门限仪式回放（2026-10-12 案乙——结案浮层自然继承；无留痕=缺席）。 */
+  ceremony?: CeremonyFace;
   mode?: string;
 }
 
@@ -223,10 +225,29 @@ export interface DisposalTodo {
   id: number;
   case_no: string;
   username: string;
+  org_id?: string | null;
   conclusion: string;
   created_ts: string | null;
   status: "pending" | "done";
   resolved_note: string | null;
+}
+
+// ---- 门限解锁仪式留痕（2026-10-12 B3 可视化——案甲响应附带/案乙回放同构；
+// 单源类型：CeremonyTrace 组件与两台消费面共用）----
+export interface CeremonyRow {
+  role: string;
+  checks: Record<string, boolean>;
+  decision: string;
+}
+export interface CeremonyFace {
+  warrant_hash_hex?: string;
+  k: number;
+  domains: string[];
+  summoned: string[];
+  granted: string[];
+  not_summoned: string[];
+  rows: CeremonyRow[];
+  threshold?: string;
 }
 
 /** 结论判词徽章文案（待办卡/案卷面共用）。 */
@@ -268,8 +289,29 @@ export interface ThresholdSyncFace {
   error?: string;
 }
 
+/** ⑥站互认注册表公示（/chain/governance federation 块——B1 审计件：名册/
+ * 逐域撤销锚/全局聚合根。2026-10-12 修整窗口：互认面板只读展示准入结果）。 */
+export interface FederationOrgRow {
+  org_id: string;
+  name: string;
+  status: number;
+  ra: string;
+  rev_epoch: number;
+  rev_root_hex: string;
+  registered_ts: number;
+  anchor_ts: number;
+}
+
+export interface FederationFace {
+  orgs: FederationOrgRow[];
+  org_active: number;
+  global_rev_root_hex: string;
+  global_rev_epoch: number;
+}
+
 export interface GovernanceFace {
   threshold_sync?: ThresholdSyncFace;
+  federation?: FederationFace;
   chain: {
     required: number;
     delay_s: number;

@@ -457,22 +457,39 @@ def run_tests(tmp: Path) -> None:
         mpage.click("button.btn:has-text('登录')")
         mpage.wait_for_url("**/#/admin", timeout=60000)
         mpage.wait_for_selector("text=待批协作请求", timeout=20000)
+        # 2026-10-12 修整窗口：机构台拆四标签工作台（待办=默认首屏）——v-show
+        # 保 DOM 可达（count() 对 display:none 元素照常计数，⑨.1 断言原文不动）。
         expect(mpage.locator("text=协作台账").count() > 0
                and mpage.locator("text=凭证吊销").count() > 0
                and mpage.locator("text=账户总览").count() > 0,
-               "⑨.1 机构台 Vue 渲染（待批/台账/吊销/总览四板块）")
-        # ③站治理公示大屏守卫（2026-10-10）：k-of-n 大屏必须渲染且链上数据
-        # 活填充——多签 KPI 格非占位（真链 governor 回读），提案表或空态在列。
+               "⑨.1 机构台 Vue 渲染（待批/台账/吊销/总览四板块——v-show 可达）")
+        # ⑨.0（2026-10-12 新增）：标签工作台在列+登录态机构徽标（whoami.org_id
+        # 活数据——修整窗口③/B2 审计件：多机构形态下当前操作者域常显）。
+        expect(mpage.locator("[data-test='admin-tabs']").count() == 1
+               and mpage.locator("[data-test='org-badge']").inner_text().strip() == "org-a",
+               "⑨.0 标签工作台+机构徽标（四标签默认待办+whoami.org_id 活数据）",
+               mpage.locator("[data-test='org-badge']").inner_text())
+        # ⑨.2 治理公示（锚迁移：自机构台拆独立页 /governance——admin+auditor
+        # 双可见；k-of-n 大屏必须渲染且链上数据活填充——多签 KPI 格非占位）。
+        mpage.goto(WEB_URL + "#/governance")
         mpage.wait_for_selector("text=链上治理", timeout=20000)
         expect(
             mpage.locator("text=多签").first.inner_text().replace(chr(10), "")
             not in ("", "—", "读取中"),
-               "⑨.2 治理大屏 k-of-n KPI 活数据（/chain/governance 回读填充）")
+               "⑨.2 治理页 k-of-n KPI 活数据（/chain/governance 回读填充——拆页迁移）")
+        # ⑨.3（2026-10-12 新增）：互认机构面板 fake 档诚实空缺（B1 审计件根修
+        # ——federation 公示进 UI；演示链档无 FedRegistry=不装一致）。
+        expect(mpage.locator("text=互认注册表随真链提供").count() >= 1,
+               "⑨.3 互认机构面板 fake 档诚实空态（FedRegistry 公示随真链提供）")
+        mpage.goto(WEB_URL + "#/admin")
+        mpage.wait_for_selector("text=待批协作请求", timeout=20000)
         # ---- ⑨-b 机队设备管理动线（3.1——credKind=2 机构承诺主凭证；插入式
-        # 只增）：面板渲染（kind=2 一级动线在列）+批量登记一台（fake 链夹具=
-        # registerCommitment 留痕）→设备列表行「有效」徽章+登记回执原像盐在列。
-        # SN=夹具桥读数 FZ-SN-DEV-01（/engine_pub device_serial 单源——与第 6 查
-        # 同源的产品闭环）。----
+        # 只增）：锚迁移（2026-10-12）=机队入「机队」标签，先切标签再断言
+        # （inner_text 对 display:none 返回空串——v-show 纪律）；面板渲染
+        # （kind=2 一级动线在列）+批量登记一台（fake 链夹具=registerCommitment
+        # 留痕）→设备列表行「有效」徽章+登记回执原像盐在列。SN=夹具桥读数
+        # FZ-SN-DEV-01（/engine_pub device_serial 单源——与第 6 查同源闭环）。----
+        mpage.locator("[data-test='admin-tabs'] button:has-text('机队')").click()
         fleet_panel = mpage.locator("[data-test='fleet-panel']")
         expect(fleet_panel.count() == 1 and "机队设备管理" in fleet_panel.inner_text(),
                "⑨-b.1 机队设备管理面板渲染（credKind=2 机构承诺一级动线）")

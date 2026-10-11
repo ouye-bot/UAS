@@ -33,6 +33,7 @@ import DenyBox from "../components/DenyBox.vue";
 import StatusTag from "../components/StatusTag.vue";
 import ParticleField from "../components/ParticleField.vue";
 import FzConfluence from "../components/FzConfluence.vue";
+import CeremonyTrace from "../components/CeremonyTrace.vue";
 import FzEmpty from "../components/FzEmpty.vue";
 import FzWatermark from "../components/FzWatermark.vue";
 
@@ -655,6 +656,15 @@ const stepIndex = computed<0 | 1 | 2 | 3>(() => step.value);
             <dt>解锁时间</dt><dd>{{ trace.warrant.unlocked.ts?.slice(5, 16).replace("T", " ") ?? "—" }}</dd>
             <dt>登记 SN 指纹</dt><dd class="mono">{{ trace.chain_trace?.device_check?.registered_sn_fingerprint ?? "—" }}</dd>
           </div>
+
+          <!-- 门限解锁仪式留痕（2026-10-12 B3 可视化——案乙回放随 trace 自然
+              继承：钥匙层 2-of-3 逐域四关在结案浮层可见，不再隐形） -->
+          <template v-if="trace?.ceremony">
+            <div class="panel-head" style="margin-top:14px">
+              <h2 style="font-size:14px">门限解锁仪式留痕</h2>
+            </div>
+            <CeremonyTrace :ceremony="trace.ceremony" />
+          </template>
 
           <!-- 证据面（A2）：设备一致性判词卡（四判词色彩语义）+链上证据时间线 -->
           <template v-if="trace?.chain_trace?.device_check">
