@@ -413,6 +413,144 @@ async function checkSigs(r: ReqView): Promise<void> {
     deny.value = { code: err.code ?? "verify_sigs_failed", message: err.message ?? String(e) };
   } finally { sigsBusyId.value = null; }
 }
+
+// ---- 3.1 机队设备管理（credKind=2 机构承诺主凭证——机构管理员 org 域动线）----
+// 登记（kind=2 链上承诺）→子凭证批量签发（机构共享池）→列表/吊销（org 署名
+// 推根）。设备档案（salt 原像=承诺原像机密材料）口令 KEK 密封 localStorage
+// （lib/fleet 薄委托 keystore v4 原语）；出示钥每张子凭证当场全新生成
+// （一次性出示钥纪律——出示公钥层跨申请不可链接）。
+import { sm2 } from "sm-crypto";
+import {
+  buildIssueBody,
+  buildRegisterBody,
+  fleetRevokeMsg,
+  openFleetSlot,
+  sealFleetSlot,
+  FLEET_SLOT_KEY,
+  type FleetDeviceMaterial,
+  type FleetDeviceRow,
+  type FleetDeviceView,
+  type FleetIssueItem,
+  type FleetSlot,
+} from "../lib/fleet";
+
+const fleetDevices = ref<FleetDeviceView[]>([]);
+const fleetLoaded = ref(false);
+const fleetPoolQuota = ref<number | null>(null);
+async function refreshFleet(): Promise<void> {
+  try {
+    const out = await api<{ items: FleetDeviceView[]; pool_quota: number }>("/ra/fleet/devices");
+    fleetDevices.value = out.items ?? [];
+    fleetPoolQuota.value = out.pool_quota ?? null;
+  } catch {
+    fleetDevices.value = []; // 列表不可达=空显（域面数据——404 不整卡隐藏：机队域为一级动线）
+  }
+  fleetLoaded.value = true;
+}
+onMounted(refreshFleet);
+
+const fleetRows = ref<FleetDeviceRow[]>([]);
+function addFleetRow(): void {
+  fleetRows.value.push({ device_no: "", sn: "", cert_level: 3, class_id: 1 });
+}
+function removeFleetRow(i: number): void {
+  fleetRows.value.splice(i, 1);
+}
+const fleetRegs = ref<FleetDeviceMaterial[]>([]); // 登记回执材料（内存——salt 一次性）
+const fleetSealPass = ref("");
+async function doFleetRegister(): Promise<void> {
+  deny.value = null; flash.value = "";
+  try {
+    const body = buildRegisterBody(fleetRows.value);
+    const out = await api<{ devices: FleetDeviceMaterial[] }>("/ra/fleet/devices", {
+      method: "POST", body: JSON.stringify(body),
+    });
+    const ts = new Date().toISOString();
+    fleetRegs.value = [...fleetRegs.value, ...(out.devices ?? []).map((d) => ({ ...d, registered_ts: ts }))];
+    fleetRows.value = [];
+    flash.value = `✓ 已登记 ${out.devices?.length ?? 0} 台设备（kind=2 机构承诺上链）——原像盐已回执，请密封入机构档案`;
+    await refreshFleet();
+  } catch (e) {
+    const err = e as ApiError;
+    deny.value = { code: err.code ?? "fleet_register_failed", message: err.message ?? String(e) };
+  }
+}
+async function doFleetSeal(): Promise<void> {
+  deny.value = null; flash.value = "";
+  if (!fleetRegs.value.length) { deny.value = { code: "no_material", message: "暂无可密封的登记材料（先登记设备）" }; return; }
+  try {
+    const existing: FleetDeviceMaterial[] = localStorage.getItem(FLEET_SLOT_KEY)
+      ? await openFleetSlot(JSON.parse(localStorage.getItem(FLEET_SLOT_KEY)!) as FleetSlot, fleetSealPass.value).catch(() => []) : [];
+    const merged = [...existing, ...fleetRegs.value];
+    const slot = await sealFleetSlot(merged, fleetSealPass.value);
+    localStorage.setItem(FLEET_SLOT_KEY, JSON.stringify(slot));
+    flash.value = `✓ 设备档案已密封入本机（${merged.length} 台）——明文材料不落存储`;
+    fleetRegs.value = [];
+    fleetSealPass.value = "";
+  } catch (e) {
+    deny.value = { code: "fleet_seal_failed", message: (e as Error).message ?? String(e) };
+  }
+}
+const fleetUnsealPass = ref("");
+const fleetIssueOut = ref<{ device_no: string; sub_cred_hash_hex: string; expires_at: string }[]>([]);
+async function doFleetIssue(): Promise<void> {
+  deny.value = null; flash.value = "";
+  try {
+    const slotRaw = localStorage.getItem(FLEET_SLOT_KEY);
+    if (!slotRaw) throw new Error("本机无机队设备档案——请先登记并密封档案");
+    // 解封即签发档案全部设备（档案=机构签发清单——设备增删走档案管理；
+    // 已吊销设备由后端签发面 cred_revoked 拒，负例人话回显）。
+    const mats = await openFleetSlot(JSON.parse(slotRaw) as FleetSlot, fleetUnsealPass.value);
+    if (!mats.length) throw new Error("设备档案为空——请先登记设备并密封档案");
+    const items: FleetIssueItem[] = [];
+    for (const m of mats) {
+      // 每张子凭证全新出示钥（一次性出示钥纪律）；sm-crypto 公钥剥 04 前缀
+      // （与 lib/auth.registerAccount 同款——后端契约=128hex x‖y）。
+      const kp = sm2.generateKeyPairHex();
+      items.push({
+        master_cred_hash_hex: m.master_cred_hash_hex,
+        salt_hex: m.salt_hex,
+        holder_pub_hex: kp.publicKey.replace(/^04/, ""),
+      });
+    }
+    const out = await api<{ items: { device_no: string; sub_cred_hash_hex: string; expires_at: string }[] }>(
+      "/ra/fleet/sub-credentials", { method: "POST", body: JSON.stringify(buildIssueBody(items)) },
+    );
+    fleetIssueOut.value = out.items ?? [];
+    flash.value = `✓ 已签发 ${out.items?.length ?? 0} 张机队子凭证（机构共享池计数——飞行材料请立即部署并妥善保存）`;
+    await refreshFleet();
+  } catch (e) {
+    const err = e as ApiError;
+    deny.value = { code: err.code ?? "fleet_issue_failed", message: err.message ?? String(e) };
+  }
+}
+const fleetRevokeTarget = ref<FleetDeviceView | null>(null);
+const fleetRevokeReason = ref("");
+async function doFleetRevoke(): Promise<void> {
+  deny.value = null; flash.value = "";
+  const t = fleetRevokeTarget.value;
+  const reason = fleetRevokeReason.value.trim();
+  if (!t) { deny.value = { code: "no_target", message: "请先在设备列表选择要吊销的设备" }; return; }
+  if (reason.length < 4) { deny.value = { code: "reason_required", message: "吊销理由须 ≥4 字（公示面必填）" }; return; }
+  if (!sk.value) { deny.value = { code: "locked", message: "请先解锁管理员密钥（吊销须签名留痕）" }; return; }
+  busy.value = true;
+  try {
+    const snap = await api<{ epoch: number }>("/ra/revocation/snapshot");
+    const epoch = snap.epoch + 1;
+    const sig_hex = signMsg(sk.value, fleetRevokeMsg(t.master_cred_hash_hex, reason, epoch));
+    await api("/ra/revoke", {
+      method: "POST",
+      body: JSON.stringify({ master_cred_hash_hex: t.master_cred_hash_hex, reason, sig_hex, epoch }),
+    });
+    flash.value = `✓ 设备 ${t.device_no} 已签名吊销——org 署名推根即时生效（未消费子凭证同步并入撤销集）`;
+    fleetRevokeTarget.value = null;
+    fleetRevokeReason.value = "";
+    await Promise.all([refreshFleet(), refreshRevocation()]);
+  } catch (e) {
+    const err = e as ApiError;
+    deny.value = { code: err.code ?? "fleet_revoke_failed", message: err.message ?? String(e) };
+  } finally { busy.value = false; }
+}
 </script>
 
 <template>
@@ -768,6 +906,115 @@ async function checkSigs(r: ReqView): Promise<void> {
       </div>
       <p v-if="flash" class="flash">{{ flash }}</p>
       <DenyBox v-if="deny" :code="deny.code" :message="deny.message" />
+    </div>
+
+    <!-- ③-b 机队设备管理（3.1——credKind=2 机构承诺主凭证）：机构管理员以
+        org 身份批量登记设备（kind=2 链上承诺）+机队子凭证批量签发（机构共享
+        池）+列表/吊销（org 署名推根即时生效）。设备档案（salt 原像）口令密封
+        本机存储；出示钥每张全新生成（跨申请不可链接）。 -->
+    <div class="panel" data-test="fleet-panel">
+      <h2>机队设备管理（机构承诺 credKind=2）</h2>
+      <p class="desc">
+        机构以自身登记权威为设备出具合规承诺（链上 kind=2 主凭证）并为设备批量签发飞行子凭证
+        （配额=机构级共享池{{ fleetPoolQuota != null ? `，上限 ${fleetPoolQuota} 张` : "" }}）。
+        设备序列号与地面站桥读数同源校验（SN 绑定——换机不可用）；吊销走 org 署名推根，即时生效。
+      </p>
+      <div class="panel-head">
+        <h2 style="font-size:15px">本机构机队设备</h2>
+        <button class="btn sm ghost" @click="refreshFleet">刷新</button>
+      </div>
+      <FzEmpty v-if="fleetLoaded && !fleetDevices.length" text="本机构暂无机队设备——下方表单批量登记。" icon="doc" />
+      <div v-else class="tbl-wrap">
+        <table class="tbl">
+          <thead><tr><th>登记号</th><th>序列号</th><th>资质</th><th>机型类</th><th>状态</th><th>子凭证</th><th></th></tr></thead>
+          <tbody>
+            <tr v-for="d in fleetDevices" :key="d.master_cred_hash_hex" :class="{ 'row-on': fleetRevokeTarget?.master_cred_hash_hex === d.master_cred_hash_hex }">
+              <td class="mono">{{ d.device_no }}</td>
+              <td class="mono">{{ d.sn }}</td>
+              <td class="mono">L{{ d.cert_level }}</td>
+              <td class="mono">{{ d.class_id }}</td>
+              <td><span class="fz-badge" :class="d.status === 1 ? 'teal' : d.status === 2 ? 'red' : 'gray'">{{ d.status === 1 ? "有效" : d.status === 2 ? "已吊销" : `状态${d.status}` }}</span></td>
+              <td class="mono">{{ d.sub_unconsumed }}/{{ d.sub_total }}</td>
+              <td>
+                <button v-if="d.status === 1" class="btn sm ghost" style="border-color:#d98484;color:var(--tone-red-fg)"
+                        @click="fleetRevokeTarget = fleetRevokeTarget?.master_cred_hash_hex === d.master_cred_hash_hex ? null : d">
+                  {{ fleetRevokeTarget?.master_cred_hash_hex === d.master_cred_hash_hex ? "已选中" : "吊销" }}
+                </button>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <template v-if="fleetRevokeTarget">
+        <div class="gate fz-enter" style="margin-top:10px">
+          <div class="gate-title">吊销设备：<span class="mono">{{ fleetRevokeTarget.device_no }}</span>（SN {{ fleetRevokeTarget.sn }}）</div>
+          <p class="desc" style="margin-bottom:6px">
+            FZ-REVOKE 域签名按句柄吊销（设备无用户名——不走按人预览）——共享树纪元根+org-b 署名锚同步推链，
+            未消费子凭证的出示钥并入撤销集（即时生效）。
+          </p>
+          <label>吊销理由（必填 ≥4 字）</label>
+          <textarea v-model="fleetRevokeReason" rows="2" placeholder="例：设备退役——机构台账核销依规吊销"></textarea>
+          <div style="display:flex;gap:10px;margin-top:8px">
+            <button class="btn" style="border-color:#d98484;color:var(--tone-red-fg)" :disabled="busy || !unlockedOnce" @click="doFleetRevoke">
+              {{ busy ? "签名吊销中…" : "签名并吊销设备" }}
+            </button>
+            <button class="btn ghost" @click="fleetRevokeTarget = null">取消</button>
+          </div>
+        </div>
+      </template>
+
+      <div class="panel-head" style="margin-top:18px">
+        <h2 style="font-size:15px">批量登记设备（kind=2 机构承诺）</h2>
+        <button class="btn sm ghost" @click="addFleetRow">添加设备行</button>
+      </div>
+      <div v-for="(row, i) in fleetRows" :key="i" style="display:flex;gap:8px;margin-top:6px;flex-wrap:wrap">
+        <input v-model="row.device_no" class="mono" placeholder="设备登记号（恰 18 字符）" style="width:230px" maxlength="18" />
+        <input v-model="row.sn" class="mono" placeholder="设备序列号（与目标桥一致）" style="width:220px" maxlength="64" />
+        <input v-model.number="row.cert_level" type="number" min="1" max="4" placeholder="资质 1-4" style="width:100px" />
+        <input v-model.number="row.class_id" type="number" min="0" max="255" placeholder="机型类" style="width:100px" />
+        <button class="btn sm ghost" @click="removeFleetRow(i)">移除</button>
+      </div>
+      <div v-if="fleetRows.length" style="margin-top:10px">
+        <button class="btn" :disabled="busy" @click="doFleetRegister">登记上链（kind=2 机构承诺）</button>
+      </div>
+
+      <template v-if="fleetRegs.length">
+        <div class="panel-head" style="margin-top:16px">
+          <h2 style="font-size:15px">登记回执（原像盐一次性——请立即密封档案）</h2>
+        </div>
+        <div class="tbl-wrap">
+          <table class="tbl">
+            <thead><tr><th>登记号</th><th>句柄</th><th>原像盐（一次性）</th><th>回执时间</th></tr></thead>
+            <tbody>
+              <tr v-for="m in fleetRegs" :key="m.master_cred_hash_hex">
+                <td class="mono">{{ m.device_no }}</td>
+                <td class="mono">{{ m.master_cred_hash_hex.slice(0, 16) }}…</td>
+                <td class="mono">{{ m.salt_hex.slice(0, 16) }}…</td>
+                <td class="mono">{{ m.registered_ts.slice(5, 16).replace("T", " ") }}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <div style="display:flex;gap:10px;margin-top:8px;align-items:center;flex-wrap:wrap">
+          <input v-model="fleetSealPass" type="password" placeholder="档案密封口令" style="width:220px" />
+          <button class="btn" :disabled="busy" @click="doFleetSeal">密封入机构档案（本机）</button>
+        </div>
+      </template>
+
+      <div class="panel-head" style="margin-top:18px">
+        <h2 style="font-size:15px">机队子凭证批量签发（机构共享池）</h2>
+      </div>
+      <p class="desc">从本机密封档案解封设备清单——勾选设备逐台生成全新出示钥并签发（每张 24h 有效期，一次性出示钥跨申请不可链接）。</p>
+      <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+        <input v-model="fleetUnsealPass" type="password" placeholder="档案解封口令" style="width:220px" />
+        <button class="btn" :disabled="busy" @click="doFleetIssue">解封并签发勾选设备</button>
+      </div>
+      <div v-if="fleetIssueOut.length" class="fp-box fz-enter" style="margin-top:8px">
+        <span class="fp-label">签发回执</span>
+        <div v-for="o in fleetIssueOut" :key="o.sub_cred_hash_hex" class="req-meta mono">
+          {{ o.device_no }} · {{ o.sub_cred_hash_hex.slice(0, 16) }}… · 至 {{ o.expires_at.slice(5, 16).replace("T", " ") }}
+        </div>
+      </div>
     </div>
 
     <!-- ⑤ 账户总览 -->
