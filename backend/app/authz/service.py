@@ -639,11 +639,16 @@ def unwrap_any(
     inner = blob[3 + len_e :]
     c1_hex = ct_ecies[:64].hex()
     ctx = unlock_ctx
-    # 三份额域独立校验+出点份额（dᵢ 不出域；任两域放行即可解，域拒绝如实记录）
+    # 全份额域独立校验+出点份额（dᵢ 不出域；任 k 域放行即可解，域拒绝如实
+    # 记录）——3.2 k-of-n 参数化（R3 审查①根修：此前硬编码枚举/granted≥2
+    # 从未泛化——replace 静默 no-op 实锤，非默认域集下 unwrap 全瘫+3-of-n
+    # 形态 2 份 break 走缺省 k=2 合成面放水残留）：域枚举/门限从
+    # threshold_shares 配置面读（缺省 env=2 + admin,ra,auditor 逐字同现行）。
+    _k, _domains = threshold_shares.threshold_config()
     shares: list[tuple[int, str]] = []
     granted = 0
     errors = []
-    for idx, role in ((1, "admin"), (2, "ra"), (3, "auditor")):
+    for idx, role in enumerate(_domains, start=1):
         try:
             pt = threshold_shares.request_decrypt_share(
                 role,
@@ -655,18 +660,30 @@ def unwrap_any(
             )
             shares.append((idx, pt))
             granted += 1
-        except Exception as e:  # noqa: BLE001 —— 单域拒绝如实记录（≥2 域放行才可解）
+        except Exception as e:  # noqa: BLE001 —— 单域拒绝如实记录（≥k 域放行才可解）
             errors.append(f"{role}: {e}")
-        if granted >= 2:
+        if granted >= _k:
             break
-    if granted < 2:
+    if granted < _k:
         raise AuthzError(
             "threshold_denied",
-            f"份额域放行不足 2/3（{'；'.join(errors) or '无域响应'}）",
+            f"份额域放行不足 {_k}/{len(_domains)}（{'；'.join(errors) or '无域响应'}）",
             403,
         )
-    # 合成 [d]C₁ → 解 Kₑ（ECIES 段门限解密，C3 校验内建）
-    k_e = threshold_decrypt(ct_ecies, shares)
+    # 合成 [d]C₁ → 解 Kₑ（ECIES 段门限解密，C3 校验内建）——k 显式透传
+    # （放水残留封死：即便 shares 数异常少于 _k，合成面按配置门限拒而非缺省 2）。
+    # 合成失败（份额与信封不匹配/根域漂移同域名跨根形态——R3 审查①残留面）
+    # 归一 AuthzError 403 判词（裸 SM2Error 500 形态退役——受理面统一语义）。
+    from app.crypto.threshold import SM2Error as _SM2Error
+
+    try:
+        k_e = threshold_decrypt(ct_ecies, shares, k=_k)
+    except _SM2Error as e:
+        raise AuthzError(
+            "threshold_denied",
+            f"份额合成/解密失败（份额与信封不匹配或门限根漂移——fail-closed）: {e}",
+            403,
+        ) from e
     g = SM4GCM(k_e)
     nonce, ct, tag = inner[:12], inner[12:-16], inner[-16:]
     return g.decrypt(nonce, ct, tag, aad)

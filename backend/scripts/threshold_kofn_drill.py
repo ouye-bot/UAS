@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """3.2 k-of-n 参数化实弹 drill（测试档 env 2-of-4 全动线——任务书验收）。
 
   [S1] 2-of-4 初始化分割（root.json threshold=2/domains=4 断言）
@@ -20,6 +19,7 @@
 from __future__ import annotations
 
 import json
+import os
 import secrets
 import sys
 import tempfile
@@ -28,15 +28,13 @@ from pathlib import Path
 BACKEND = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(BACKEND))
 
-import os
-
 _tmp = tempfile.mkdtemp(prefix="fz_kofn_drill_")
 os.environ["FZ_THRESHOLD_ROOT_DIR"] = str(Path(_tmp) / "threshold_root")
 os.environ["FZ_THRESHOLD_K"] = "2"
 os.environ["FZ_THRESHOLD_DOMAINS"] = "d0,d1,d2,d3"
 
 from app.crypto.sm2 import encrypt as sm2_encrypt  # noqa: E402
-from app.crypto.threshold import combine_decrypt_shares, decrypt_share, threshold_decrypt  # noqa: E402
+from app.crypto.threshold import combine_decrypt_shares, threshold_decrypt  # noqa: E402
 from app.ra import threshold_shares as ts  # noqa: E402
 
 _checks = 0

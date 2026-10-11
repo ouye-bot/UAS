@@ -231,7 +231,8 @@ def draft_reshare_proposal() -> dict:
             f"{version} 已公示（本纪元已执行过重分割）",
         )
     # 双口径统一（审查批⑤钉死）：起草与 propose_and_reshare 同为 5 键元数据
-    # （含 owner_set_fp）——同 version 族单套 params_hash 口径，第三方独立对拍
+    # （含 owner_set_fp/domains——3.2 域集清单入公示行，R3⑦注释换代：6 键）
+    # ——同 version 族单套 params_hash 口径，第三方独立对拍
     # 单源；两路提案 calldata 同⟹proposalOfCall 查重互斥（不再并存双提案）。
     fp_at_draft = chain_owner_set()["fp_hex"]
     announcement = json.dumps(

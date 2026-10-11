@@ -113,13 +113,16 @@ def _assert_config(k: int, domains: tuple[str, ...]) -> None:
 
 def assert_threshold_config() -> dict:
     """启动断言（任务书①——比照 production 拒启工艺挂 create_app）：配置
-    自洽 fail-fast。production 档（is_production）额外域集⊆治理席位集对拍
-    （份额域=治理席位同构语义 1.3 件①——链不可达=fail-closed 拒启）；demo
-    档只做参数自洽（fake 档无链面）。返回配置摘要（KPI/日志消费）。"""
+    自洽 fail-fast。production 档（**is_production()**——R3 审查②根修：此前
+    误用全仓无第三消费面的 FZ_PRODUCTION env，与既有工艺背离双向写反——
+    FZ_DEPLOYMENT=production 真实生产形态下席位对拍完全不触发=fail-open）
+    额外域集⊆治理席位集对拍（份额域=治理席位同构语义 1.3 件①——链不可达
+    =fail-closed 拒启）；demo 档只做参数自洽（fake 档无链面）。返回配置摘要
+    （KPI/日志消费）。"""
     k, domains = threshold_config()
-    import os
+    from app.deployment import is_production
 
-    if os.environ.get("FZ_PRODUCTION", "").strip().lower() in ("1", "true", "yes"):
+    if is_production():
         # production 档：席位集对拍（链读 owner 数 ≥ n）
         try:
             from app.ra.threshold_sync import chain_owner_set
@@ -427,8 +430,13 @@ def ceremonial_reshare(gov_confirmed_epoch: int, owner_set_fp: str | None = None
         if threshold_decrypt(ct, pts, k=k) != canary:
             raise ShareDomainError("canary_mismatch", "新份额对 D_pub 自证失败（未落盘，零变更）")
         # ④ 持久化：先份额（新纪元域钥重封=旧份额值+旧密封钥同时作废）后纪元；
-        # 3.2 域集换代（除名）时新域集文件覆盖写+root.json domains 换代。
+        # 3.2 域集/k 换代三键同步落盘（R3 审查③④根修）：domains（权威）+
+        # roles（兼容键——不同步则公示行 announcement roles=旧域集与 domains
+        # 自相矛盾）+threshold（不同步则 threshold_wrap 惰性 initialize 时
+        # config_mismatch 自锁——k 变更换代形态带病落盘实锤）。
         meta["domains"] = list(domains)
+        meta["roles"] = list(domains)
+        meta["threshold"] = k
         for (_i, d_i), role in zip(new_shares, domains, strict=True):
             _domain_share_sealed_path(role).write_bytes(
                 _seal_share(role, new_epoch, f"{d_i:064x}".encode())
