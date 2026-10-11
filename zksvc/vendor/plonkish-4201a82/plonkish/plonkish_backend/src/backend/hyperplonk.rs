@@ -107,7 +107,7 @@ where
 
 impl<F, Pcs> PlonkishBackend<F> for HyperPlonk<Pcs>
 where
-    F: PrimeField + Hash + Serialize + DeserializeOwned,
+    F: PrimeField + Hash + Serialize + DeserializeOwned + 'static,
     Pcs: PolynomialCommitmentScheme<F, Polynomial = MultilinearPolynomial<F>>,
 {
     type Pcs = Pcs;

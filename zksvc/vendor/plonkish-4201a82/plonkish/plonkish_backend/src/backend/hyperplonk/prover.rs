@@ -345,7 +345,7 @@ pub(crate) fn permutation_z_polys<F: PrimeField>(
 }
 
 #[allow(clippy::type_complexity)]
-pub(super) fn prove_zero_check<F: PrimeField>(
+pub(super) fn prove_zero_check<F: PrimeField + 'static>(
     num_instance_poly: usize,
     expression: &Expression<F>,
     polys: &[&MultilinearPolynomial<F>],
@@ -473,7 +473,7 @@ pub(super) fn prove_zero_check<F: PrimeField>(
 }
 
 #[allow(clippy::type_complexity)]
-pub(crate) fn prove_sum_check<F: PrimeField>(
+pub(crate) fn prove_sum_check<F: PrimeField + 'static>(
     num_instance_poly: usize,
     expression: &Expression<F>,
     sum: F,

@@ -127,6 +127,22 @@ impl<F: Field + PrimeField> ExpressionRegistry<F> {
         cache
     }
 
+    /// packed 求值通道只读快照（2026-10-11 批量求值批——字段同源同值零行为；
+    /// 构造面收口在本模块=字段私有性边界内，域 crate 只读消费）。
+    pub(crate) fn public_view(
+        &self,
+    ) -> crate::piop::sum_check::classic::packed::RegistryPublic<'_, F> {
+        crate::piop::sum_check::classic::packed::RegistryPublic {
+            constants: &self.constants,
+            lagranges: &self.lagranges,
+            eq_xys: &self.eq_xys,
+            rotations: &self.rotations,
+            polys: &self.polys,
+            offsets: self.offsets,
+            _marker: std::marker::PhantomData,
+        }
+    }
+
     // ── Dedup via the memo maps; vec order/content identical to the era of
     // linear scans (root-fix 2026-08-27, see struct docs) ──
 
@@ -314,7 +330,7 @@ impl<F: Field + PrimeField> ExpressionRegistry<F> {
 }
 
 #[derive(Clone, Copy, Debug, Default)]
-pub(crate) struct Offsets(usize, usize, usize, usize, usize);
+pub struct Offsets(usize, usize, usize, usize, usize);
 
 impl Offsets {
     fn new(
@@ -332,23 +348,23 @@ impl Offsets {
         offset
     }
 
-    pub(crate) fn identity(&self) -> usize {
+    pub fn identity(&self) -> usize {
         self.0
     }
 
-    pub(crate) fn lagranges(&self) -> usize {
+    pub fn lagranges(&self) -> usize {
         self.1
     }
 
-    pub(crate) fn eq_xys(&self) -> usize {
+    pub fn eq_xys(&self) -> usize {
         self.2
     }
 
-    pub(crate) fn polys(&self) -> usize {
+    pub fn polys(&self) -> usize {
         self.3
     }
 
-    pub(crate) fn calculations(&self) -> usize {
+    pub fn calculations(&self) -> usize {
         self.4
     }
 }

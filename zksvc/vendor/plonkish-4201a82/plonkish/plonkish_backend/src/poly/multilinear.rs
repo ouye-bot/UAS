@@ -194,6 +194,22 @@ impl<F: Field> MultilinearPolynomial<F> {
         Self::new(output)
     }
 
+    /// 串行版 fix_var（2026-10-11 批量求值批）：与 `fix_var` 逐位同（同一
+    /// merge 公式与遍历序），仅去掉函数体内 parallelize——并行粒度上移到
+    /// 调用方跨 poly 批量（sumcheck next_round 的 spawn 风暴根修）。
+    pub fn fix_var_serial(&self, x_i: &F) -> Self {
+        let mut output = Vec::with_capacity(1 << (self.num_vars - 1));
+        merge_into_serial(&mut output, self.evals(), x_i, 1, 0);
+        Self::new(output)
+    }
+
+    /// 串行版 fix_var_in_place（同上——供批量并行任务体内调用）。
+    pub fn fix_var_in_place_serial(&mut self, x_i: &F, buf: &mut Self) {
+        merge_into_serial(&mut buf.evals, self.evals(), x_i, 1, 0);
+        buf.num_vars = self.num_vars - 1;
+        mem::swap(self, buf);
+    }
+
     pub fn fix_var_in_place(&mut self, x_i: &F, buf: &mut Self) {
         merge_into(&mut buf.evals, self.evals(), x_i, 1, 0);
         buf.num_vars = self.num_vars - 1;
@@ -773,6 +789,30 @@ pub(crate) fn merge_into<F: Field>(
             *target = (*eval_1 - eval_0) * x_i + eval_0;
         }
     });
+}
+
+/// 串行 merge（2026-10-11 外层 sumcheck 批量求值批）：与 `merge_into` 逐元素
+/// 同式同序（`(eval_1 − eval_0)·x + eval_0`，自 skip 起步距 step），仅去除
+/// 函数体内的 parallelize——并行粒度上移到调用方（跨 poly 批量），消除
+/// 「每 poly 一次 rayon scope × 每线程一份小切片」的 spawn 风暴（②站教训：
+/// 并行粒度上移才是钥匙）。逐位同：算子与遍历序完全一致。
+pub(crate) fn merge_into_serial<F: Field>(
+    target: &mut Vec<F>,
+    evals: &[F],
+    x_i: &F,
+    distance: usize,
+    skip: usize,
+) {
+    assert!(target.capacity() >= evals.len() >> distance);
+    target.resize(evals.len() >> distance, F::ZERO);
+
+    let step = 1 << distance;
+    let start = skip;
+    for (target, (eval_0, eval_1)) in
+        target.iter_mut().zip(zip_self!(evals.iter(), step, start))
+    {
+        *target = (*eval_1 - eval_0) * x_i + eval_0;
+    }
 }
 
 macro_rules! zip_self {

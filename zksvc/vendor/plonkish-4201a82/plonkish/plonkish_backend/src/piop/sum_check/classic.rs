@@ -5,7 +5,7 @@ use crate::{
         arithmetic::{BooleanHypercube, Field, PrimeField},
         end_timer,
         expression::{Expression, Rotation},
-        parallel::par_map_collect,
+        parallel::parallelize_iter,
         start_timer,
         transcript::{FieldTranscriptRead, FieldTranscriptWrite},
         Itertools,
@@ -17,9 +17,12 @@ use std::{borrow::Cow, collections::HashMap, fmt::Debug, marker::PhantomData};
 
 mod coeff;
 mod eval;
+/// 批量求值通道（2026-10-11 路线甲）：F 无关的 SoA 程序面 + 域执行体注册面。
+pub mod packed;
 
 pub use coeff::CoefficientsProver;
-pub use eval::EvaluationsProver;
+pub use eval::{Evaluations, EvaluationsProver};
+pub use packed::{PackedProgram, PackedRegistration};
 
 #[derive(Debug)]
 pub struct ProverState<'a, F: Field> {
@@ -38,6 +41,23 @@ pub struct ProverState<'a, F: Field> {
 }
 
 impl<'a, F: PrimeField> ProverState<'a, F> {
+    /// packed 求值通道只读视图（2026-10-11 批量求值批）：字段同源同值零行为，
+    /// 构造面收口在本模块（字段私有性边界内），域 crate 只读消费。
+    pub(crate) fn public_view(&self) -> packed::ProverStatePublic<'_, '_, F> {
+        packed::ProverStatePublic {
+            num_vars: self.num_vars,
+            degree: self.degree,
+            round: self.round,
+            size: self.size(),
+            identity: self.identity,
+            lagranges: &self.lagranges,
+            eq_xys: &self.eq_xys,
+            polys: &self.polys,
+            challenges: self.challenges,
+            _marker: PhantomData,
+        }
+    }
+
     fn new(num_vars: usize, sum: F, virtual_poly: VirtualPolynomial<'a, F>) -> Self {
         assert!(num_vars > 0 && virtual_poly.expression.max_used_rotation_distance() <= num_vars);
         #[cfg(feature = "timer")]
@@ -117,18 +137,39 @@ impl<'a, F: PrimeField> ProverState<'a, F> {
                         .then(|| (rotation, self.bh.rotation_map(rotation)))
                 })
                 .collect::<HashMap<_, _>>();
-            for query in self.expression.used_query() {
-                if query.rotation() != Rotation::cur() {
-                    let poly = &self.polys[query.poly()][self.num_vars];
-                    let mut rotated = MultilinearPolynomial::new(par_map_collect(
-                        &rotation_maps[&query.rotation()],
-                        |b| poly[*b],
-                    ));
-                    rotated.fix_var_in_place(challenge, &mut self.buf);
-                    self.polys[query.poly()]
-                        [(query.rotation().0 + self.num_vars as i32) as usize] =
-                        Cow::Owned(rotated);
-                }
+            // ── 批量化（2026-10-11 外层 sumcheck 批量求值批，spawn 风暴根修）：
+            // 旧路径逐 query 一次 par_map_collect（逐元素 rayon 任务）+ 逐 poly
+            // 一次 fix_var（每 poly 一次 parallelize=rayon scope×每线程一份小
+            // 切片）——AUTH 实测 14,070 份 2^k 切片 ⟹ next_round-0 2.18s 中
+            // spawn 开销过半。现改为：并行粒度上移到「跨 job/跨 poly」（②站
+            // evals 9.2× 同一钥匙），任务体内串行 gather+merge（merge_into_
+            // serial 与 merge_into 逐元素同式同序 ⟹ 逐位同）。
+            // Step 1: 旋转副本（来自未 fix 基列）——跨 query 批量 gather+fix。
+            let rotated_jobs: Vec<_> = self
+                .expression
+                .used_query()
+                .into_iter()
+                .filter(|query| query.rotation() != Rotation::cur())
+                .collect();
+            let rotated: Vec<MultilinearPolynomial<F>> = {
+                let mut collected: Vec<Option<MultilinearPolynomial<F>>> =
+                    (0..rotated_jobs.len()).map(|_| None).collect();
+                parallelize_iter(
+                    collected.iter_mut().zip(rotated_jobs.iter()),
+                    |(slot, query)| {
+                        let poly = &self.polys[query.poly()][self.num_vars];
+                        let rotated = MultilinearPolynomial::new(
+                            rotation_maps[&query.rotation()].iter().map(|b| poly[*b]).collect(),
+                        );
+                        *slot = Some(rotated.fix_var_serial(challenge));
+                    },
+                );
+                collected.into_iter().map(|slot| slot.unwrap()).collect()
+            };
+            for (query, rotated) in rotated_jobs.into_iter().zip(rotated) {
+                self.polys[query.poly()]
+                    [(query.rotation().0 + self.num_vars as i32) as usize] =
+                    Cow::Owned(rotated);
             }
             // Diagnostic-only: how many full-size rotated copies were
             // materialized above (each is 2^(n-1) field elements after the
@@ -143,16 +184,31 @@ impl<'a, F: PrimeField> ProverState<'a, F> {
                     .map(|ps| ps.iter().filter(|p| !p.is_zero()).count())
                     .sum::<usize>()
             );
-            self.polys.iter_mut().for_each(|polys| {
-                polys[self.num_vars] = Cow::Owned(polys[self.num_vars].fix_var(challenge));
-            });
-        } else {
-            self.polys.iter_mut().for_each(|polys| {
-                polys.iter_mut().for_each(|poly| {
-                    if !poly.is_zero() {
-                        poly.to_mut().fix_var_in_place(challenge, &mut self.buf);
-                    }
+            // Step 2: 基列 fix——跨 poly 批量（任务体串行 merge，逐位同）。
+            {
+                let mut fixed: Vec<Option<MultilinearPolynomial<F>>> =
+                    (0..self.polys.len()).map(|_| None).collect();
+                parallelize_iter(fixed.iter_mut().zip(self.polys.iter()), |(slot, polys)| {
+                    *slot = Some(polys[self.num_vars].fix_var_serial(challenge));
                 });
+                for (ps, fixed) in self.polys.iter_mut().zip(fixed) {
+                    ps[self.num_vars] = Cow::Owned(fixed.unwrap());
+                }
+            }
+        } else {
+            // 批量 fix（rounds ≥1）：并行粒度=外层 poly 槽位向量（槽位互斥可
+            // 独占可变借用），任务体内串行 merge（逐位同 fix_var_in_place）。
+            // buf 预配当轮目标容量（2^(n−r−1)）——原实现共享 self.buf（ProverState::
+            // new 预配 2^(n−1) 且 swap 后容量延续），fresh buf 容量 0 会撞
+            // merge 的容量断言（vendor 单测 4 例红实锤后根修）。
+            let buf_cap = 1usize << (self.num_vars - self.round - 1);
+            parallelize_iter(self.polys.iter_mut(), |ps| {
+                let mut buf = MultilinearPolynomial::new(vec![F::ZERO; buf_cap]);
+                for poly in ps.iter_mut() {
+                    if !poly.is_zero() {
+                        poly.to_mut().fix_var_in_place_serial(challenge, &mut buf);
+                    }
+                }
             });
         }
         self.round += 1;

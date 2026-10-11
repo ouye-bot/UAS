@@ -118,6 +118,12 @@ pub(crate) mod test_env {
 
 pub mod sm2_auth_assemble;
 pub mod smt_weave;
+/// 外层 sumcheck 的 FpSM2 packed（AVX2 u64x4）+ SoA 批量求值通道（2026-10-11
+/// 路线甲：同域向量化——零语句/零语义/零电路；差分位 FZ_ZK_PACKED_SUMCHECK=0
+/// 回退标量）。
+pub mod sumcheck_packed_sm2;
+#[cfg(test)]
+mod sumcheck_packed_tests;
 /// 飞证 B6 · TRAIL 轨迹合规语句（host 单一事实源；与 uas gcs/bridge fence.py 同构）。
 pub mod trail_host;
 /// 飞证 B6 · TRAIL 织入（范围门/时间门/链头钉——proto 后处理零移位）。

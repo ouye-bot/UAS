@@ -67,7 +67,13 @@ VEC_DIR = BACKEND / "app" / "crypto" / "vectors"
 # proof 字节/实例零语义），MANIFEST aggregate e53078a0…；重公示 tx=0x1a78fb6c——
 # 本常量第一批判门兜底（2026-10-11）随代：此前停在 e6481fb5（10-06 态）致 C3-15
 # 假红（本地三源=黄金向量 zk_pin_fingerprint/build_manifest/此表现已一致）。
-PIN_LOCAL_EXPECTED = "SM3(4201a82|e53078a0bdc395bb6d2202bf9269419de9f53f6e881e60b4e724bb1561db914b)"
+# 外层 sumcheck 批量求值批重钉 2026-10-11（路线甲）：sumcheck next_round spawn
+# 风暴根修（1.34×）+FpSM2 packed 求值通道基建（缺省关闭，实测 56×反向留档）+
+# FZ_ZK_SALT_PIN 差分位——同见证逐字节锚（proof/vp/instances 三件 cmp 同+
+# 跨二进制 9e9f4435 三方同）+26 实例逐位同；电路本体零换代，MANIFEST 151 文件/
+# aggregate b05df9d8…；链上重公示待链恢复补仪式（fisco 节点 SecureInitializer
+# cert 加载 terminate 故障在案）。
+PIN_LOCAL_EXPECTED = "SM3(4201a82|b05df9d8e2d5f39fb4d92b19d47379c86c0d40159e9fd39a1c9c77455b9b4985)"
 PIN_CHAIN_DIGEST_EXPECTED = "01140a45502fc154ac0b3f6024332acb02da11bedaed5ac9eb9d95c3faebc05b"
 
 

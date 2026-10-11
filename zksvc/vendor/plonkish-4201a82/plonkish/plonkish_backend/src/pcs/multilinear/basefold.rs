@@ -2173,7 +2173,20 @@ fn validate_batch_claims<F: PrimeField>(
 fn fresh_salt<H: Hash>() -> Output<H> {
     use rand::RngCore;
     let mut salt = Output::<H>::default();
-    rand::rngs::OsRng.fill_bytes(salt.as_mut_slice());
+    // 差分测试位（2026-10-11，外层 sumcheck 批量求值批）：FZ_ZK_SALT_PIN 置位时
+    // 见证承诺盐改由固定种子确定性导出，使证明字节跨次可复现（配合 MASK_OFF=1
+    // 消去 λ/m 的 OsRng 后全证明路径零随机源）——供「同二进制 packed/标量双
+    // 通道同见证逐字节对拍」等零语义差分实验使用。缺省不置位 = OsRng fresh
+    // 盐，历史行为零变化。🔴 诊断专用红线：钉盐破坏盐新鲜性（同码字跨证明
+    // 可链接），与 MASK_OFF 同类诊断构型——production 档由 zksvc prove 侧
+    // 准入拒绝（mask_off_admission 同门），判决件自述 salt_pin=on。
+    if std::env::var("FZ_ZK_SALT_PIN").is_ok() {
+        use rand::SeedableRng;
+        let mut rng = rand::rngs::StdRng::seed_from_u64(0x5A17_5A17_2026_1031);
+        rng.fill_bytes(salt.as_mut_slice());
+    } else {
+        rand::rngs::OsRng.fill_bytes(salt.as_mut_slice());
+    }
     salt
 }
 

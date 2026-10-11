@@ -43,7 +43,7 @@ mod prover;
 
 impl<F, Pcs, const STRATEGY: usize> AccumulationScheme<F> for Protostar<HyperPlonk<Pcs>, STRATEGY>
 where
-    F: PrimeField + Hash + Serialize + DeserializeOwned,
+    F: PrimeField + Hash + Serialize + DeserializeOwned + 'static,
     Pcs: PolynomialCommitmentScheme<F, Polynomial = MultilinearPolynomial<F>>,
     Pcs::Commitment: AdditiveCommitment<F>,
     Pcs::CommitmentChunk: AdditiveCommitment<F>,

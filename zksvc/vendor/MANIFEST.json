@@ -1,7 +1,7 @@
 {
  "pin_commit": "4201a82",
- "file_count": 148,
- "aggregate_sm3": "e53078a0bdc395bb6d2202bf9269419de9f53f6e881e60b4e724bb1561db914b",
+ "file_count": 151,
+ "aggregate_sm3": "b05df9d8e2d5f39fb4d92b19d47379c86c0d40159e9fd39a1c9c77455b9b4985",
  "files": [
   {
    "path": "plonkish/.gitignore",
@@ -110,8 +110,8 @@
   },
   {
    "path": "plonkish/plonkish_backend/src/accumulation/protostar/hyperplonk.rs",
-   "bytes": 23022,
-   "sm3": "751afb68deb0c07d2bb03a49acc41179023e2c2be3ed96639cecdc6bf5d461f6"
+   "bytes": 23032,
+   "sm3": "dc699e4d71b2fd764a614b94a038e43a5fde24efc50c325f6da590e8505eaaaf"
   },
   {
    "path": "plonkish/plonkish_backend/src/accumulation/protostar.rs",
@@ -145,8 +145,8 @@
   },
   {
    "path": "plonkish/plonkish_backend/src/backend/hyperplonk/prover.rs",
-   "bytes": 20617,
-   "sm3": "e40718e3372adf7c6dcaf807b6b0df69c16906a67a380afdcbf4c7dc806e98a5"
+   "bytes": 20637,
+   "sm3": "92029a6873a9a7078357eae486ed81721d9692cd3b1d484230a7fe2f745363f6"
   },
   {
    "path": "plonkish/plonkish_backend/src/backend/hyperplonk/util.rs",
@@ -155,13 +155,13 @@
   },
   {
    "path": "plonkish/plonkish_backend/src/backend/hyperplonk/verifier.rs",
-   "bytes": 9801,
-   "sm3": "818ca0d18b63e41dad5c543da12563684aa3a28b7bad523cfdb863661e69248c"
+   "bytes": 9821,
+   "sm3": "0d27b38db7644e16bed03d0d1488a7776d1d933ecffb4cbb30e0a10e8e5a5b17"
   },
   {
    "path": "plonkish/plonkish_backend/src/backend/hyperplonk.rs",
-   "bytes": 32697,
-   "sm3": "82238b7d50ecfc44a5ed5a18b19c5921ebf3472b1410b14352ea74a573d32f48"
+   "bytes": 32707,
+   "sm3": "6c6b115df5ee15b6cd99bafbd23c2f1b35aa91f324f2d12956c6c5e4391b7578"
   },
   {
    "path": "plonkish/plonkish_backend/src/backend/hyperplonk.rs~",
@@ -200,8 +200,8 @@
   },
   {
    "path": "plonkish/plonkish_backend/src/pcs/multilinear/basefold.rs",
-   "bytes": 208033,
-   "sm3": "c8ca9f26c86b96d57e49c240e4c94fbb375b1a3a70316f672dead1de8cded6fc"
+   "bytes": 208963,
+   "sm3": "36e9ec6e5f47f003a08c8eff65fa72efb3c885c56bcc3e401e894b4b90277a4f"
   },
   {
    "path": "plonkish/plonkish_backend/src/pcs/multilinear/blaze.rs",
@@ -280,13 +280,18 @@
   },
   {
    "path": "plonkish/plonkish_backend/src/piop/sum_check/classic/eval.rs",
-   "bytes": 19881,
-   "sm3": "7c9ba1801072090dcc1a15fd0139c17951a0bbcf8319cfe39c7497bd7df4dcfa"
+   "bytes": 23285,
+   "sm3": "459f51571a01969bd9ae531c2b9d679f66ad78a5b78440cd5638c73c1d5de264"
+  },
+  {
+   "path": "plonkish/plonkish_backend/src/piop/sum_check/classic/packed.rs",
+   "bytes": 10655,
+   "sm3": "7e92596efa8716b36bf925e66449ff432adf4e9e16437e4b0cbcd6f6d5117513"
   },
   {
    "path": "plonkish/plonkish_backend/src/piop/sum_check/classic.rs",
-   "bytes": 9640,
-   "sm3": "ef8361c1d64d379bdd4b9e670ae64da665571cfd22cef5dc5a26f4e77b72c538"
+   "bytes": 12974,
+   "sm3": "ec7e502d31f5beb8bae6c3d1f8ca4282fb594dc4019a2296a68b88950092caac"
   },
   {
    "path": "plonkish/plonkish_backend/src/piop/sum_check.rs",
@@ -300,8 +305,8 @@
   },
   {
    "path": "plonkish/plonkish_backend/src/poly/multilinear.rs",
-   "bytes": 34426,
-   "sm3": "aea15d8beeb0cd828ec3391c810a5b11d2119555bceb499ee87948e0b089cae1"
+   "bytes": 36183,
+   "sm3": "e15032a6d178456ea26e44689b79d2d68f371f309b710fd78932b65e070d75a4"
   },
   {
    "path": "plonkish/plonkish_backend/src/poly/univariate.rs",
@@ -390,8 +395,8 @@
   },
   {
    "path": "plonkish/plonkish_backend/src/util/expression/evaluator.rs",
-   "bytes": 15137,
-   "sm3": "149f513c9e824756ab7cd1bd872e7334d1b5f25272e57f2c55d2771009c9e6fe"
+   "bytes": 15763,
+   "sm3": "737333ca7f689c561b59688b3ed57273cf7e90b838fc77828c66d359207d5965"
   },
   {
    "path": "plonkish/plonkish_backend/src/util/expression/relaxed.rs",
@@ -520,8 +525,8 @@
   },
   {
    "path": "plonkish/plonkish_sm2_probe/src/lib.rs",
-   "bytes": 11731,
-   "sm3": "690ce68ecfd82e0c4eeb844a3ec4b62394a27b9bdbd6d1bd8eb2c15f711fe875"
+   "bytes": 12016,
+   "sm3": "8a386aa20ffec2fb4aa2341abf7612655d9b2477cf2d8cd647ff0677abab9e79"
   },
   {
    "path": "plonkish/plonkish_sm2_probe/src/sm2_a3_stream.rs",
@@ -682,6 +687,16 @@
    "path": "plonkish/plonkish_sm2_probe/src/smt_weave.rs",
    "bytes": 25111,
    "sm3": "85a44cc94d88a10aec9f82b187a9555053df38fb3d16993c37fa77d4585b987a"
+  },
+  {
+   "path": "plonkish/plonkish_sm2_probe/src/sumcheck_packed_sm2.rs",
+   "bytes": 26184,
+   "sm3": "0d309247c0ffa2f47bf57215f8a3226821fb3a4d18979f18dc66780fde12ec03"
+  },
+  {
+   "path": "plonkish/plonkish_sm2_probe/src/sumcheck_packed_tests.rs",
+   "bytes": 10421,
+   "sm3": "2210032571143b87fbaf6c29f665b300016eaa5b0779d6a6666688cbf578b035"
   },
   {
    "path": "plonkish/plonkish_sm2_probe/src/trail_host.rs",

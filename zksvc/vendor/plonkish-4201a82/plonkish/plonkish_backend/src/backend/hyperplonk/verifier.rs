@@ -17,7 +17,7 @@ use crate::{
 use std::collections::{BTreeSet, HashMap};
 
 #[allow(clippy::type_complexity)]
-pub(super) fn verify_zero_check<F: PrimeField>(
+pub(super) fn verify_zero_check<F: PrimeField + 'static>(
     num_vars: usize,
     expression: &Expression<F>,
     instances: &[Vec<F>],
@@ -120,7 +120,7 @@ pub(super) fn verify_zero_check<F: PrimeField>(
 /// 非掩蔽通用 sumcheck 验证（protostar accumulation 路径专用；主 HyperPlonk
 /// 后端走 verify_zero_check 的 Phase 3 掩蔽版）。
 #[allow(clippy::type_complexity)]
-pub(crate) fn verify_sum_check<F: PrimeField>(
+pub(crate) fn verify_sum_check<F: PrimeField + 'static>(
     num_vars: usize,
     expression: &Expression<F>,
     sum: F,

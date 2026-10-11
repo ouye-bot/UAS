@@ -124,6 +124,19 @@ const ENV_MASK_OFF: &str = "MASK_OFF";
 /// 部署档声明 env（信任根收口件4）：production 判定的唯一开关面。
 const ENV_DEPLOYMENT: &str = "FZ_DEPLOYMENT";
 
+/// 钉盐差分位（2026-10-11 外层 sumcheck 批量求值批）：vendor basefold fresh_salt
+/// 消费同名 env——置位即钉盐（见证承诺盐改由固定种子确定性导出，配合 MASK_OFF=1
+/// 消去 λ/m 的 OsRng 后全证明路径零随机源，证明字节跨次可复现），供「同二进制
+/// packed/标量双通道同见证逐字节对拍」等零语义差分实验。🔴 与 MASK_OFF 同类
+/// 诊断构型（钉盐破坏盐新鲜性=同码字跨证明可链接），production 档准入拒绝；
+/// 判决件自述消费（salt_pin 字段，缺省不序列化=历史字节零变化）。
+const ENV_SALT_PIN: &str = "FZ_ZK_SALT_PIN";
+
+/// packed sumcheck 通道自述（vendor packed 通道消费同名 env：**置 "1" 显式
+/// 启用**——缺省关闭，性能判决 [实测 56×反向] 在案未定谳不上路）：判决件仅在
+/// 显式启用时序列化 packed_sumcheck=on（默认关闭=零字节变化）。
+const ENV_PACKED_SUMCHECK: &str = "FZ_ZK_PACKED_SUMCHECK";
+
 /// 掩蔽状态自述（评审 P3-2）：verdict.json 必须记录掩蔽态——MASK_OFF 置位时
 /// 证明可链接且外观不可检，判决件是唯一披露面（pcs_switches 同纪律）。
 pub fn mask_flag() -> &'static str {
@@ -131,6 +144,21 @@ pub fn mask_flag() -> &'static str {
         "off"
     } else {
         "on"
+    }
+}
+
+/// 钉盐状态自述（与 mask 同纪律：判决件是诊断构型唯一披露面）。
+pub fn salt_pin_flag() -> bool {
+    std::env::var(ENV_SALT_PIN).is_ok()
+}
+
+/// packed sumcheck 通道自述：缺省（关闭=标量生产路径）返回 None 不序列化；
+/// 显式启用（差分实验档）时记录 on。
+pub fn packed_sumcheck_flag() -> Option<&'static str> {
+    if std::env::var(ENV_PACKED_SUMCHECK).as_deref() == Ok("1") {
+        Some("on")
+    } else {
+        None
     }
 }
 
@@ -155,6 +183,20 @@ pub fn deployment_is_production() -> bool {
 /// 诊断/对照构型照常可跑。Err=拒绝（调用方 prove_pipeline 在任何装配/IO 前
 /// fail-closed 退出，exit 2 判决纪律）。
 pub fn mask_off_admission() -> Result<(), ProveError> {
+    // 钉盐诊断构型同门准入（2026-10-11）：钉盐破坏盐新鲜性（同码字跨证明可
+    // 链接）——production 档拒绝，非 production 仅 stderr 警示+判决件自述。
+    // 🔴 与 MASK_OFF 门同位最前置：钉盐+掩蔽开时 λ/m 仍每证新鲜（泄漏面仅
+    // 见证承诺码字），仍按同等级诊断构型披露与准入。
+    if salt_pin_flag() {
+        if deployment_is_production() {
+            return Err(ProveError::MaskOffInProduction(
+                "FZ_ZK_SALT_PIN 置位于 production 部署档——拒绝出证：钉盐破坏盐新鲜性（同码字跨证明可链接），生产环境禁止；如需差分诊断构型请在非 production 档执行".to_string(),
+            ));
+        }
+        eprintln!(
+            "[warn] FZ_ZK_SALT_PIN 置位：见证承诺盐已钉定（差分诊断构型）——判决件已自述 salt_pin=on"
+        );
+    }
     if mask_flag() != "off" {
         return Ok(());
     }
@@ -428,6 +470,16 @@ struct VerdictFile<'a> {
     /// D18 掩蔽自述（评审 P3-2）：on=零知识掩蔽启用（默认）；off=MASK_OFF 置位
     /// 的诊断/对照构型（证明可链接——判决件唯一披露面）。
     mask: &'static str,
+    /// 钉盐诊断构型自述（2026-10-11 差分测试位）：缺省不置位不序列化=判决件
+    /// 历史字节零变化；置位时记录 on（钉盐=见证承诺盐确定性导出，配合
+    /// MASK_OFF=1 构成跨次可复现的差分对拍档）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    salt_pin: Option<&'static str>,
+    /// packed sumcheck 通道自述（2026-10-11 批量求值批）：缺省（关闭=标量
+    /// 生产路径）不序列化=历史字节零变化；显式启用（FZ_ZK_PACKED_SUMCHECK=1
+    /// 差分实验档）时记录 on。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    packed_sumcheck: Option<&'static str>,
     zk_pin_fingerprint: String,
     created_unix_ts: u64,
 }
@@ -435,6 +487,10 @@ struct VerdictFile<'a> {
 /// prove 全流程。verdict.json 无论 OK/FAIL 一律落盘（判决件是产物，
 /// 退出码语义由 CLI 层映射：OK=0 / 其余=2）。
 pub fn prove_pipeline(spec: &JobSpec, out_dir: &Path) -> Result<ProveReport, ProveError> {
+    // packed sumcheck 通道注册（2026-10-11 批量求值批，路线甲）：进程级幂等；
+    // 差分位（FZ_ZK_PACKED_SUMCHECK=0）/无 AVX2 = 不注册（backend 全标量路径
+    // 零变化）。仅影响 sumcheck 内环怎么算，协议面/转录字节零变化。
+    plonkish_sm2_probe::sumcheck_packed_sm2::ensure_registered();
     let t_all = Instant::now();
     // 0) 出证准入（信任根收口件4，fail-closed 最前置）：production + MASK_OFF
     // =拒绝出证——零副作用不建目录不读 vendor（比指纹前置更早，掩蔽关闭=
@@ -665,6 +721,8 @@ pub fn prove_pipeline(spec: &JobSpec, out_dir: &Path) -> Result<ProveReport, Pro
             pred_schema_seg_hex,
             pcs_switches: report.pcs_switches,
             mask: mask_flag(),
+            salt_pin: if salt_pin_flag() { Some("on") } else { None },
+            packed_sumcheck: packed_sumcheck_flag(),
             zk_pin_fingerprint: fingerprint.clone(),
             created_unix_ts: SystemTime::now()
                 .duration_since(UNIX_EPOCH)

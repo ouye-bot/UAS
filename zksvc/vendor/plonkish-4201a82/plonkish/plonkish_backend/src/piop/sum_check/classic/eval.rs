@@ -1,5 +1,8 @@
 use crate::{
-    piop::sum_check::classic::{ClassicSumCheckProver, ClassicSumCheckRoundMessage, ProverState},
+    piop::sum_check::classic::{
+        packed::{self, PackedProgram},
+        ClassicSumCheckProver, ClassicSumCheckRoundMessage, ProverState,
+    },
     util::{
         arithmetic::{
             barycentric_interpolate, barycentric_weights, div_ceil, steps, BooleanHypercube,
@@ -16,7 +19,13 @@ use crate::{
     Error,
 };
 use num_integer::Integer;
-use std::{collections::BTreeSet, fmt::Debug, iter, ops::AddAssign};
+use std::{
+    collections::BTreeSet,
+    fmt::Debug,
+    iter,
+    ops::AddAssign,
+    sync::{Arc, OnceLock},
+};
 
 #[derive(Clone, Debug)]
 pub struct Evaluations<F>(Vec<F>);
@@ -72,7 +81,7 @@ pub struct EvaluationsProver<F: PrimeField>(Vec<SumCheckEvaluator<F>>);
 
 impl<F> ClassicSumCheckProver<F> for EvaluationsProver<F>
 where
-    F: PrimeField,
+    F: PrimeField + 'static,
 {
     type RoundMessage = Evaluations<F>;
 
@@ -102,7 +111,10 @@ where
     }
 }
 
-impl<F: PrimeField> EvaluationsProver<F> {
+// 🔴 F: 'static（2026-10-11 批量求值批）：packed 通道的 TypeId 门需要
+// TypeId::of::<F>()。传染面收敛于显式签名（hyperplonk prover/verifier 函数
+// + impl 头同步 + 'static），全部生产调用点为具体类型（FpSM2/Fr）实例化。
+impl<F: PrimeField + 'static> EvaluationsProver<F> {
     fn evals<const IS_FIRST_ROUND: bool>(&self, state: &ProverState<F>) -> Evaluations<F> {
         let mut evals = Evaluations::new(state.degree);
 
@@ -116,33 +128,73 @@ impl<F: PrimeField> EvaluationsProver<F> {
                     ev.evaluate::<IS_FIRST_ROUND>(&mut partials[0], &mut cache, state, b)
                 })
             } else {
-                parallelize_iter(
-                    partials.iter_mut().zip((0..).step_by(chunk_size)),
-                    |(partials, start)| {
-                        let bs = start..(start + chunk_size).min(size);
+                // packed 通道派遣（2026-10-11 批量求值批，路线甲）：注册态且
+                // 程序非空时整段委托给域执行体（内部自带跨 chunk 并行）；
+                // 未注册域/程序空=恒 false 编译期直落标量分支，标量路径逐字
+                // 保留。4 点组批量 + 标量尾部；evals[0] 仍由下方 sum 修正。
+                let packed_points = if size >= 8 { size & !3 } else { 0 };
+                let handled = packed_points > 0
+                    && ev.packed_program().is_some()
+                    && packed::try_packed::<F>(
+                        IS_FIRST_ROUND,
+                        &state.public_view(),
+                        &ev.registry().public_view(),
+                        ev.packed_program().as_deref().unwrap(),
+                        &mut evals,
+                        packed_points,
+                    );
+                if handled {
+                    if packed_points < size {
                         let mut cache = ev.cache(state);
-                        bs.for_each(|b| {
-                            ev.evaluate::<IS_FIRST_ROUND>(partials, &mut cache, state, b)
-                        })
-                    },
-                );
+                        for b in packed_points..size {
+                            ev.evaluate::<IS_FIRST_ROUND>(&mut evals, &mut cache, state, b);
+                        }
+                    }
+                } else {
+                    parallelize_iter(
+                        partials.iter_mut().zip((0..).step_by(chunk_size)),
+                        |(partials, start)| {
+                            let bs = start..(start + chunk_size).min(size);
+                            let mut cache = ev.cache(state);
+                            bs.for_each(|b| {
+                                ev.evaluate::<IS_FIRST_ROUND>(partials, &mut cache, state, b)
+                            })
+                        },
+                    );
+                }
             }
         }
         partials.iter().for_each(|partials| evals += partials);
 
         evals[0] = state.sum - evals[1];
+        #[cfg(feature = "timer")]
+        if std::env::var_os("FZ_ZK_SC_DUMP").is_some() {
+            let round = state.round;
+            let hexes: Vec<String> = evals
+                .0
+                .iter()
+                .map(|f| {
+                    let r = f.to_repr();
+                    r.as_ref().iter().map(|b| format!("{b:02x}")).collect::<String>()
+                })
+                .collect();
+            eprintln!("[sc-dump] r={round} deg={} coeffs={hexes:?}", evals.0.len() - 1);
+        }
         evals
     }
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 struct SumCheckEvaluator<F: PrimeField> {
     num_vars: usize,
     reg: ExpressionRegistry<F>,
     sparse: Option<Expression<F>>,
+    /// SoA 求值程序（惰性编译：一次索引面转译；其余域同样恒可编译——
+    /// 派遣由 try_packed 的注册态门决定，未注册=程序不被消费）。
+    packed: OnceLock<Option<Arc<PackedProgram>>>,
 }
 
-impl<F: PrimeField> SumCheckEvaluator<F> {
+impl<F: PrimeField + 'static> SumCheckEvaluator<F> {
     fn new(
         num_vars: usize,
         challenges: &[F],
@@ -165,7 +217,31 @@ impl<F: PrimeField> SumCheckEvaluator<F> {
             num_vars,
             reg,
             sparse,
+            packed: OnceLock::new(),
         })
+    }
+
+    /// registry 只读访问（packed 通道消费）。
+    fn registry(&self) -> &ExpressionRegistry<F> {
+        &self.reg
+    }
+
+    /// SoA 求值程序（惰性：编译一次并缓存；程序为纯索引面，F 无关）。
+    fn packed_program(&self) -> Option<Arc<PackedProgram>> {
+        self.packed
+            .get_or_init(|| {
+                let program = packed::program_of(&self.reg);
+                #[cfg(feature = "timer")]
+                eprintln!(
+                    "[packed-program] calcs={} scratch={} cache_MiB/chunk={:.1}",
+                    self.reg.indexed_calculations().len(),
+                    program.scratch,
+                    ((self.reg.offsets().calculations() + program.scratch) * 160) as f64
+                        / (1024.0 * 1024.0)
+                );
+                Some(Arc::new(program))
+            })
+            .clone()
     }
 
     fn sparse_bs(&self, state: &ProverState<F>) -> Option<Vec<usize>> {
