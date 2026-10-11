@@ -1,26 +1,26 @@
 {
   "AdminGovernor": {
-    "address": "0x0db49320dea8bd4103b56fe97fc182287f752e79",
-    "block": 8374
+    "address": "0x8a78e2a84c5e23a8e69861c64d5b789ea1902858",
+    "block": 9557
   },
   "IdentityRegistry": {
-    "address": "0x51c6c47240c6f981d3e07914ba9018acb3e7d060",
-    "block": 8375
+    "address": "0x44c2612fee22cfbc49700c1487b58f0fa71def3e",
+    "block": 9558
   },
   "PolicyRegistry": {
-    "address": "0x9bc40d102fb018f6dcc3d15a880e5df75b63bb0a",
-    "block": 8376
+    "address": "0xdb6ae9db0c61330aa8c0fff121ade029ca88e6ff",
+    "block": 9559
   },
   "FlightAuthRegistry": {
-    "address": "0x8b1b1d02a7e135b64172836b1ba9215de52d358e",
-    "block": 8377
+    "address": "0x2ea79a261211568dd52600ac876e57414d7be5c8",
+    "block": 9560
   },
   "TelemetryAnchor": {
-    "address": "0x6edf83de7a3beed565294f997c888c91147f7b6e",
-    "block": 8378
+    "address": "0x5115732543b14629359c2883ccfdc14a9925028c",
+    "block": 9561
   },
   "FedRegistry": {
-    "address": "0xdb7ba33ee6796e202f09dd7b28cf9b35f2aeaf90",
-    "block": 8379
+    "address": "0x535317fdca59237fd7bd6d679c6a918bd3a5170a",
+    "block": 9562
   }
 }
