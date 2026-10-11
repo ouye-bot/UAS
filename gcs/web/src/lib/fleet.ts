@@ -124,3 +124,31 @@ export function buildIssueBody(items: FleetIssueItem[]): { items: FleetIssueItem
 export function fleetRevokeMsg(handleHex: string, reason: string, epoch: number): string {
   return revokeMsg([handleHex], reason, epoch);
 }
+
+/** 机队子凭证签发回执（后端 issue_fleet_sub_credentials 契约 7 字段）；
+ * holder_sk_hex 由前端侧注入=与响应按序配对的出示私钥（部署包材料）。
+ * 审查批根修②：message_hex/sig_hex/id_prime_hex 为受理面必需三件套——
+ * 缺任一件=该子凭证无持有者可用。 */
+export interface FleetSubCredOut {
+  device_no: string;
+  master_cred_hash_hex: string;
+  sub_cred_hash_hex: string;
+  message_hex: string;
+  sig_hex: string;
+  id_prime_hex: string;
+  expires_at: string;
+  holder_sk_hex: string;
+}
+
+/** 部署包构造（飞行材料包——客户端出证动线输入）：出示私钥+受理三件套齐全；
+ * 缺任一字段=fail-fast 拒绝构造（不产残缺包）。holder 公钥不冗余入包——
+ * 客户端受理前由私钥同源派生（与签发请求逐字节一致）。 */
+export function buildFleetDeployPackage(o: FleetSubCredOut): Record<string, unknown> {
+  for (const [k, v] of Object.entries(o)) {
+    if (v === undefined || v === null || v === "") {
+      throw new Error(`部署包缺字段 ${k}——该子凭证无持有者可用（须重新签发）`);
+    }
+  }
+  if (!/^[0-9a-f]{64}$/i.test(o.holder_sk_hex)) throw new Error("部署包出示私钥形态非法（64 hex）");
+  return { kind: "FZ-FLEET-SUBCRED", v: 1, ...o };
+}

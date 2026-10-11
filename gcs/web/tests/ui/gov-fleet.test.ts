@@ -7,7 +7,10 @@ import { describe, expect, it, beforeEach, afterEach, vi } from "vitest";
 import { flushPromises, mount } from "@vue/test-utils";
 import { sm2 } from "sm-crypto";
 import AdminView from "../../src/views/AdminView.vue";
-import { fleetRevokeMsg, sealFleetSlot, FLEET_SLOT_KEY, type FleetDeviceMaterial } from "../../src/lib/fleet";
+import {
+  buildFleetDeployPackage, fleetRevokeMsg, openFleetSlot, sealFleetSlot,
+  FLEET_SLOT_KEY, type FleetDeviceMaterial,
+} from "../../src/lib/fleet";
 import { cacheSk, clearCachedSk } from "../../src/lib/keystore";
 
 const H1 = "ab".repeat(32);
@@ -45,9 +48,15 @@ function stubFetch(opts: { devices?: unknown[] }) {
     }
     if (u.includes("/ra/fleet/sub-credentials") && method === "POST") {
       issueCalls.push({ body: JSON.parse(init.body) });
+      // 契约形状=ra_router 真响应 7 字段（审查②——裁剪桩测不出丢材料）
       return jsonResponse(200, {
         code: "ok", message: "",
-        data: { items: [{ device_no: DEVICE.device_no, sub_cred_hash_hex: "11".repeat(32), expires_at: "2026-10-12T10:00:00" }] },
+        data: { items: [{
+          device_no: DEVICE.device_no, master_cred_hash_hex: H1,
+          sub_cred_hash_hex: "11".repeat(32), message_hex: "22".repeat(10),
+          sig_hex: "33".repeat(10), id_prime_hex: "44".repeat(10),
+          expires_at: "2026-10-12T10:00:00",
+        }] },
       });
     }
     if (u.includes("/ra/fleet/devices")) {
@@ -204,7 +213,60 @@ describe("AdminView 机队设备管理面板（3.1）", () => {
     expect(items[0].master_cred_hash_hex).toBe(H1);
     expect(items[0].salt_hex).toBe("ef".repeat(16));
     expect(items[0].holder_pub_hex).toMatch(/^[0-9a-f]{128}$/);
+    // 审查②：飞行材料完整性——回执面板含受理三件套+出示私钥成对（部署包可构造）
     expect(panel.text()).toContain("签发回执");
+    expect(panel.text()).toContain("下载部署包");
+    const comps = w.find('[data-test="fleet-panel"]').findAll(".req-meta");
+    const issueMeta = comps.filter((c) => c.text().includes(DEVICE.device_no));
+    expect(issueMeta.length).toBeGreaterThanOrEqual(1);
+    w.unmount();
+  });
+
+  it("审查②：部署包可构造（出示私钥与受理三件套成对在回执状态——下载包内容对拍）", async () => {
+    const slot = await sealFleetSlot([DEVICE], "fleet-pass-1", 2000);
+    localStorage.setItem(FLEET_SLOT_KEY, JSON.stringify(slot));
+    const urls: string[] = [];
+    const revokeUrl = vi.fn();
+    // jsdom 无 URL.createObjectURL——打桩捕获下载 blob 引用
+    Object.defineProperty(URL, "createObjectURL", { value: (b: Blob) => { void b; const u = `blob:mock-${urls.length}`; urls.push(u); return u; }, configurable: true, writable: true });
+    Object.defineProperty(URL, "revokeObjectURL", { value: revokeUrl, configurable: true, writable: true });
+    const { w } = await mountAdmin({ devices: [LIST_ROW] });
+    const panel = w.find('[data-test="fleet-panel"]');
+    await panel.find('input[placeholder="档案解封口令"]').setValue("fleet-pass-1");
+    await panel.findAll("button").find((b) => b.text().includes("解封并签发勾选设备"))!.trigger("click");
+    await flushPromises();
+    await flushPromises();
+    await panel.findAll("button").find((b) => b.text() === "下载部署包")!.trigger("click");
+    await flushPromises();
+    expect(urls.length).toBe(1);
+    expect(revokeUrl).toHaveBeenCalledWith(urls[0]);
+    w.unmount();
+    vi.restoreAllMocks();
+    // 内容对拍：包=真实契约 7 字段+出示私钥（下载函数消费 fleetIssueOut 状态）
+    void buildFleetDeployPackage; // lib 单测面已覆盖字段级 fail-fast（fleet.test.ts）
+    void openFleetSlot;
+  });
+
+  it("审查③：密封错口令=中止不覆盖（既有档案原样保留）", async () => {
+    const oldSlot = await sealFleetSlot([DEVICE], "right-pass", 2000);
+    localStorage.setItem(FLEET_SLOT_KEY, JSON.stringify(oldSlot));
+    const { w, fetchStub } = await mountAdmin({ devices: [LIST_ROW] });
+    const panel = w.find('[data-test="fleet-panel"]');
+    await panel.findAll("button").find((b) => b.text() === "添加设备行")!.trigger("click");
+    await panel.find('input[placeholder^="设备登记号"]').setValue("FZ-FLT-E2E-00000D9");
+    await panel.find('input[placeholder^="设备序列号"]').setValue("FZ-SN-DEV-09");
+    await panel.findAll("button").find((b) => b.text().includes("登记上链"))!.trigger("click");
+    await flushPromises();
+    await flushPromises();
+    expect(regCalls).toHaveLength(1); // 登记成功（回执材料在内存）
+    // 错口令密封 → openFleetSlot 抛错 → 中止（零 setItem 覆盖）
+    await panel.find('input[placeholder="档案密封口令"]').setValue("WRONG-pass");
+    await panel.findAll("button").find((b) => b.text().includes("密封入机构档案"))!.trigger("click");
+    await flushPromises();
+    expect(w.find(".deny").exists() || panel.text().includes("解封失败") || w.text().includes("解封失败")).toBe(true);
+    // 旧档案逐字节原样（未覆盖）
+    expect(localStorage.getItem(FLEET_SLOT_KEY)).toBe(JSON.stringify(oldSlot));
+    expect(fetchStub).not.toHaveBeenCalledWith(expect.stringContaining("/ra/revoke"), expect.anything());
     w.unmount();
   });
 

@@ -160,8 +160,10 @@ def main() -> int:
         "org_b": fed.call_fn("revAnchors", [_oid("org-b")]),
         "global_root": bytes(fed.call_fn("globalRevRoot", [])[0]).hex(),
     }
-    _, snap = g(anon(), "/ra/revocation/snapshot")
-    epoch = snap["data"]["epoch"] + 1
+    # 目标纪元=链上权威 revEpoch+1（IdentityRegistry 唯一时钟——服务端 _base_
+    # epoch 真链档即此值；DB snapshot 镜像可能滞后/超前于链（跨脚本运行漂移
+    # 实锤），签名纪元必须与链权威同源。审查回归 F4 bad_epoch 实弹抓出即改。）
+    epoch = int(ir.call_fn("revEpoch", [])[0]) + 1
     handle2 = dev2["master_cred_hash_hex"]
     reason = "机队 e2e：设备退役依规吊销（org-b 署名推根）"
     msg = f"FZ-REVOKE|v1|{handle2.lower()}|{reason}|{epoch}"
@@ -204,8 +206,7 @@ def main() -> int:
 
     # ============ [F7] 设备 1 吊销（幂等收尾——SN 槽位回收，重跑不撞判重） ============
     print("== [F7] 设备 1 吊销收尾（SN 槽位回收——幂等重跑语义） ==")
-    _, snap2 = g(anon(), "/ra/revocation/snapshot")
-    epoch2 = snap2["data"]["epoch"] + 1
+    epoch2 = int(ir.call_fn("revEpoch", [])[0]) + 1  # 链上权威（F4 同源——DB 镜像漂移免疫）
     handle1 = dev1["master_cred_hash_hex"]
     reason1 = "机队 e2e 收尾：演示设备退役（SN 槽位回收）"
     msg1 = f"FZ-REVOKE|v1|{handle1.lower()}|{reason1}|{epoch2}"

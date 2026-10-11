@@ -421,6 +421,7 @@ async function checkSigs(r: ReqView): Promise<void> {
 // （一次性出示钥纪律——出示公钥层跨申请不可链接）。
 import { sm2 } from "sm-crypto";
 import {
+  buildFleetDeployPackage,
   buildIssueBody,
   buildRegisterBody,
   fleetRevokeMsg,
@@ -432,6 +433,7 @@ import {
   type FleetDeviceView,
   type FleetIssueItem,
   type FleetSlot,
+  type FleetSubCredOut,
 } from "../lib/fleet";
 
 const fleetDevices = ref<FleetDeviceView[]>([]);
@@ -479,12 +481,16 @@ async function doFleetSeal(): Promise<void> {
   deny.value = null; flash.value = "";
   if (!fleetRegs.value.length) { deny.value = { code: "no_material", message: "暂无可密封的登记材料（先登记设备）" }; return; }
   try {
-    const existing: FleetDeviceMaterial[] = localStorage.getItem(FLEET_SLOT_KEY)
-      ? await openFleetSlot(JSON.parse(localStorage.getItem(FLEET_SLOT_KEY)!) as FleetSlot, fleetSealPass.value).catch(() => []) : [];
+    // 审查批根修③（2026-10-11 独立审查员——错口令静默覆盖丢档案）：旧档案
+    // 解封失败（口令不符/被篡改）必须整体中止——绝不以空档案合并覆盖（salt=
+    // 承诺原像机密材料，后端不存明文，覆盖即永久不可再签发）。
+    const slotRaw = localStorage.getItem(FLEET_SLOT_KEY);
+    let existing: FleetDeviceMaterial[] = [];
+    if (slotRaw) existing = await openFleetSlot(JSON.parse(slotRaw) as FleetSlot, fleetSealPass.value);
     const merged = [...existing, ...fleetRegs.value];
     const slot = await sealFleetSlot(merged, fleetSealPass.value);
     localStorage.setItem(FLEET_SLOT_KEY, JSON.stringify(slot));
-    flash.value = `✓ 设备档案已密封入本机（${merged.length} 台）——明文材料不落存储`;
+    flash.value = `✓ 设备档案已密封入本机（合并既有 ${existing.length} 台+本批 ${fleetRegs.value.length} 台）——明文材料不落存储`;
     fleetRegs.value = [];
     fleetSealPass.value = "";
   } catch (e) {
@@ -492,7 +498,7 @@ async function doFleetSeal(): Promise<void> {
   }
 }
 const fleetUnsealPass = ref("");
-const fleetIssueOut = ref<{ device_no: string; sub_cred_hash_hex: string; expires_at: string }[]>([]);
+const fleetIssueOut = ref<FleetSubCredOut[]>([]);
 async function doFleetIssue(): Promise<void> {
   deny.value = null; flash.value = "";
   try {
@@ -503,26 +509,43 @@ async function doFleetIssue(): Promise<void> {
     const mats = await openFleetSlot(JSON.parse(slotRaw) as FleetSlot, fleetUnsealPass.value);
     if (!mats.length) throw new Error("设备档案为空——请先登记设备并密封档案");
     const items: FleetIssueItem[] = [];
+    const holderSks: string[] = []; // 出示私钥逐张保存（与响应按序配对——部署包材料）
     for (const m of mats) {
       // 每张子凭证全新出示钥（一次性出示钥纪律）；sm-crypto 公钥剥 04 前缀
       // （与 lib/auth.registerAccount 同款——后端契约=128hex x‖y）。
       const kp = sm2.generateKeyPairHex();
+      holderSks.push(kp.privateKey);
       items.push({
         master_cred_hash_hex: m.master_cred_hash_hex,
         salt_hex: m.salt_hex,
         holder_pub_hex: kp.publicKey.replace(/^04/, ""),
       });
     }
-    const out = await api<{ items: { device_no: string; sub_cred_hash_hex: string; expires_at: string }[] }>(
+    const out = await api<{ items: FleetSubCredOut[] }>(
       "/ra/fleet/sub-credentials", { method: "POST", body: JSON.stringify(buildIssueBody(items)) },
     );
-    fleetIssueOut.value = out.items ?? [];
-    flash.value = `✓ 已签发 ${out.items?.length ?? 0} 张机队子凭证（机构共享池计数——飞行材料请立即部署并妥善保存）`;
+    const returned = out.items ?? [];
+    if (returned.length !== items.length) throw new Error("签发回执数量与请求不一致（服务端契约异常）——材料未保存，请重新签发");
+    // 审查批根修②（2026-10-11 独立审查员——飞行材料与出示私钥双丢弃）：
+    // 受理面必需三件套 message_hex/sig_hex/id_prime_hex + 出示私钥逐一配对
+    // 入回执——部署包可下载（缺任一件=该子凭证无持有者可用）。
+    fleetIssueOut.value = returned.map((o, i) => ({ ...o, holder_sk_hex: holderSks[i] }));
+    flash.value = `✓ 已签发 ${returned.length} 张机队子凭证（机构共享池计数）——请逐张「下载部署包」并妥善保存（含出示私钥与签发材料，丢失不可补发）`;
     await refreshFleet();
   } catch (e) {
     const err = e as ApiError;
     deny.value = { code: err.code ?? "fleet_issue_failed", message: err.message ?? String(e) };
   }
+}
+function downloadFleetPackage(o: FleetSubCredOut): void {
+  const pkg = buildFleetDeployPackage(o);
+  const blob = new Blob([JSON.stringify(pkg, null, 2)], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `fleet-subcred-${o.device_no}.json`;
+  a.click();
+  URL.revokeObjectURL(url);
 }
 const fleetRevokeTarget = ref<FleetDeviceView | null>(null);
 const fleetRevokeReason = ref("");
@@ -1010,9 +1033,10 @@ async function doFleetRevoke(): Promise<void> {
         <button class="btn" :disabled="busy" @click="doFleetIssue">解封并签发勾选设备</button>
       </div>
       <div v-if="fleetIssueOut.length" class="fp-box fz-enter" style="margin-top:8px">
-        <span class="fp-label">签发回执</span>
-        <div v-for="o in fleetIssueOut" :key="o.sub_cred_hash_hex" class="req-meta mono">
-          {{ o.device_no }} · {{ o.sub_cred_hash_hex.slice(0, 16) }}… · 至 {{ o.expires_at.slice(5, 16).replace("T", " ") }}
+        <span class="fp-label">签发回执（飞行材料包——出示私钥+受理三件套，丢失不可补发）</span>
+        <div v-for="o in fleetIssueOut" :key="o.sub_cred_hash_hex" class="req-meta mono" style="display:flex;gap:10px;align-items:center">
+          <span>{{ o.device_no }} · {{ o.sub_cred_hash_hex.slice(0, 16) }}… · 至 {{ o.expires_at.slice(5, 16).replace("T", " ") }}</span>
+          <button class="btn sm" @click="downloadFleetPackage(o)">下载部署包</button>
         </div>
       </div>
     </div>

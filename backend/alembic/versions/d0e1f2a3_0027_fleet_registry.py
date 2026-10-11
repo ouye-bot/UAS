@@ -35,6 +35,21 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    # 审查批根修⑤（2026-10-11 独立审查员——机队行 downgrade IntegrityError）：
+    # batch 重建表把 user_id=NULL 的 kind=2 行塞回 NOT NULL 列必炸且不可恢复
+    # ——fail-closed 人话拒绝（迁移不可逆如实拒绝，不静默删数据）。
+    n = (
+        op.get_bind()
+        .execute(sa.text("SELECT COUNT(*) FROM credentials WHERE cred_kind = 2"))
+        .scalar()
+    )
+    if n:
+        raise RuntimeError(
+            f"downgrade 拒绝：credentials 存在 {n} 行机队凭证（cred_kind=2）——"
+            "回退将把 user_id=NULL 行塞回 NOT NULL 列（必失败）。请先在业务面"
+            "吊销并归档全部机队设备凭证（0027 前无机队语义，降级=放弃机队能力）"
+            "后再执行 downgrade。"
+        )
     with op.batch_alter_table("credentials") as batch:
         batch.alter_column("user_id", existing_type=sa.Integer(), nullable=False)
         batch.drop_column("device_no")

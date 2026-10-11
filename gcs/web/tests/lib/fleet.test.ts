@@ -3,6 +3,7 @@
 import { describe, expect, it } from "vitest";
 import { sm2 } from "sm-crypto";
 import {
+  buildFleetDeployPackage,
   buildIssueBody,
   buildRegisterBody,
   fleetRevokeMsg,
@@ -11,6 +12,7 @@ import {
   sealFleetSlot,
   type FleetDeviceMaterial,
   type FleetDeviceRow,
+  type FleetSubCredOut,
 } from "../../src/lib/fleet";
 import { revokeMsg } from "../../src/lib/gov";
 
@@ -79,14 +81,37 @@ describe("fleet 设备档案密封（薄委托 keystore v4——SM4-GCM roundtri
   ];
 
   it("密封→解封 roundtrip 逐字段同", async () => {
-    const slot = await sealFleetSlot(mats, "fleet-pass-1");
+    const slot = await sealFleetSlot(mats, "fleet-pass-1", 2000); // 低迭代注入档（600k 生产档超 vitest 5s 窗——审查④）
     expect(slot.kdf).toBe("pbkdf2-sm3");
     const out = await openFleetSlot(slot, "fleet-pass-1");
     expect(out).toEqual(mats);
   });
 
   it("负例：错口令解封=人话拒绝（GCM 认证失败面）", async () => {
-    const slot = await sealFleetSlot(mats, "fleet-pass-1");
+    const slot = await sealFleetSlot(mats, "fleet-pass-1", 2000);
     await expect(openFleetSlot(slot, "wrong-pass")).rejects.toThrow(/解封失败/);
+  });
+});
+
+describe("fleet 部署包构造（审查②——受理三件套+出示私钥 fail-fast）", () => {
+  const OUT: FleetSubCredOut = {
+    device_no: NO_OK, master_cred_hash_hex: "ab".repeat(32), sub_cred_hash_hex: "11".repeat(32),
+    message_hex: "22".repeat(10), sig_hex: "33".repeat(10), id_prime_hex: "44".repeat(10),
+    expires_at: "2026-10-12T10:00:00", holder_sk_hex: "55".repeat(32),
+  };
+
+  it("全字段在列=包构造成功（kind 标记+材料原样）", () => {
+    const pkg = buildFleetDeployPackage(OUT) as Record<string, string>;
+    expect(pkg.kind).toBe("FZ-FLEET-SUBCRED");
+    expect(pkg.message_hex).toBe(OUT.message_hex);
+    expect(pkg.holder_sk_hex).toBe(OUT.holder_sk_hex);
+  });
+
+  it("负例：缺受理三件套任一/出示私钥=构造拒绝（不产残缺包）", () => {
+    for (const field of ["message_hex", "sig_hex", "id_prime_hex", "holder_sk_hex"] as const) {
+      const broken = { ...OUT, [field]: "" };
+      expect(() => buildFleetDeployPackage(broken)).toThrow(new RegExp(field));
+    }
+    expect(() => buildFleetDeployPackage({ ...OUT, holder_sk_hex: "zz" })).toThrow(/出示私钥/);
   });
 });

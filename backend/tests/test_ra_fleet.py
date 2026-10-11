@@ -374,3 +374,118 @@ def test_fleet_devices_list_scoped_to_org(session):
     assert out["items"][0]["device_no"] == "FZ-DEV-000001A0001"
     assert out["items"][0]["sn"] == "UAS-SN-FLEET-01"
     assert out["items"][0]["cred_kind"] == 2
+
+
+# ---------------- 审查批根修（2026-10-11 独立审查员 1/6/8 条——先红后绿） ----------------
+
+
+def test_review1_personal_endpoint_fleet_bypass_denied(session):
+    """审查①（高）：个人端点对偶拒绝——匿名路径持 salt 对 kind=2 机队凭证
+    用 device_no 当 id_number 槽重算 C 逐字节命中（BYPASS-1）→ 409
+    not_personal_credential。同时封共享池配额旁路（个人端点连签绕池）。"""
+    s = _svc(session)
+    dev = _reg_fleet(s, org="org-a")
+    sk, pk = generate_keypair()
+    with pytest.raises(RaError) as ei:
+        s.issue_sub_credential(
+            master_cred_hash_hex=dev["master_cred_hash_hex"],
+            salt_hex=dev["salt_hex"],
+            id_number=dev["device_no"],  # BYPASS-1：18 字符登记号充 id_number 槽
+            cert_level=3,
+            sn="UAS-SN-FLEET-01",
+            holder_pub_hex=pk,
+            operator_org_id=None,  # 匿名路径（域门无操作者可比）
+        )
+    assert ei.value.code == "not_personal_credential"
+    assert ei.value.status == 409
+
+
+def test_review1_personal_endpoint_pool_quota_bypass_denied(session, monkeypatch):
+    """审查①（高）旁路第二形态：同域登录席经个人端点对机队凭证连签 → 池上限
+    不可被个人端点击穿（对偶拒绝先于配额——个人配额域不含机队行）。"""
+    monkeypatch.setenv("FZ_FLEET_POOL_QUOTA", "2")
+    s = _svc(session)
+    dev = _reg_fleet(s, org="org-a")
+    sk, pk = generate_keypair()
+    with pytest.raises(RaError) as ei:
+        s.issue_sub_credential(
+            master_cred_hash_hex=dev["master_cred_hash_hex"],
+            salt_hex=dev["salt_hex"],
+            id_number=dev["device_no"],
+            cert_level=3,
+            sn="UAS-SN-FLEET-01",
+            holder_pub_hex=pk,
+            operator_org_id="org-a",  # 同域登录席（域门过）
+        )
+    assert ei.value.code == "not_personal_credential"
+
+
+def test_review6_batch_register_chain_failure_compensates(session):
+    """审查⑥（低）：批量登记链面非原子——第 2 台链写失败时，第 1 台已上链
+    承诺必须吊销补偿（setStatus(2)——孤儿承诺不可再签发/消费），异常如实
+    上抛（DB 由 get_session 回滚）。"""
+
+    class FailingAnchor:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, list]] = []
+            self._n = 0
+
+        def __call__(self, fn: str, args: list) -> None:
+            self.calls.append((fn, args))
+            if fn == "register_commitment":
+                self._n += 1
+                if self._n == 2:
+                    raise RuntimeError("simulated chain failure on 2nd device")
+
+    ra_priv, ra_pub = generate_keypair()
+    anchor = FailingAnchor()
+    s2 = RaService(
+        session, RaDeps(ra_priv_hex=ra_priv, ra_pub_hex=ra_pub, anchor=ChainAnchor(call=anchor))
+    )
+    with pytest.raises(RuntimeError, match="simulated chain failure"):
+        s2.register_fleet_devices(
+            operator_org_id="org-a",
+            devices=[
+                _device(no="FZ-DEV-000001B0001", sn="UAS-SN-RV6-1"),
+                _device(no="FZ-DEV-000001B0002", sn="UAS-SN-RV6-2"),
+            ],
+        )
+    # 补偿面：第 1 台的句柄已收到 setStatus(2)（孤儿承诺吊销——不可再签发）
+    set_status_calls = [c for c in anchor.calls if c[0] == "set_status"]
+    assert len(set_status_calls) == 1
+    h1 = set_status_calls[0][1][0]
+    assert isinstance(h1, str) and h1.startswith("0x")
+    reg_handles = [c[1][0] for c in anchor.calls if c[0] == "register_commitment"]
+    assert h1 == reg_handles[0]  # 补偿的正是已上链的第 1 台
+    assert set_status_calls[0][1][1] == 2
+    # DB 回滚由 get_session 承担（HTTP 面）；直调形态以显式 rollback 等价模拟
+    # ——回滚后零机队行残留（未提交事务内的行不落库）。
+    session.rollback()
+    assert len(s2._s.scalars(select(Credential).where(Credential.cred_kind == 2)).all()) == 0
+
+
+def test_review8_fleet_issue_unresolved_org_structural(session):
+    """审查⑧（观察→钉面）：机队行 owner_org_id 缺失=结构不变式破坏 → 409
+    fleet_org_unresolved（与受理门同码——域门判据自身受损时错误码不再靠
+    `or DEFAULT_ORG` 兜成跨域 403 语义）。"""
+    s = _svc(session)
+    dev = _reg_fleet(s, org="org-a")
+    cred = s._s.scalar(
+        select(Credential).where(Credential.master_cred_hash_hex == dev["master_cred_hash_hex"])
+    )
+    cred.owner_org_id = None  # 结构破坏注入（唯一写路径恒写列——仅直改库可达）
+    session.commit()
+    sk, pk = generate_keypair()
+    with pytest.raises(RaError) as ei:
+        s.issue_fleet_sub_credentials(
+            operator_org_id="org-a",
+            items=[
+                {
+                    "master_cred_hash_hex": dev["master_cred_hash_hex"],
+                    "salt_hex": dev["salt_hex"],
+                    "holder_pub_hex": pk,
+                }
+            ],
+        )
+    assert ei.value.code == "fleet_org_unresolved"
+    assert ei.value.status == 409

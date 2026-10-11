@@ -338,6 +338,20 @@ class RaService:
         # 验证之前（跨域操作者不获原像试探回显）；匿名原像路径（None）=
         # 飞手自持原像知识认证的用户侧流程语义，不设门（B2-d4 既有设计）。
         self._org_guard(self._creds_org([cred]), operator_org_id, "子凭证签发")
+        # 审查批根修①（2026-10-11 独立审查员——签发面 cred_kind 对偶拒绝）：
+        # 机队凭证（credKind=2）走个人端点=签发面 kind 分派的另一半——匿名路径
+        # 持 salt 者可拿 device_no 充 id_number 槽重算 C 逐字节命中（BYPASS-1，
+        # 登记号恰 18 字符），且个人配额域不含机队行 ⟹ 机构共享池可被个人
+        # 端点击穿。域门之后、原像验证之前（与机队端点「域门先于 kind 判」
+        # 同次序——跨域 403 优先，同域/匿名 409 not_personal_credential）。
+        if int(getattr(cred, "cred_kind", 1) or 1) == 2:
+            raise RaError(
+                "not_personal_credential",
+                "该凭证为机构机队凭证（credKind=2）——个人签发端点仅受理个人飞手凭证"
+                "（credKind=1）；机队子凭证请经机构管理员席 /ra/fleet/sub-credentials 签发"
+                "（共享池配额域）",
+                409,
+            )
         # 原像知识认证：重算 C 须逐字节命中库内承诺
         try:
             c = commitment_c(
@@ -434,6 +448,32 @@ class RaService:
         if not devices or len(devices) > 50:
             raise RaError("bad_input", "批量登记须 1..50 台设备")
         out = []
+        # 审查批根修⑥（2026-10-11 独立审查员——批量链写非原子的孤儿承诺面）：
+        # 第 N 台链写失败时 DB 由 get_session 整体回滚，但前 N-1 台承诺已上链
+        # 且无删除面（合约无 unregister）——重试生成新 salt/新 handle ⟹ 链上
+        # 累积孤儿承诺（无 DB 行/salt 未交付/永不消费）。补偿面=失败时对全部
+        # 已上链台 setStatus(2) 吊销（撤销即时生效语义——孤儿承诺变已吊销，
+        # 不可再签发/消费），异常如实上抛。
+        committed_handles: list[str] = []
+        try:
+            out = self._register_fleet_devices_inner(operator_org_id, devices, committed_handles)
+        except Exception:
+            for h in committed_handles:
+                try:
+                    self._d.anchor.call("set_status", ["0x" + h, 2])
+                except Exception as comp_err:  # noqa: BLE001 —— 补偿失败如实留痕，不掩盖主异常
+                    print(
+                        f"[fleet] ⚠ 孤儿承诺补偿失败 handle={h[:16]}… ({comp_err})"
+                        "——链面吊销未完成，请人工核查",
+                        flush=True,
+                    )
+            raise
+        return {"devices": out}
+
+    def _register_fleet_devices_inner(
+        self, operator_org_id: str, devices: list[dict], committed_handles: list[str]
+    ) -> list[dict]:
+        out = []
         for d in devices:
             no = (d.get("device_no") or "").strip()
             sn = (d.get("sn") or "").strip()
@@ -504,8 +544,10 @@ class RaService:
             )
             self._s.add(cred)
             self._s.flush()
-            # 链上登记：credKind=2（预留面激活——合约字节零触碰）
+            # 链上登记：credKind=2（预留面激活——合约字节零触碰）；句柄入已上链
+            # 集（链写失败时补偿吊销面——审查批根修⑥）
             self._d.anchor.call("register_commitment", ["0x" + handle.hex(), 2])
+            committed_handles.append(handle.hex())
             out.append(
                 {
                     "device_no": no,
@@ -520,7 +562,7 @@ class RaService:
                     "salt_hex": salt.hex(),  # 机构自持原像（签发面输入——一次性回传）
                 }
             )
-        return {"devices": out}
+        return out
 
     def issue_fleet_sub_credentials(
         self, *, operator_org_id: str | None, items: list[dict]
@@ -546,8 +588,18 @@ class RaService:
             )
             if cred is None:
                 raise RaError("not_found", "设备凭证不存在")
+            # 审查批根修⑧（2026-10-11 独立审查员——判空语义钉面）：机队行
+            # owner_org_id 缺失=结构不变式破坏（唯一写路径 register_fleet_
+            # devices 恒写列——仅直改库可达），409 fleet_org_unresolved 与
+            # 受理门同码——不再 `or DEFAULT_ORG` 兜成跨域 403 语义。
+            if not cred.owner_org_id:
+                raise RaError(
+                    "fleet_org_unresolved",
+                    "机队凭证归属域缺失（owner_org_id 结构不变式破坏）——拒绝签发",
+                    409,
+                )
             # 域门先于 kind 判与原像验证（跨域操作者不获原像试探回显）
-            self._org_guard(cred.owner_org_id or DEFAULT_ORG, operator_org_id, "机队设备")
+            self._org_guard(cred.owner_org_id, operator_org_id, "机队设备")
             if cred.cred_kind != 2:
                 raise RaError(
                     "not_fleet_credential",

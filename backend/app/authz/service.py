@@ -266,7 +266,10 @@ def admission_gate(
     # ②归属域结构校验（owner_org_id 列=机队域权威，机队行恒有——缺失=DB
     # 结构异常 409 fleet_org_unresolved）。设备序号绑定=实例 25 既有路径
     # （server_sn_hash_hex 同构——机队设备 SN 与桥 device_serial 第 6 查
-    # 同构闭环）。**个人凭证（cred_kind=1）零动作零链读**——单链语义零变化。
+    # 同构闭环）。**个人凭证（cred_kind=1）零新增链读零新增校验逻辑**（下方
+    # 凭证行解析=分派自身的必要面，本地 DB 单 SELECT——审查⑦口径精确化：
+    # 「零动作」指不新增任何链面交互与校验分支，非零 DB 读）——单链语义
+    # 零变化（test_gate_personal_zero_chain_kind_reads kind_calls==0 钉面）。
     from app.ra.models import Credential as _CredM
     from app.ra.models import SubCredential as _SubM
 
