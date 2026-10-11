@@ -24,6 +24,18 @@ def create_app() -> FastAPI:
 
     assert_production_services()
 
+    # 3.2 k-of-n 参数化：门限配置启动断言（任务书①——fail-fast 比照 production
+    # 拒启工艺）：参数自洽（k≥2/n−k≥1/域形态）全档断言；production 档额外
+    # 域集⊆治理席位集对拍（链不可达=拒启）。缺省 env=2-of-3 零变化。
+    from app.ra.threshold_shares import assert_threshold_config
+
+    _t_cfg = assert_threshold_config()
+    print(
+        f"[FZ-STARTUP] threshold k-of-n: k={_t_cfg['k']} n={len(_t_cfg['domains'])} "
+        f"domains={','.join(_t_cfg['domains'])}",
+        flush=True,
+    )
+
     app = FastAPI(title="feizheng-backend", version="0.1.0")
     # P1-B1 可观测性：JSON 日志+request_id 贯穿+零依赖指标
     import logging

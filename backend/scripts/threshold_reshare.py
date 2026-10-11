@@ -94,6 +94,7 @@ def main() -> int:
             "epoch": target,
             "pub_hex": pub_before,
             "roles": meta["roles"],
+            "domains": meta.get("domains", meta["roles"]),
             "threshold": meta["threshold"],
             "owner_set_fp": owner_fp,
         },
@@ -106,17 +107,18 @@ def main() -> int:
     # 链读异常=自然中止=fail-closed——预检不过不发起提案）
     prev_hash, _prev_ts = pr.call_fn("getPolicy", [version])
     if bytes(prev_hash).strip(b"\x00"):
-        raise SystemExit(
-            f"[仪式] 链上已有 {version} 公示行——本纪元仪式不可重放（中止，零写面）"
-        )
+        raise SystemExit(f"[仪式] 链上已有 {version} 公示行——本纪元仪式不可重放（中止，零写面）")
     expect(True, f"幂等预检：{version} 未发布（提案可发起）")
 
     # ---- ③ governor 三步仪式：propose→confirm×2→eta 到期 execute ----
     print(f"  发起治理提案：description=『{description}』 target=PolicyRegistry.publishPolicy")
     r3 = run_proposal(gov, admin, ra, pr, "publishPolicy", [version, params_hash], description)
     published = [ev for ev in pr.decode_logs(r3) if ev["event"] == "PolicyPublished"]
-    expect(len(published) == 1, "execute 回执含 PolicyPublished 事件（目标合约公示行落地）",
-           f"events={[ev['event'] for ev in pr.decode_logs(r3)]}")
+    expect(
+        len(published) == 1,
+        "execute 回执含 PolicyPublished 事件（目标合约公示行落地）",
+        f"events={[ev['event'] for ev in pr.decode_logs(r3)]}",
+    )
     # ---- ④ 链上对拍：公示行 paramsHash=本地元数据 SM3 ----
     onchain_hash, onchain_ts = pr.call_fn("getPolicy", [version])
     expect(bytes(onchain_hash) == params_hash, "getPolicy 对拍：paramsHash=SM3(元数据) 逐字一致")
@@ -138,7 +140,7 @@ def main() -> int:
         int(meta_after["epoch"]) == target and meta_after["pub_hex"] == pub_before,
         "root.json 纪元/公钥面落盘对拍",
     )
-    for role in ("admin", "ra", "auditor"):
+    for role in meta.get("domains", meta.get("roles", ("admin", "ra", "auditor"))):
         audit_text = ts._audit_path(role).read_text(encoding="utf-8")
         rows = [json.loads(x) for x in audit_text.splitlines()]
         expect(
@@ -146,7 +148,7 @@ def main() -> int:
             f"域审计行在案：{role}（reshare→epoch {target}）",
         )
 
-    print(f"\n== 份额刷新仪式全绿：{_checks} 断言 [OK]（{time.time()-t0:.1f}s）==")
+    print(f"\n== 份额刷新仪式全绿：{_checks} 断言 [OK]（{time.time() - t0:.1f}s）==")
     print(
         f"    纪元 {old_epoch}→{target}｜D_pub 不变｜旧份额值+旧密封钥已作废"
         f"｜治理提案=『{description}』已 execute 公示"

@@ -161,13 +161,21 @@ def decrypt_share(share_sk_hex: str, c1_hex: str) -> str:
     return point_mul(d_i, c1_hex)
 
 
-def combine_decrypt_shares(shares: list[tuple[int, str]], c1_hex: str) -> str:
+def combine_decrypt_shares(shares: list[tuple[int, str]], c1_hex: str, k: int = 2) -> str:
     """合成 [d]C₁：Σλᵢ[dᵢ]C₁（拉格朗日系数 mod n；点加串联）。
 
-    shares=[(i, [dᵢ]C₁ hex)]——≥k 个不同下标的份额点。**d 不在此重组**
-    （全程点域运算——重建 d 需要离散对数，计算不可行即安全边界）。"""
-    if len(shares) < 2:
-        raise SM2Error("门限解密须 ≥2 份额（2-of-3 语义——单份额 C3 必败）")
+    shares=[(i, [dᵢ]C₁ hex)]——≥k 个不同下标的份额点；k=门限参数（3.2 k-of-n
+    参数化：缺省 2=现行 2-of-3 调用面零变化）。**k>2 时少于 k 份必须拒**（3.2
+    任务书③：旧硬编码 ≥2 在 k>2 形态下放水——2 份额恰可解 2-of-3 子式 ⟹ 门限
+    语义降级；k<k 份额数拒=先红负例钉面）。**d 不在此重组**（全程点域运算——
+    重建 d 需要离散对数，计算不可行即安全边界）。"""
+    if not isinstance(k, int) or isinstance(k, bool) or k < 2:
+        raise SM2Error(f"门限参数非法：k 须为 ≥2 整数（得 {k!r}）")
+    if len(shares) < k:
+        raise SM2Error(
+            f"门限解密须 ≥{k} 份额（{k}-of-n 语义——{len(shares)} 份额不足，"
+            "少份合成=门限语义降级拒绝）"
+        )
     idx = [i for i, _ in shares]
     if len(set(idx)) != len(idx):
         raise SM2Error("份额下标重复（同域两份不构成独立份额）")
@@ -190,12 +198,14 @@ def _ecies_split(ct: bytes) -> tuple[str, bytes, bytes]:
     return c1_hex, ct[64:96], ct[96:]
 
 
-def threshold_decrypt(ct: bytes, shares: list[tuple[int, str]]) -> bytes:
+def threshold_decrypt(ct: bytes, shares: list[tuple[int, str]], k: int = 2) -> bytes:
     """门限解密（GB/T 完整校验路径）：合成 [d]C₁ → KDF → 异或 → C3 对拍。
 
-    任何一步失败（份额错/域混/密文篡改）⟹ SM2Error——不返回垃圾明文。"""
+    k=门限参数（3.2 k-of-n 参数化：缺省 2=现行调用面零变化；k>2 时少于 k 份
+    在合成面即拒——放水负例钉面）。任何一步失败（份额错/域混/密文篡改）⟹
+    SM2Error——不返回垃圾明文。"""
     c1_hex, c3, c2 = _ecies_split(ct)
-    xy_hex = combine_decrypt_shares(shares, c1_hex)
+    xy_hex = combine_decrypt_shares(shares, c1_hex, k=k)
     x2, y2 = bytes.fromhex(xy_hex[:64]), bytes.fromhex(xy_hex[64:])
     t = _kdf(x2 + y2, len(c2))
     if not any(t):

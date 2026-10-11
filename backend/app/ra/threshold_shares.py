@@ -27,12 +27,118 @@ from app.crypto.threshold import decrypt_share, proactive_reshare, shamir_split
 # 目录会让 append-only 审计混入测试行，实弹教训=审计可信度红线）。
 # **函数形态**（非模块常量）：env 在 import 后才被测试改写，常量绑定会令
 # 隔离静默失效（实弹踩过）。
-_ROLES = ("admin", "ra", "auditor")
-_THRESHOLD_K = 2
+# 3.2 k-of-n 参数化：_ROLES/_THRESHOLD_K 常量退役为缺省值——配置面=
+# threshold_config()（env FZ_THRESHOLD_K / FZ_THRESHOLD_DOMAINS，函数形态
+# 同上纪律：env 改写即时生效）。缺省 env=2 + (admin,ra,auditor) 逐字同现行
+# ——默认 env 下行为零变化（3.2 红线）。
+_DEFAULT_DOMAINS = ("admin", "ra", "auditor")
+_DEFAULT_K = 2
+_DOMAIN_ALPHABET = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-")
 # RLock（可重入）：ceremonial_reshare 全程持锁、函数体内 _audit 再入同锁——
 # 用 Lock 曾自死锁（pytest 全量挂起实锤，⑤站教训=仪式面持锁范围必须与
 # 审计面再入兼容）；非重入路径（request_decrypt_share/_audit）行为不变。
 _lock = threading.RLock()
+_config_cache: tuple[int, tuple[str, ...]] | None = None
+
+
+def _reset_config_cache() -> None:
+    """测试隔离口：env 改写后强制重读配置（产品路径不调——配置随进程 env）。"""
+    global _config_cache
+    _config_cache = None
+
+
+def threshold_config() -> tuple[int, tuple[str, ...]]:
+    """门限参数配置面（3.2 k-of-n 参数化——任务书①）：k 与份额域集。
+
+    env：FZ_THRESHOLD_K（缺省 2）、FZ_THRESHOLD_DOMAINS（逗号分隔域名，
+    缺省 admin,ra,auditor）。fail-fast 断言（ShareDomainError.bad_threshold_
+    config）：k≥2（k=1=单钥无门限语义）、n−k≥1（k=n=全集门限零容错——任一
+    域损毁即不可解，拒）、域名形态（1..32 字符安全字母表 _DOMAIN_ALPHABET、
+    无重复、非空集）。函数形态+进程内缓存（_reset_config_cache 测试隔离口
+    ——env 改写即时生效，缓存仅省重复解析）。
+    """
+    global _config_cache
+    if _config_cache is not None:
+        return _config_cache
+    import os
+
+    raw_k = os.environ.get("FZ_THRESHOLD_K", "").strip()
+    raw_domains = os.environ.get("FZ_THRESHOLD_DOMAINS", "").strip()
+    k = _DEFAULT_K if not raw_k else _parse_int(raw_k)
+    domains = (
+        _DEFAULT_DOMAINS
+        if not raw_domains
+        else tuple(d.strip() for d in raw_domains.split(",") if d.strip())
+    )
+    _assert_config(k, domains)
+    _config_cache = (k, domains)
+    return _config_cache
+
+
+def _parse_int(raw: str) -> int:
+    try:
+        return int(raw)
+    except ValueError as exc:
+        raise ShareDomainError(
+            "bad_threshold_config",
+            f"FZ_THRESHOLD_K 非整数: {raw!r}——启动断言 fail-closed（拒启）",
+            500,
+        ) from exc
+
+
+def _assert_config(k: int, domains: tuple[str, ...]) -> None:
+    def _bad(msg: str) -> ShareDomainError:
+        return ShareDomainError("bad_threshold_config", f"门限参数配置非法——拒启: {msg}", 500)
+
+    if k < 2:
+        raise _bad(f"k={k} < 2（k=1 即单钥——门限语义不存在）")
+    if len(domains) < 1:
+        raise _bad("份额域集为空（至少 1 个域）")
+    if k >= len(domains):
+        raise _bad(
+            f"k={k} ≥ 域数 n={len(domains)}（n−k≥1 要求 k<n——k=n 即全集门限，"
+            "任一域损毁即不可解，零容错形态拒绝）"
+        )
+    seen: set[str] = set()
+    for d in domains:
+        if not d or len(d.encode()) > 32 or not set(d) <= _DOMAIN_ALPHABET:
+            raise _bad(
+                f"域名 {d!r} 形态非法（1..32 字符，限字母/数字/_/-——域名入密封钥"
+                "派生域分隔符与审计行，形态须受控）"
+            )
+        if d in seen:
+            raise _bad(f"域名重复: {d!r}（同域两份不构成独立份额）")
+        seen.add(d)
+
+
+def assert_threshold_config() -> dict:
+    """启动断言（任务书①——比照 production 拒启工艺挂 create_app）：配置
+    自洽 fail-fast。production 档（is_production）额外域集⊆治理席位集对拍
+    （份额域=治理席位同构语义 1.3 件①——链不可达=fail-closed 拒启）；demo
+    档只做参数自洽（fake 档无链面）。返回配置摘要（KPI/日志消费）。"""
+    k, domains = threshold_config()
+    import os
+
+    if os.environ.get("FZ_PRODUCTION", "").strip().lower() in ("1", "true", "yes"):
+        # production 档：席位集对拍（链读 owner 数 ≥ n）
+        try:
+            from app.ra.threshold_sync import chain_owner_set
+
+            chain = chain_owner_set()
+        except Exception as e:  # noqa: BLE001 —— production 档链不可达=拒启
+            raise ShareDomainError(
+                "bad_threshold_config",
+                f"production 档份额域席位对拍链读失败（fail-closed 拒启）: {e}",
+                500,
+            ) from e
+        if len(chain["owners"]) < len(domains):
+            raise ShareDomainError(
+                "bad_threshold_config",
+                f"份额域数 n={len(domains)} > 治理席位数 {len(chain['owners'])}"
+                "（域集⊆治理席位集语义——扩席位先行）",
+                500,
+            )
+    return {"k": k, "domains": list(domains)}
 
 
 class ShareDomainError(Exception):
@@ -58,36 +164,55 @@ def _audit_path(role: str) -> Path:
 
 
 def is_initialized() -> bool:
+    _, domains = threshold_config()
     return (_root_dir() / "root.json").exists() and all(
-        _domain_share_sealed_path(r).exists() for r in _ROLES
+        _domain_share_sealed_path(r).exists() for r in domains
     )
 
 
 def initialize_if_absent() -> dict:
-    """惰性初始化：生成根钥 d → Shamir 2-of-3 分割 → 三域密封 → **d 焚毁**。
+    """惰性初始化：生成根钥 d → Shamir k-of-n 分割 → 全域密封 → **d 焚毁**
+    （3.2 k-of-n：k/域集=threshold_config()——缺省 env 2-of-3 零变化）。
 
     幂等：已初始化则只回读公示面（D_pub/纪元）。首次 v5 信封写入前由服务端
-    调用；demo_reset 清 DB 不清本目录（D 跨重置连续——存量信封依赖）。"""
+    调用；demo_reset 清 DB 不清本目录（D 跨重置连续——存量信封依赖）。
+    跨参数域 fail-closed（3.2 任务书①红线）：已初始化目录与现配置（k/域集）
+    不符=拒绝（静默重初始化=换根钥=存量信封全死；换代=运维显式归档目录）。"""
     with _lock:
-        if is_initialized():
-            meta = json.loads((_root_dir() / "root.json").read_text(encoding="utf-8"))
+        k, domains = threshold_config()
+        root_path = _root_dir() / "root.json"
+        if root_path.exists():
+            meta = json.loads(root_path.read_text(encoding="utf-8"))
+            old_domains = tuple(meta.get("domains") or meta.get("roles") or ())
+            old_k = int(meta.get("threshold") or 0)
+            if old_domains != domains or old_k != k:
+                raise ShareDomainError(
+                    "config_mismatch",
+                    f"门限根已按 k={old_k}/域集 {list(old_domains)} 初始化，与现配置 "
+                    f"k={k}/域集 {list(domains)} 不符——拒绝初始化（静默换根钥=存量"
+                    "信封全部不可解；跨参数域换代请先归档 threshold_root 目录）",
+                    409,
+                )
             return {"pub_hex": meta["pub_hex"], "epoch": meta["epoch"], "created": False}
         _root_dir().mkdir(parents=True, exist_ok=True)
         sk, _pk = generate_keypair()
         d = int(sk, 16)
-        shares = shamir_split(d, len(_ROLES), _THRESHOLD_K)
+        shares = shamir_split(d, len(domains), k)
         epoch = 1
-        for (_i, d_i), role in zip(shares, _ROLES, strict=True):
+        for (_i, d_i), role in zip(shares, domains, strict=True):
             sealed = _seal_share(role, epoch, f"{d_i:064x}".encode())
             _domain_share_sealed_path(role).write_bytes(sealed)
         pub_hex = pubkey_from_priv(sk)
-        (_root_dir() / "root.json").write_text(
+        root_path.write_text(
             json.dumps(
                 {
                     "pub_hex": pub_hex,
                     "epoch": epoch,
-                    "threshold": _THRESHOLD_K,
-                    "roles": list(_ROLES),
+                    "threshold": k,
+                    # 3.2：domains=配置权威键；roles=兼容消费面（threshold_sync/
+                    # threshold_reshare announcement/meta 既有键）——同值双写。
+                    "domains": list(domains),
+                    "roles": list(domains),
                     # 份额域绑定指纹（1.3 件①）：owner-set 指纹 SM3(sorted(
                     # owners))——初始化时 None（未绑定），首次同步对拍惰性绑定
                     # /re-share 仪式携 fp 写入（漂移检测与解锁第④关的判定源）。
@@ -158,8 +283,9 @@ def request_decrypt_share(
     hooks 缺省=真实现（app.ra.threshold_hooks）；单测可注入本地真实现
     （判定逻辑同码路径——非网络替身，诚实标注）。
     """
-    if role not in _ROLES:
-        raise ShareDomainError("bad_role", f"未知份额域 {role}")
+    _, domains = threshold_config()
+    if role not in domains:
+        raise ShareDomainError("bad_role", f"未知份额域 {role}（现配置域集: {','.join(domains)}）")
     hooks = verify_hooks or _default_hooks()
     checks = {
         "request_registered": hooks["request_registered"](
@@ -260,25 +386,35 @@ def ceremonial_reshare(gov_confirmed_epoch: int, owner_set_fp: str | None = None
                 "epoch_mismatch",
                 f"治理公示纪元 {gov_confirmed_epoch} ≠ 下一纪元 {new_epoch}",
             )
-        # ① 开封现存份额（逐域尝试，取先开成功的前 k 份——损毁域跳过）
+        # ① 开封现存份额（逐域尝试，取先开成功的前 k 份——损毁域跳过）。
+        # 3.2 k-of-n 跨域集换代（drill S4 实弹根修——拉格朗日下标错位）：份额
+        # 的真实下标=**旧多项式的 x**（旧域集序，root.json 未换代前即真）——
+        # 开封 idx 必须按旧域集取（新配置域集枚举序会把 f(2) 当 f(1) 用 ⟹
+        # 换基外推错位 ⟹ g(0)≠d canary 必败）。被除名域的 sealed 文件=陈旧
+        # 孤儿（不消费）；新 n=len(现配置域集)（除名即缩域换代）。
+        k, domains = threshold_config()
+        old_domains = tuple(meta.get("domains") or meta.get("roles") or ())
+        if not old_domains:
+            raise ShareDomainError(
+                "root_meta_incomplete", "root.json 缺域集记录（domains/roles）——刷新中止"
+            )
         opened: list[tuple[int, str]] = []
-        for idx, role in enumerate(_ROLES, start=1):
-            if len(opened) >= _THRESHOLD_K:
+        for idx, role in enumerate(old_domains, start=1):
+            if len(opened) >= k:
                 break
             try:
                 plain = _open_share(role, old_epoch, _domain_share_sealed_path(role).read_bytes())
                 opened.append((idx, plain.decode()))
             except Exception:  # noqa: BLE001 —— 域损即跳过（≥k 份可开即可刷新）
                 continue
-        if len(opened) < _THRESHOLD_K:
+        if len(opened) < k:
             raise ShareDomainError(
                 "insufficient_shares",
-                f"可开封份额 {_THRESHOLD_K} 不足（仅 {len(opened)}）——刷新中止",
+                f"可开封份额不足 k={k}（仅 {len(opened)}）——刷新中止",
             )
-        # ② 标量域 re-share（d 不重组——proactive_reshare 域内无 d 路径）
-        new_shares = proactive_reshare(
-            [(i, int(s, 16)) for i, s in opened], len(_ROLES), _THRESHOLD_K
-        )
+        # ② 标量域 re-share（d 不重组——proactive_reshare 域内无 d 路径）；
+        # 旧份额携旧域真实下标入换基外推，新份额下标=1..n_new（新域集序）。
+        new_shares = proactive_reshare([(i, int(s, 16)) for i, s in opened], len(domains), k)
         # ③ 内存自证（先于任何落盘）：canary 对 D_pub 加解全对拍
         canary = b"FZ-RESHARE-CANARY|" + str(new_epoch).encode()
         from app.crypto.sm2 import encrypt as sm2_encrypt
@@ -287,11 +423,13 @@ def ceremonial_reshare(gov_confirmed_epoch: int, owner_set_fp: str | None = None
         pub_hex = meta["pub_hex"]
         ct = sm2_encrypt(pub_hex, canary)
         c1_hex = ct[:64].hex()
-        pts = [(i, decrypt_share(f"{d_i:064x}", c1_hex)) for i, d_i in new_shares[:_THRESHOLD_K]]
-        if threshold_decrypt(ct, pts) != canary:
+        pts = [(i, decrypt_share(f"{d_i:064x}", c1_hex)) for i, d_i in new_shares[:k]]
+        if threshold_decrypt(ct, pts, k=k) != canary:
             raise ShareDomainError("canary_mismatch", "新份额对 D_pub 自证失败（未落盘，零变更）")
-        # ④ 持久化：先份额（新纪元域钥重封=旧份额值+旧密封钥同时作废）后纪元
-        for (_i, d_i), role in zip(new_shares, _ROLES, strict=True):
+        # ④ 持久化：先份额（新纪元域钥重封=旧份额值+旧密封钥同时作废）后纪元；
+        # 3.2 域集换代（除名）时新域集文件覆盖写+root.json domains 换代。
+        meta["domains"] = list(domains)
+        for (_i, d_i), role in zip(new_shares, domains, strict=True):
             _domain_share_sealed_path(role).write_bytes(
                 _seal_share(role, new_epoch, f"{d_i:064x}".encode())
             )
@@ -303,9 +441,9 @@ def ceremonial_reshare(gov_confirmed_epoch: int, owner_set_fp: str | None = None
         (_root_dir() / "root.json").write_text(
             json.dumps(meta, ensure_ascii=False, indent=1), encoding="utf-8"
         )
-        # ⑤ 三域仪式审计（append-only；记录纪元不含任何份额材料；fp_source
+        # ⑤ 全域仪式审计（append-only；记录纪元不含任何份额材料；fp_source
         # 如实——verified=指纹门激活并过门，skipped=直调形态门未启用）
-        for role in _ROLES:
+        for role in domains:
             _audit(
                 role,
                 {
