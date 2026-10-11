@@ -285,6 +285,45 @@ def test_fleet_issue_negative_quota_pool_exceeded(session, monkeypatch):
     assert ei.value.status == 429
 
 
+# ---------------- R2 审查批（2026-10-12 第二轮独立审查员——⑤配额边界+③preview） ----------------
+
+
+def test_review_r2_5_quota_zero_is_frozen_pool(session, monkeypatch):
+    """R2⑤（低）：FZ_FLEET_POOL_QUOTA=0=冻结池（停发运维语义显式支持——
+    先红=旧 max(1,·) 钳为 1 仍可签 1 张）。"""
+    monkeypatch.setenv("FZ_FLEET_POOL_QUOTA", "0")
+    from app.ra.service import fleet_pool_quota
+
+    assert fleet_pool_quota() == 0
+    s = _svc(session)
+    dev = _reg_fleet(s, org="org-a")
+    sk, pk = generate_keypair()
+    with pytest.raises(RaError) as ei:
+        s.issue_fleet_sub_credentials(
+            operator_org_id="org-a",
+            items=[
+                {
+                    "master_cred_hash_hex": dev["master_cred_hash_hex"],
+                    "salt_hex": dev["salt_hex"],
+                    "holder_pub_hex": pk,
+                }
+            ],
+        )
+    assert ei.value.code == "quota_exceeded"
+
+
+def test_review_r2_5_quota_bad_env_fail_closed(session, monkeypatch):
+    """R2⑤（低）：FZ_FLEET_POOL_QUOTA 非整数/负数 → RaError fail-closed
+    （先红=静默回落 100 无日志）。"""
+    from app.ra.service import fleet_pool_quota
+
+    for bad in ("abc", "-1"):
+        monkeypatch.setenv("FZ_FLEET_POOL_QUOTA", bad)
+        with pytest.raises(RaError) as ei:
+            fleet_pool_quota()
+        assert ei.value.code == "bad_quota_config"
+
+
 # ---------------- 段④：撤销走 org 署名推根（owner_org_id 域权威） ----------------
 
 

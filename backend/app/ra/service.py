@@ -55,13 +55,29 @@ def fleet_pool_quota() -> int:
     """机构机队共享池上限（3.1 机构机队接口实装）：本机构全部机队子凭证
     （cred_kind=2）未消费∧未过期总数上限——机构级资源池语义，与个人
     20/凭证配额（SUB_CRED_QUOTA）并行独立。env FZ_FLEET_POOL_QUOTA 可调
-    （函数形态=测试可注入；缺省 100）。"""
+    （函数形态=测试可注入；缺省 100）。R2⑤（独立审查员第二轮——env 边界
+    钳制语义）：**0=冻结池**（停发运维语义显式支持——0 张可签）；负数/非整数
+    =RaError fail-closed（不再静默回落 100——运维配置错误如实暴露）。"""
     import os
 
-    try:
-        return max(1, int(os.environ.get("FZ_FLEET_POOL_QUOTA", "100")))
-    except ValueError:
+    raw = os.environ.get("FZ_FLEET_POOL_QUOTA")
+    if raw is None:
         return 100
+    try:
+        v = int(raw)
+    except ValueError as exc:
+        raise RaError(
+            "bad_quota_config",
+            f"FZ_FLEET_POOL_QUOTA 非整数: {raw!r}（运维配置错误——签发面 fail-closed 拒绝）",
+            500,
+        ) from exc
+    if v < 0:
+        raise RaError(
+            "bad_quota_config",
+            f"FZ_FLEET_POOL_QUOTA 负数: {raw!r}（冻结池语义=0——负数无意义，拒绝）",
+            500,
+        )
+    return v
 
 
 # ---- 签名消息域（B1/B6：撤销与恢复动作的可追责密码学绑定）----
@@ -448,12 +464,16 @@ class RaService:
         if not devices or len(devices) > 50:
             raise RaError("bad_input", "批量登记须 1..50 台设备")
         out = []
-        # 审查批根修⑥（2026-10-11 独立审查员——批量链写非原子的孤儿承诺面）：
-        # 第 N 台链写失败时 DB 由 get_session 整体回滚，但前 N-1 台承诺已上链
-        # 且无删除面（合约无 unregister）——重试生成新 salt/新 handle ⟹ 链上
-        # 累积孤儿承诺（无 DB 行/salt 未交付/永不消费）。补偿面=失败时对全部
-        # 已上链台 setStatus(2) 吊销（撤销即时生效语义——孤儿承诺变已吊销，
-        # 不可再签发/消费），异常如实上抛。
+        # 审查批根修⑥+R2①（2026-10-11/12 独立审查员——批量链写非原子的双侧
+        # 孤儿面）：第 N 台链写失败时——
+        #   链侧：前 N-1 台承诺已上链且无删除面（合约无 unregister）——补偿=
+        #   逐台 setStatus(2) 吊销（孤儿承诺变已吊销，不可再签发/消费）；
+        #   DB 侧：**get_session 是 yield→commit 模式**（app/db.py——无异常即
+        #   commit），router 捕获 ChainError 返 503 正常响应 ⟹ teardown 走
+        #   commit 分支 ⟹ 已 add+flush 的行部分提交（R2 HTTP 实弹证伪「由
+        #   get_session 整体回滚」的注释声明——机构收不到 salt 回执且登记号/
+        #   SN 占判重面，重试 409 device_exists 设备卡死）。修=失败路径服务层
+        #   **显式 session.rollback()**（批量=全成全败原子），异常如实上抛。
         committed_handles: list[str] = []
         try:
             out = self._register_fleet_devices_inner(operator_org_id, devices, committed_handles)
@@ -467,6 +487,7 @@ class RaService:
                         "——链面吊销未完成，请人工核查",
                         flush=True,
                     )
+            self._s.rollback()  # R2①：DB 侧零残留（router 吞异常形态下 get_session 不会回滚）
             raise
         return {"devices": out}
 
@@ -630,6 +651,21 @@ class RaService:
             )
         out = []
         exp = _utcnow() + dt.timedelta(hours=SUB_CRED_TTL_HOURS)
+        # R2②（2026-10-12 独立审查员——批量签发中途 RaError=幽灵签发占共享池
+        # 配额+回执随错误响应丢失）：逐台 add+flush 后任一张失败 ⟹ router 捕获
+        # RaError 返 4xx 正常响应 ⟹ get_session teardown commit ⟹ 前 N-1 张
+        # 已落库却无回执（无法出示消费却计入共享池配额 24h——幽灵占池，重复
+        # 『好+坏』批量可挤占全池）。修=**批量原子语义**：失败路径显式
+        # session.rollback()（全成全败——重试安全，配额预检为纯读不受影响）。
+        try:
+            out = self._issue_fleet_items(rows, exp)
+        except Exception:
+            self._s.rollback()
+            raise
+        return {"items": out}
+
+    def _issue_fleet_items(self, rows: list, exp) -> dict:
+        out = []
         for cred, it in rows:
             device_no = cred.device_no or ""
             serial = bytes.fromhex(cred.serial_hex or "")
@@ -694,7 +730,7 @@ class RaService:
                     "id_prime_hex": id_prime.hex(),  # 出示随机化身份（机构部署面自持）
                 }
             )
-        return {"items": out}
+        return out
 
     def fleet_devices_list(self, *, operator_org_id: str | None) -> dict:
         """本机构域机队设备列表（管理面数据源）：句柄/登记号/SN/资质/机型类/
@@ -902,6 +938,25 @@ class RaService:
         return {
             "username": username,
             "handles": sorted(c.master_cred_hash_hex.lower() for c in creds),
+            "epoch": self._base_epoch() + 1,
+        }
+
+    def revoke_preview_by_handle(
+        self, *, master_cred_hash_hex: str, operator_org_id: str | None = None
+    ) -> dict:
+        """按句柄吊销·两步式第一拍（只读）——机队面板纪元权威面（R2③，独立
+        审查员第二轮）：doFleetRevoke 此前消费 /ra/revocation/snapshot 的 DB
+        镜像纪元（跨脚本/跨服务漂移实锤——e2e_fleet F4 bad_epoch 同族形态，
+        服务端 _base_epoch 真链档=链上 revEpoch 权威）。本预览与 by-username
+        预览同构：返回句柄+目标纪元（=_base_epoch()+1——链权威），不落库不
+        推链；域门先于存在性回显（跨域句柄枚举=信息泄露面）；句柄不在案 404。"""
+        h = _norm_handle(master_cred_hash_hex)
+        cred = self._s.scalar(select(Credential).where(Credential.master_cred_hash_hex == h))
+        if cred is None:
+            raise RaError("not_found", "凭证不存在", 404)
+        self._org_guard(self._creds_org([cred]), operator_org_id, "凭证")
+        return {
+            "master_cred_hash_hex": h,
             "epoch": self._base_epoch() + 1,
         }
 

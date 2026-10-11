@@ -110,7 +110,7 @@ export async function openFleetSlot(slot: FleetSlot, passphrase: string): Promis
 
 /** 签发请求体构造：档案行+出示钥→机队端点契约（salt 来自机构自持档案）。 */
 export function buildIssueBody(items: FleetIssueItem[]): { items: FleetIssueItem[] } {
-  if (!items.length) throw new Error("请先勾选要签发的设备");
+  if (!items.length) throw new Error("签发行集为空——解封档案后按设备生成（档案全量签发语义）");
   for (const it of items) {
     if (!/^[0-9a-f]{64}$/i.test(it.master_cred_hash_hex)) throw new Error("设备句柄形态非法");
     if (!/^[0-9a-f]{32}$/i.test(it.salt_hex)) throw new Error("原像盐形态非法（16 字节 hex）");

@@ -34,6 +34,7 @@ import e2e_workflows as wf  # noqa: E402  复用出证/断言助手（单一事�
 import requests  # noqa: E402
 from e2e_workflows import (  # noqa: E402
     API,
+    SN,
     anon,
     expect,
     full_authorization,
@@ -96,6 +97,13 @@ def main() -> int:
            "F0 桥在线（engine_pub+device_serial 单源读数）", f"sn={bridge_sn!r}")
     if os.environ.get("FZ_CHAIN_ANCHOR", "fake") == "fake":
         raise SystemExit("[FAIL] 机队 e2e 须真链档（FZ_CHAIN_ANCHOR=real）")
+    # R2⑥（观察项——SN 双源前置对拍）：登记面 SN=bridge_sn（/engine_pub 实读）
+    # vs prove 面 SN=e2e_workflows.SN 模块常量（env FZ_DEVICE_SERIAL 缺省
+    # FZ-SN-DEV-01）——桥读数漂离缺省时 F3 prove 原像 C 必挂（fail-loud 前移
+    # 到 F0 即时定位，不留到 45s 出证后）。
+    expect(bridge_sn == SN,
+           "F0 SN 双源对拍（登记面=/engine_pub 实读==prove 面=e2e_workflows.SN）",
+           f"bridge={bridge_sn!r} SN={SN!r}——漂离时设 FZ_DEVICE_SERIAL={bridge_sn!r}")
     fed, ir = _fed_chain()
     expect(
         int(fed.call_fn("orgs", [_oid("org-b")])[0]) == 1,

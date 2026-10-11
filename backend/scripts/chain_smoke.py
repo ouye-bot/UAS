@@ -1071,18 +1071,17 @@ def main() -> int:
         len(ev_fleet) == 1 and int(status_f) == 1 and int(kind_f) == 2,
         "⑩-a registerCommitment(kind=2) 登记读回 credKind=2（机构机队承诺——预留面激活）",
     )
-    _kind_bad_caught = False
-    try:
-        _IR.send_fn(
-            ra,
-            "registerCommitment",
-            [sm3_bytes(b"FZ-FLEET-BAD-KIND|" + secrets.token_bytes(8)), 3],
-        )
-    except Exception:  # noqa: BLE001 —— 合约 require "bad kind" revert=预期拒绝
-        _kind_bad_caught = True
-    expect(
-        _kind_bad_caught,
-        "⑩-b 越界 kind=3 登记 → revert（合约只接受 1/2——预留面零外扩）",
+    # R2⑦（观察项收口——弱断言收窄）：越界 kind=3 必须 revert（status!=0x0）
+    # 而非任意异常计绿（RPC 抖动/超时同判绿=假绿面）——改 expect_revert 助手
+    # （原始轮询+回执 status 断言，与 §⑨-f 同款工艺）。
+    expect_revert(
+        client,
+        ra,
+        _IR,
+        "registerCommitment",
+        [sm3_bytes(b"FZ-FLEET-BAD-KIND|" + secrets.token_bytes(8)), 3],
+        "⑩-b 越界 kind=3 登记 → revert（合约只接受 1/2——预留面零外扩；"
+        "expect_revert=回执 status 断言非裸 except）",
     )
     _IR.send_fn(ra, "setStatus", [fleet_hash, 2])
     expect(

@@ -558,8 +558,14 @@ async function doFleetRevoke(): Promise<void> {
   if (!sk.value) { deny.value = { code: "locked", message: "请先解锁管理员密钥（吊销须签名留痕）" }; return; }
   busy.value = true;
   try {
-    const snap = await api<{ epoch: number }>("/ra/revocation/snapshot");
-    const epoch = snap.epoch + 1;
+    // R2③（独立审查员第二轮——机队面板纪元权威面）：目标纪元取按句柄预览
+    // （GET /ra/revoke/preview——服务端 _base_epoch()+1，真链档=链上 revEpoch
+    // 权威），与 by-username 面同构；DB snapshot 镜像漂移形态下旧来源必
+    // bad_epoch（e2e_fleet F4 同族实锤）。
+    const pv = await api<{ master_cred_hash_hex: string; epoch: number }>(
+      `/ra/revoke/preview?master_cred_hash_hex=${t.master_cred_hash_hex}`,
+    );
+    const epoch = pv.epoch;
     const sig_hex = signMsg(sk.value, fleetRevokeMsg(t.master_cred_hash_hex, reason, epoch));
     await api("/ra/revoke", {
       method: "POST",
@@ -1027,10 +1033,10 @@ async function doFleetRevoke(): Promise<void> {
       <div class="panel-head" style="margin-top:18px">
         <h2 style="font-size:15px">机队子凭证批量签发（机构共享池）</h2>
       </div>
-      <p class="desc">从本机密封档案解封设备清单——勾选设备逐台生成全新出示钥并签发（每张 24h 有效期，一次性出示钥跨申请不可链接）。</p>
+      <p class="desc">解封本机密封档案即对档案全量设备逐台签发（每台生成全新出示钥——一次性出示钥跨申请不可链接；每张 24h 有效期；已吊销设备由后端 cred_revoked 拒绝并人话回显）。</p>
       <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
         <input v-model="fleetUnsealPass" type="password" placeholder="档案解封口令" style="width:220px" />
-        <button class="btn" :disabled="busy" @click="doFleetIssue">解封并签发勾选设备</button>
+        <button class="btn" :disabled="busy" @click="doFleetIssue">解封档案并全量签发</button>
       </div>
       <div v-if="fleetIssueOut.length" class="fp-box fz-enter" style="margin-top:8px">
         <span class="fp-label">签发回执（飞行材料包——出示私钥+受理三件套，丢失不可补发）</span>

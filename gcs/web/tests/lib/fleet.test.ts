@@ -61,7 +61,7 @@ describe("fleet 签发体构造+吊销消息域", () => {
     expect(() =>
       buildIssueBody([{ master_cred_hash_hex: "ab".repeat(32), salt_hex: "cd".repeat(16), holder_pub_hex: "12" }]),
     ).toThrow(/出示公钥/);
-    expect(() => buildIssueBody([])).toThrow(/勾选/);
+    expect(() => buildIssueBody([])).toThrow(/签发行集为空/);
   });
 
   it("fleetRevokeMsg=单句柄 revokeMsg 同域（FZ-REVOKE|v1——逐字对拍）", () => {

@@ -705,6 +705,26 @@ def revoke_by_username_preview(
         return _deny(exc)
 
 
+@router.get("/revoke/preview")
+def revoke_preview_by_handle(
+    master_cred_hash_hex: str,
+    session: Session = Depends(get_session),
+    p=Depends(require_role("admin")),
+):
+    """按句柄吊销·两步式第一拍（只读预览——机队面板纪元权威面 R2③）：设备无
+    username 不走 by-username 预览；目标纪元=服务端 _base_epoch()+1（真链档=
+    链上 revEpoch 权威——DB snapshot 镜像漂移免疫，e2e_fleet F4 同族形态）。
+    域门先于存在性回显（跨域句柄枚举=信息泄露面）。"""
+    try:
+        return _ok(
+            _svc(session).revoke_preview_by_handle(
+                master_cred_hash_hex=master_cred_hash_hex, operator_org_id=p.org_id
+            )
+        )
+    except RaError as exc:
+        return _deny(exc)
+
+
 class CollabIn(BaseModel):
     warrant_hash_hex: str = Field(min_length=64, max_length=64)
     # 目标授权编号为空的令状（匿名立案位）：RA 显式提供凭证（仍与令状绑定）

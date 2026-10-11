@@ -62,6 +62,10 @@ function stubFetch(opts: { devices?: unknown[] }) {
     if (u.includes("/ra/fleet/devices")) {
       return jsonResponse(200, { code: "ok", message: "", data: { items: opts.devices ?? [LIST_ROW], pool_quota: 100 } });
     }
+    if (u.includes("/ra/revoke/preview")) {
+      // R2③：按句柄预览（服务端权威纪元面——doFleetRevoke 第一拍）
+      return jsonResponse(200, { code: "ok", message: "", data: { master_cred_hash_hex: H1, epoch: 6 } });
+    }
     if (u.includes("/ra/revoke") && method === "POST") {
       revokeCalls.push({ body: JSON.parse(init.body) });
       return jsonResponse(200, {
@@ -204,7 +208,7 @@ describe("AdminView 机队设备管理面板（3.1）", () => {
     const { w } = await mountAdmin({ devices: [LIST_ROW] });
     const panel = w.find('[data-test="fleet-panel"]');
     await panel.find('input[placeholder="档案解封口令"]').setValue("fleet-pass-1");
-    await panel.findAll("button").find((b) => b.text().includes("解封并签发勾选设备"))!.trigger("click");
+    await panel.findAll("button").find((b) => b.text().includes("解封档案并全量签发"))!.trigger("click");
     await flushPromises();
     await flushPromises();
     expect(issueCalls).toHaveLength(1);
@@ -233,7 +237,7 @@ describe("AdminView 机队设备管理面板（3.1）", () => {
     const { w } = await mountAdmin({ devices: [LIST_ROW] });
     const panel = w.find('[data-test="fleet-panel"]');
     await panel.find('input[placeholder="档案解封口令"]').setValue("fleet-pass-1");
-    await panel.findAll("button").find((b) => b.text().includes("解封并签发勾选设备"))!.trigger("click");
+    await panel.findAll("button").find((b) => b.text().includes("解封档案并全量签发"))!.trigger("click");
     await flushPromises();
     await flushPromises();
     await panel.findAll("button").find((b) => b.text() === "下载部署包")!.trigger("click");
@@ -274,7 +278,7 @@ describe("AdminView 机队设备管理面板（3.1）", () => {
     const { w, fetchStub } = await mountAdmin({ devices: [] });
     const panel = w.find('[data-test="fleet-panel"]');
     await panel.find('input[placeholder="档案解封口令"]').setValue("any");
-    await panel.findAll("button").find((b) => b.text().includes("解封并签发勾选设备"))!.trigger("click");
+    await panel.findAll("button").find((b) => b.text().includes("解封档案并全量签发"))!.trigger("click");
     await flushPromises();
     expect(issueCalls).toHaveLength(0);
     expect(fetchStub).not.toHaveBeenCalledWith(expect.stringContaining("/ra/fleet/sub-credentials"), expect.anything());
