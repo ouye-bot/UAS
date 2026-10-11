@@ -479,6 +479,7 @@ def run_tests(tmp: Path) -> None:
                "⑨.2 治理页 k-of-n KPI 活数据（/chain/governance 回读填充——拆页迁移）")
         # ⑨.3（2026-10-12 新增）：互认机构面板 fake 档诚实空缺（B1 审计件根修
         # ——federation 公示进 UI；演示链档无 FedRegistry=不装一致）。
+        mpage.wait_for_selector("text=互认注册表随真链提供", timeout=20000)
         expect(mpage.locator("text=互认注册表随真链提供").count() >= 1,
                "⑨.3 互认机构面板 fake 档诚实空态（FedRegistry 公示随真链提供）")
         mpage.goto(WEB_URL + "#/admin")

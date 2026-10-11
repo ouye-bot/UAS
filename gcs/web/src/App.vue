@@ -158,7 +158,7 @@ async function doChangePassword(): Promise<void> {
         <span class="svc" title="申请与授权服务"><span class="dot" :class="{ ok: apiOk, bad: apiOk === false }" />服务</span>
         <span class="svc" title="本机飞行桥接服务"><span class="dot" :class="{ ok: bridgeOk, bad: bridgeOk === false }" />桥接</span>
         <span v-if="username" class="whoami" :title="whoamiTitle">{{ ROLE_LABEL[role ?? ""] ?? role }} · {{ username }}<span v-if="orgId" class="org-badge" data-test="org-badge">{{ orgId }}</span></span>
-        <button v-if="username" class="exit" title="修改密码（私钥不变——重封密封件，会话延续）" data-test="pw-change-open" @click="pwOpen = true">改密</button>
+        <button v-if="username" class="pw-exit" title="修改密码（私钥不变——重封密封件，会话延续）" data-test="pw-change-open" @click="pwOpen = true">改密</button>
         <button class="exit" title="焚毁服务端会话并返回门户" @click="logout">退出</button>
       </div>
     </header>
@@ -254,12 +254,12 @@ async function doChangePassword(): Promise<void> {
   font-size: 11px; font-weight: 650; color: var(--accent-ink);
   background: var(--accent-soft); border: 1px solid #c9dbfb; vertical-align: 1px;
 }
-.exit {
+.exit, .pw-exit {
   border: 1px solid var(--line-strong); background: var(--panel); color: var(--ink-2);
   font-size: 12.5px; padding: 4px 12px; border-radius: var(--r-sm); cursor: pointer;
   transition: all var(--t-fast);
 }
-.exit:hover { color: var(--ink); border-color: var(--ink-3); }
+.exit:hover, .pw-exit:hover { color: var(--ink); border-color: var(--ink-3); }
 .main { padding: 26px 34px; max-width: 1120px; width: 100%; margin: 0 auto; flex: 1; }
 
 /* 自助改密浮层（2026-10-12 修整窗口 P1） */
