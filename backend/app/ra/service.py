@@ -1198,6 +1198,105 @@ class RaService:
             "ceremony": ceremony or None,
         }
 
+    def revocation_linkage(self, *, handle_hex: str, operator_org_id: str | None = None) -> dict:
+        """主凭证级联视图（2026-10-12 P2——回执 linked_auth_ids 常设化）：
+        从 append-only 撤销台账反查该句柄的联动撤销授权清单（B4 联动轴）——
+        吊销回执是一次性的，公示撤销清单任一叶事后可查其联动授权。
+        读面按域（辖区分账）：句柄归属域门先于内容回显。"""
+        from app.ra.scope import OrgForbidden, cred_org_of, org_guard
+
+        h = _norm_handle(handle_hex)
+        org = cred_org_of(self._s, h)
+        try:
+            org_guard(org, operator_org_id, "凭证")
+        except OrgForbidden as exc:
+            raise RaError(exc.code, str(exc), exc.status) from exc
+        rows = self._s.scalars(
+            select(RevocationLedger)
+            .where(RevocationLedger.subject_hex == h)
+            .order_by(RevocationLedger.id.desc())
+        ).all()
+        linked: list[int] = []
+        skipped: list[dict] = []
+        ledger_rows = []
+        for r in rows:
+            try:
+                detail = json.loads(r.detail) if r.detail else {}
+            except (TypeError, ValueError):
+                detail = {}
+            ledger_rows.append(
+                {
+                    "ledger_id": r.id,
+                    "epoch": r.epoch,
+                    "reason": r.reason,
+                    "actor": r.actor,
+                    "linked_auth_ids": detail.get("linked_auth_ids") or [],
+                    "link_skipped": detail.get("link_skipped") or [],
+                }
+            )
+            linked.extend(detail.get("linked_auth_ids") or [])
+            skipped.extend(detail.get("link_skipped") or [])
+        return {
+            "handle_hex": h,
+            "org_id": org,
+            "linked_auth_ids": sorted(set(linked)),
+            "link_skipped": skipped,
+            "ledger_rows": ledger_rows,
+        }
+
+    def fleet_device_flights(
+        self, *, master_cred_hash_hex: str, operator_org_id: str | None = None
+    ) -> dict:
+        """设备飞行记录查询（2026-10-12 P2——完整性审计 C10 双向缺失根修）：设备子凭证
+        → Application（status/auth_id/时间）→ AuthRecord 纯 DB join，零链读。匿名
+        红线不破：Application 表零身份列，按设备域查询不携实名。设备不在案 404；
+        跨域 403 org_forbidden（域门先于内容回显）。"""
+        from app.authz.models import Application, AuthRecord
+        from app.ra.scope import OrgForbidden, cred_org_of, org_guard
+
+        h = _norm_handle(master_cred_hash_hex)
+        cred = self._s.scalar(select(Credential).where(Credential.master_cred_hash_hex == h))
+        if cred is None:
+            raise RaError("not_found", "设备不在案", 404)
+        org = cred_org_of(self._s, h)
+        try:
+            org_guard(org, operator_org_id, "设备")
+        except OrgForbidden as exc:
+            raise RaError(exc.code, str(exc), exc.status) from exc
+        sub_hashes = [
+            sc.sub_cred_hash_hex
+            for sc in self._s.scalars(
+                select(SubCredential).where(SubCredential.credential_id == cred.id)
+            ).all()
+        ]
+        flights: list[dict] = []
+        if sub_hashes:
+            rows = self._s.execute(
+                select(AuthRecord, Application)
+                .join(Application, AuthRecord.application_id == Application.id)
+                .where(Application.sub_cred_hash_hex.in_(sub_hashes))
+                .order_by(AuthRecord.auth_id.desc())
+            ).all()
+            for rec, app_row in rows:
+                flights.append(
+                    {
+                        "auth_id": rec.auth_id,
+                        "status": app_row.status,
+                        "class_id": app_row.class_id,
+                        "sub_cred_hash_hex": app_row.sub_cred_hash_hex,
+                        "created_at": rec.created_at.isoformat() if rec.created_at else None,
+                        "token_consumed_ts": rec.token_consumed_ts.isoformat()
+                        if rec.token_consumed_ts
+                        else None,
+                    }
+                )
+        return {
+            "master_cred_hash_hex": h,
+            "device_no": cred.device_no,
+            "org_id": org,
+            "flights": flights,
+        }
+
     def snapshot(self) -> dict:
         """公开镜像（B1 升格：每叶附 reason/revoked_at/revoked_by——理由本为
         公示而写，无需脱敏；revoked_handles_hex 保留=既有消费面兼容）。

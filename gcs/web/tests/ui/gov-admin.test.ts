@@ -50,10 +50,45 @@ function jsonResponse(status: number, payload: unknown) {
   };
 }
 
-function stubFetch(opts: { todos: unknown[] | "404"; drift?: boolean }): ReturnType<typeof vi.fn> {
+function stubFetch(opts: {
+  todos: unknown[] | "404";
+  drift?: boolean;
+  /** 修整窗口新增面（默认不提供=既有用例响应零变化）：在途请求行/仪式回放/未解锁令状。 */
+  pendingReqs?: unknown[];
+  ceremony?: unknown;
+  pendingWarrants?: unknown[];
+  devices?: unknown[];
+}): ReturnType<typeof vi.fn> {
   return vi.fn(async (url: any, init?: any) => {
     const u = String(url);
     const method = (init?.method ?? "GET").toUpperCase();
+    if (u.includes("/ra/fleet/devices") && method === "GET") {
+      return jsonResponse(200, { code: "ok", message: "", data: { items: opts.devices ?? [], pool_quota: 100 } });
+    }
+    if (u.includes("/ra/revocation/linkage")) {
+      return jsonResponse(200, {
+        code: "ok", message: "",
+        data: { handle_hex: H1, org_id: "org-a", linked_auth_ids: [9100], link_skipped: [], ledger_rows: [{ ledger_id: 1, epoch: 5, reason: "围栏违规成立", actor: "admin_hd", linked_auth_ids: [9100] }] },
+      });
+    }
+    if (u.includes("/ra/fleet/device/flights")) {
+      return jsonResponse(200, {
+        code: "ok", message: "",
+        data: { master_cred_hash_hex: H1, device_no: "FZ-FLT-E2E-00000D1", flights: [{ auth_id: 9100, status: "approved", class_id: 1, created_at: "2026-10-12T09:00:00", token_consumed_ts: null }] },
+      });
+    }
+    if (u.includes("/ra/threshold/ceremony")) {
+      return jsonResponse(200, { code: "ok", message: "", data: opts.ceremony ?? null });
+    }
+    if (u.includes("/ra/collab/pending")) {
+      return jsonResponse(200, { code: "ok", message: "", data: opts.pendingWarrants ?? [] });
+    }
+    if (u.includes("/auth/whoami")) {
+      return jsonResponse(200, { code: "ok", message: "", data: { username: "admin_hd", role: "admin", org_id: "org-a" } });
+    }
+    if (u.includes("/ra/collab-code") && method === "POST") {
+      return jsonResponse(200, { code: "ok", message: "", data: { code: "FZC2-RAW", fingerprint: "fp1234" } });
+    }
     if (u.includes("/admin/disposal-todos") && method === "POST") {
       return jsonResponse(200, { code: "ok", message: "", data: { ok: true } });
     }
@@ -65,7 +100,8 @@ function stubFetch(opts: { todos: unknown[] | "404"; drift?: boolean }): ReturnT
       return jsonResponse(200, { code: "ok", message: "", data: SIGS });
     }
     if (u.includes("/admin/collab-requests")) {
-      return jsonResponse(200, { code: "ok", message: "", data: { items: [HISTORY_REQ] } });
+      const items = opts.pendingReqs ?? [HISTORY_REQ];
+      return jsonResponse(200, { code: "ok", message: "", data: { items } });
     }
     if (u.includes("/admin/overview")) {
       return jsonResponse(200, { code: "ok", message: "", data: { warrants: [], collab_ledger: [], accounts: [], reset_log: [] } });
@@ -106,7 +142,14 @@ function stubFetch(opts: { todos: unknown[] | "404"; drift?: boolean }): ReturnT
   });
 }
 
-async function mountAdmin(opts: { todos: unknown[] | "404"; drift?: boolean }) {
+async function mountAdmin(opts: {
+  todos: unknown[] | "404";
+  drift?: boolean;
+  pendingReqs?: unknown[];
+  ceremony?: unknown;
+  pendingWarrants?: unknown[];
+  devices?: unknown[];
+}) {
   const fetchStub = stubFetch(opts);
   vi.stubGlobal("fetch", fetchStub);
   const w = mount(AdminView);
@@ -166,7 +209,8 @@ describe("AdminView 升格批：待办卡/吊销两步式/验签/恢复发起", 
     await w.find("textarea").setValue("审计结案属实依规吊销");
     const first = w.findAll("button").find((b) => b.text() === "吊销");
     expect(first).toBeTruthy();
-    await first!.trigger("click"); // 第一拍：内联二次确认
+    await first!.trigger("click"); // 第一拍：预览句柄+确认（2026-10-12 D2：预览挪到确认拍）
+    await flushPromises();
     const second = w.findAll("button").find((b) => b.text().includes("确认吊销"));
     expect(second).toBeTruthy();
     await second!.trigger("click"); // 第二拍：预览+签名+提交
@@ -242,20 +286,165 @@ describe("AdminView 升格批：待办卡/吊销两步式/验签/恢复发起", 
     w.unmount();
   });
 
-describe("份额域失同步红牌（1.3 件②）", () => {
-  it("漂移态：红牌在案（失同步判词+提案已起草指引）", async () => {
-    const { w } = await mountAdmin({ todos: [], drift: true });
-    await flushPromises();
-    const flag = w.find('[data-test="threshold-sync-flag"]');
-    expect(flag.exists()).toBe(true);
-    expect(flag.text()).toContain("份额域失同步");
-    expect(flag.text()).toContain("fail-closed");
+  // 份额域失同步红牌两断言（1.3 件②）已随治理页拆分迁移至 gov-view.test.ts
+  // （2026-10-12 修整窗口锚迁移逐条对账：断言原文迁 GovView 挂载面并只增——
+  // 红牌 data-test=threshold-sync-flag 现居 /governance 页）。
+});
+
+describe("修整窗口：标签工作台+仪式可视化+手工出函卡（2026-10-12）", () => {
+  const PENDING_EXEC = {
+    ...HISTORY_REQ,
+    id: 11, status: "executing",
+  };
+  const ANON_REQ = {
+    ...HISTORY_REQ,
+    id: 12, status: "pending", target_auth_id: null,
+  };
+  const CEREMONY = {
+    warrant_hash_hex: WH, k: 2, domains: ["admin", "ra", "auditor"],
+    summoned: ["admin", "ra"], granted: ["admin", "ra"], not_summoned: ["auditor"],
+    rows: [
+      { role: "admin", checks: { request_registered: true, warrant_on_chain: true, collab_approved: true }, decision: "granted" },
+      { role: "ra", checks: { request_registered: true, warrant_on_chain: true, collab_approved: true }, decision: "granted" },
+    ],
+    threshold: "2-of-3",
+  };
+
+  let KP2: { privateKey: string; publicKey: string };
+  beforeEach(() => {
+    localStorage.clear();
+    revokeCalls = [];
+    restoreCalls = [];
+    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue(null);
+    window.matchMedia = ((q: string) => ({
+      matches: false, media: q, onchange: null,
+      addListener: () => {}, removeListener: () => {}, addEventListener: () => {}, removeEventListener: () => {}, dispatchEvent: () => false,
+    })) as unknown as typeof window.matchMedia;
+    KP2 = sm2.generateKeyPairHex();
+    cacheSk(KP2.privateKey); // 吊销/出函签名前置（与外层同纪律）
   });
 
-  it("对齐态：零红牌（既有大屏可见面零变化——浏览器 e2e 冻结面）", async () => {
-    const { w } = await mountAdmin({ todos: [] });
-    await flushPromises();
-    expect(w.find('[data-test="threshold-sync-flag"]').exists()).toBe(false);
+  it("标签工作台：四标签在列+默认待办首屏+台账标签 v-show DOM 可达", async () => {
+    const { w } = await mountAdmin({ todos: "404" });
+    const tabbar = w.find('[data-test="admin-tabs"]');
+    expect(tabbar.exists()).toBe(true);
+    const labels = tabbar.findAll("button").map((b) => b.text());
+    expect(labels.some((t) => t.startsWith("待办"))).toBe(true);
+    expect(labels.some((t) => t.startsWith("吊销与恢复"))).toBe(true);
+    expect(labels.some((t) => t.startsWith("机队"))).toBe(true);
+    expect(labels.some((t) => t.startsWith("台账与账户"))).toBe(true);
+    // 默认首屏=待办（待批协作卡在案可见）
+    expect(w.text()).toContain("待批协作请求");
+    // v-show 保 DOM 可达：台账文本在 textContent 中（display:none 不裁除）
+    expect(w.text()).toContain("协作台账");
+    // 切到机队标签后 fleet 面板仍在 DOM
+    const fleetTab = tabbar.findAll("button").find((b) => b.text().startsWith("机队"))!;
+    await fleetTab.trigger("click");
+    expect(w.find('[data-test="fleet-panel"]').exists()).toBe(true);
+    w.unmount();
   });
-});
+
+  it("未定域徽标：匿名立案位令状=全域待批（无归属域如实标注）", async () => {
+    const { w } = await mountAdmin({ todos: "404", pendingReqs: [ANON_REQ] });
+    await flushPromises();
+    expect(w.text()).toContain("未定域 · 全域待批");
+    w.unmount();
+  });
+
+  it("门限仪式可视化（B3）：执行中卡片就地渲染逐域四关+未征询域如实", async () => {
+    const { w } = await mountAdmin({ todos: "404", pendingReqs: [PENDING_EXEC], ceremony: CEREMONY });
+    await flushPromises();
+    await flushPromises();
+    const trace = w.find('[data-test="ceremony-trace"]');
+    expect(trace.exists()).toBe(true);
+    expect(trace.text()).toContain("门限解锁仪式");
+    expect(trace.text()).toContain("2-of-3");
+    expect(trace.text()).toContain("应召 2/3 域");
+    expect(trace.text()).toContain("已出份额点");
+    // 复审洞 4 诚实红线：第三域未被征询显性讲出（「三域全列」即失真）
+    expect(trace.text()).toContain("未征询：审计员域");
+    expect(trace.text()).toContain("凑足 2 域即停");
+    w.unmount();
+  });
+
+  it("台账行仪式留痕：已执行行按钮回放（案乙）", async () => {
+    const { w } = await mountAdmin({ todos: "404", ceremony: CEREMONY });
+    const btn = w.findAll("button").find((b) => b.text() === "仪式留痕");
+    expect(btn).toBeTruthy();
+    await btn!.trigger("click");
+    await flushPromises();
+    const trace = w.find('[data-test="ceremony-trace"]');
+    expect(trace.exists()).toBe(true);
+    expect(trace.text()).toContain("门限解锁仪式");
+    w.unmount();
+  });
+
+  it("未解锁令状卡（B4）：出函动线+FZC2 指纹回显；匿名行不可出函", async () => {
+    const warrants = [
+      { warrant_hash_hex: WH, case_no: "B4-001", target_auth_id: 9100, org_id: "org-a", legal_basis_text: "依据", created_ts: "2026-10-12T09:00:00" },
+      { warrant_hash_hex: "ee".repeat(32), case_no: "B4-ANON", target_auth_id: null, org_id: null, legal_basis_text: null, created_ts: "2026-10-12T09:10:00" },
+    ];
+    const { w } = await mountAdmin({ todos: "404", pendingWarrants: warrants });
+    const panel = w.find('[data-test="pending-warrants-panel"]');
+    expect(panel.exists()).toBe(true);
+    expect(panel.text()).toContain("B4-001");
+    expect(panel.text()).toContain("归属域 org-a");
+    expect(panel.text()).toContain("未定域");
+    // 匿名行：出函按钮禁用（不提供手输凭证哈希路径——F 席根修语义）
+    const buttons = panel.findAll("button").filter((b) => b.text().includes("出具协作函"));
+    expect(buttons).toHaveLength(2);
+    expect(buttons[1].attributes("disabled")).toBeDefined();
+    // 目标行：一键出函→FZC2 指纹回显
+    await buttons[0].trigger("click");
+    await flushPromises();
+    expect(panel.text()).toContain("fp1234");
+    w.unmount();
+  });
+
+  it("P2 级联视图：公示撤销清单叶反查联动授权（linked_auth_ids 常设化）", async () => {
+    const { w } = await mountAdmin({ todos: "404" });
+    const btn = w.findAll("button").find((b) => b.text() === "联动授权");
+    expect(btn).toBeTruthy();
+    await btn!.trigger("click");
+    await flushPromises();
+    const view = w.find('[data-test="linkage-view"]');
+    expect(view.exists()).toBe(true);
+    expect(view.text()).toContain("级联视图");
+    expect(view.text()).toContain("#9100");
+    // 再点收起
+    const btn2 = w.findAll("button").find((b) => b.text() === "收起级联");
+    await btn2!.trigger("click");
+    expect(w.find('[data-test="linkage-view"]').exists()).toBe(false);
+    w.unmount();
+  });
+
+  it("P2 设备飞行记录：设备行展开授权记录（DB join 面）", async () => {
+    const { w } = await mountAdmin({
+      todos: "404",
+      devices: [{ master_cred_hash_hex: H1, cred_kind: 2, device_no: "FZ-FLT-E2E-00000D1", sn: "FZ-SN-DEV-01", cert_level: 3, class_id: 1, status: 1, expires_at: "2027-10-11T00:00:00", sub_total: 1, sub_unconsumed: 0, created_at: "2026-10-11T09:00:00" }],
+    });
+    const btn = w.findAll("button").find((b) => b.text() === "飞行记录");
+    expect(btn).toBeTruthy();
+    await btn!.trigger("click");
+    await flushPromises();
+    const view = w.find('[data-test="flights-view"]');
+    expect(view.exists()).toBe(true);
+    expect(view.text()).toContain("飞行记录");
+    w.unmount();
+  });
+
+  it("D2 预览纪元：确认句亮服务端权威纪元（DB 镜像不作签绑依据）", async () => {
+    const { w } = await mountAdmin({ todos: "404" });
+    await w.find('input[placeholder="用户名"]').setValue("pilot_bad");
+    await w.find("textarea").setValue("审计结案属实依规吊销");
+    const first = w.findAll("button").find((b) => b.text() === "吊销");
+    await first!.trigger("click"); // 第一拍=预览（权威纪元）
+    await flushPromises();
+    expect(w.text()).toContain("已取预览：签名将绑定纪元");
+    expect(w.text()).toContain("6");
+    expect(w.text()).toContain("服务端权威");
+    // 旧镜像话术退役（D2 根修——不再自 snapshot+1 推断）
+    expect(w.text()).not.toContain("当前公示纪元");
+    w.unmount();
+  });
 });

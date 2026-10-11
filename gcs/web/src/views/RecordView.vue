@@ -228,7 +228,7 @@ const KPI_META = {
       <FzWatermark glyph="craft" />
       <div class="fz-hero-inner">
         <div class="fz-hero-title">飞手工作台</div>
-        <div class="fz-hero-sub">匿名申请 · 一次性凭证 · 全程零明文——合规证明解锁起飞</div>
+        <div class="fz-hero-sub">匿名申请 · 一次性凭证 · 出证后明文不留存——合规证明解锁起飞</div>
         <div class="fz-kpi-row">
           <div class="fz-kpi" v-for="(m, key) in KPI_META" :key="key">
             <span class="fz-kpi-n" :class="m.tone()">{{ m.text() }}</span>
@@ -282,7 +282,7 @@ const KPI_META = {
 
     <div class="panel" v-if="!orphan || orphan.done">
       <h2>我的凭证 <StatusTag tone="accent" label="已加密登记" /></h2>
-      <p class="desc">您的身份已加密登记，任何人都看不到明文。</p>
+      <p class="desc">您的身份已加密登记——登记那一刻登记权威经实名核查通道核验后，明文即不留存：在案的只有密码学承诺与密文，任何人都无法从这里还原明文。</p>
       <div class="grid2">
         <div>
           <div v-if="staleSub" class="deny" style="margin-bottom:10px">

@@ -10,6 +10,7 @@
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
 import { useRouter } from "vue-router";
 import { api, bridge, ApiError, randHex } from "../lib/api";
+import { useMaterialStore } from "../stores/material";
 import { initialFlightPlan, planCommitment, newPlanSalt, storePlan, validatePlan, type FlightPlan } from "../lib/plan";
 import { sm2 } from "sm-crypto";
 import { getSubSk, identityTag, logbookAppend, subMatchesMaterial } from "../lib/material";
@@ -68,13 +69,46 @@ function copyReceipt(): void {
 const cred = (() => {
   try { return JSON.parse(localStorage.getItem("fzCred") || "null"); } catch { return null; }
 })();
-const sub = (() => {
+// 修整窗口（2026-10-12 P0 就地签发）：sub 响应式化——就地签发一次性子凭证后
+// 提交面即时解锁（不再强制跳「我的记录」跨页）；store 单动作落盘（与
+// RecordView.issueSub 同一 Pinia 动作——零逻辑复制）。
+const sub = ref((() => {
   try { return JSON.parse(localStorage.getItem("fzSub") || "null"); } catch { return null; }
-})();
+})());
 const form = (() => {
   try { return JSON.parse(localStorage.getItem("fzForm") || "{}"); } catch { return {}; }
 })();
-const hasMaterial = computed(() => !!(cred && sub));
+const materialStore = useMaterialStore();
+const hasMaterial = computed(() => !!(cred && sub.value));
+
+// 就地签发一次性子凭证（修整窗口 P0——pm 走查 ApplyView-a 根修）：与
+// RecordView.issueSub 同构（每张全新出示钥；受理面匿名原像路径）——成功后
+// hasMaterial 即时翻真，提交按钮就地解锁（省一次跨页往返）。
+const issuingHere = ref(false);
+async function issueSubHere(): Promise<void> {
+  issuingHere.value = true;
+  try {
+    // 一次性出示钥（隐私边界收窄）：每次「签发子凭证」动作生成全新 (sk′,pk′)
+    // ——sk′ 以会话域内存态绑定该张子凭证（store.issueSub 落盘四件事）。
+    const kp = sm2.generateKeyPairHex();
+    const subPk = kp.publicKey.replace(/^04/, "").toLowerCase();
+    const out = await api<Record<string, unknown>>("/ra/sub-credentials", {
+      method: "POST",
+      body: JSON.stringify({
+        master_cred_hash_hex: cred?.master_cred_hash_hex ?? "",
+        salt_hex: cred?.salt_hex ?? "",
+        id_number: form.id_number ?? "",
+        cert_level: form.cert_level ?? 3,
+        sn: form.sn ?? "",
+        holder_pub_hex: subPk,
+      }),
+    });
+    materialStore.issueSub(out, subPk, kp.privateKey);
+    sub.value = JSON.parse(localStorage.getItem("fzSub") || "null");
+  } catch (e) {
+    deny.value = { code: (e as ApiError).code, message: (e as ApiError).message };
+  } finally { issuingHere.value = false; }
+}
 
 // ---- SN 单源（SN 绑定根治 2026-10-07）----
 // 出证 sn 唯一读数源=桥 /engine_pub（与桥第 6 查、注册表单同一台设备）。
@@ -266,9 +300,9 @@ async function applyAndFetch(f: FlowState): Promise<void> {
     method: "POST",
     body: JSON.stringify({
       session_pk_hex: f.session_pk,
-      sub_cred_message_hex: sub.message_hex,
-      sub_sig_hex: sub.sig_hex,
-      sub_cred_hash_hex: sub.sub_cred_hash_hex,
+      sub_cred_message_hex: sub.value.message_hex,
+      sub_sig_hex: sub.value.sig_hex,
+      sub_cred_hash_hex: sub.value.sub_cred_hash_hex,
       nonce_hex: f.nonce_hex, plan_hash_hex: f.plan_hash_hex, class_id: classId.value,
       case_id: f.case_id,
       // 授权包配额制：架次数 1~5（缺省 1——恢复路径/旧快照无此字段同值）
@@ -396,7 +430,7 @@ async function apply(): Promise<void> {
     // 会话域 (sk′,pk′)（一次性出示钥批：跨申请不可链接）
     setStage("assembling");
     const subSk = getSubSk();
-    if (!subSk || !sub?.holder_pk_hex)
+    if (!subSk || !sub.value?.holder_pk_hex)
       throw new ApiError(
         "sub_key_missing",
         "一次性子凭证的出示钥不在本会话（可能换了标签页或已重签）——请到「我的记录」重新签发后再申请",
@@ -411,9 +445,9 @@ async function apply(): Promise<void> {
         // 同值——ZK 私入/子凭证绑定/令牌 sn_hash/桥第 6 查四处一台设备）
         sn: deviceSn.value,
         salt_hex: cred.salt_hex,
-        id_prime_hex: sub.id_prime_hex, sig_hex: sub.sig_hex,
-        expires_at: sub.expires_at,
-        holder_sk_hex: subSk, holder_pk_hex: sub.holder_pk_hex,
+        id_prime_hex: sub.value.id_prime_hex, sig_hex: sub.value.sig_hex,
+        expires_at: sub.value.expires_at,
+        holder_sk_hex: subSk, holder_pk_hex: sub.value.holder_pk_hex,
       }),
     });
     // 本机复验材料锚（W-8：流程快照在受理 ready 后清除，case_id 需跨页持久
@@ -537,7 +571,12 @@ function denyMessage(code: string, message: string): string {
     <div class="panel">
       <h2>起飞申请</h2>
       <p class="desc">提交后系统在本机生成零知识证明并自动核验飞行资质与合规性，全程不透露您的身份。</p>
-      <div v-if="!hasMaterial" class="deny"><span class="code">缺材料</span>请先在「我的记录」签发一次性子凭证。</div>
+      <div v-if="!hasMaterial" class="deny">
+        <span class="code">缺材料</span>请先签发一次性子凭证——可就地签发（点击后自动解锁提交），或到「我的记录」办理。
+        <button class="btn" style="margin-left:10px" :disabled="issuingHere" @click="issueSubHere">
+          {{ issuingHere ? "签发中…" : "就地签发一次性子凭证（点击后将自动生成出示钥并解锁提交）" }}
+        </button>
+      </div>
       <!-- ⑧站触达闭环：吊销前置提示（数据源 /ra/pilot/notices——提交面同点阻断） -->
       <div v-for="(r, i) in revokedNotices" :key="'rv' + i" class="deny" data-test="apply-revoked">
         <span class="code">凭证已吊销</span>

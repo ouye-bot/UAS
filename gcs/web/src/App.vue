@@ -5,7 +5,8 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useRouter } from "vue-router";
 import { api, apiBase, bridge } from "./lib/api";
-import { cachedRole, cachedUsername, logout as authLogout } from "./lib/auth";
+import { cachedRole, cachedUsername, changePassword, logout as authLogout } from "./lib/auth";
+import { checkPasswordRules } from "./lib/enroll";
 
 const router = useRouter();
 const route = router.currentRoute;
@@ -26,9 +27,34 @@ const ROLE_LABEL: Record<string, string> = { pilot: "飞手", auditor: "审计�
 const nav = computed(() =>
   router.getRoutes()
     .filter((r) => r.meta?.title && r.meta?.nav)
-    .filter((r) => !r.meta?.role || r.meta.role === role.value)
+    .filter((r) => {
+      const need = r.meta?.role as string | string[] | undefined;
+      if (!need) return true;
+      return Array.isArray(need) ? need.includes(role.value ?? "") : need === role.value;
+    })
     .map((r) => ({ path: r.path, title: r.meta.title as string, icon: r.meta.icon as string })),
 );
+
+// 登录态所属机构域徽标（2026-10-12 修整窗口③——B2 审计件：whoami.org_id
+// 前端从未调用，多机构演示时评委无法分辨当前域。零后端：登录后/切页时拉取
+// 一次并随路由刷新；拉取失败=徽标不渲染（不装一致）。
+const orgId = ref<string | null>(null);
+const whoamiTitle = computed(() =>
+  orgId.value ? `已登录：${username.value ?? ""}（所属机构域 ${orgId.value}）` : `已登录：${username.value ?? ""}`,
+);
+async function refreshOrg(): Promise<void> {
+  orgId.value = null;
+  if (!username.value) return;
+  try {
+    const out = await api<{ org_id?: string }>("/auth/whoami");
+    orgId.value = out.org_id ?? null;
+  } catch { /* 徽标不渲染——不装一致 */ }
+}
+watch(
+  () => route.value.fullPath,
+  () => void refreshOrg(),
+);
+onMounted(() => void refreshOrg());
 
 const apiOk = ref<boolean | null>(null);
 const bridgeOk = ref<boolean | null>(null);
@@ -72,6 +98,40 @@ async function logout(): Promise<void> {
   await authLogout();
   router.push("/login");
 }
+
+// ---- 自助修改密码（2026-10-12 修整窗口 P1）：改密码=重封不动钥——
+// 私钥不变、会话延续；规范与注册同门槛（checkPasswordRules 单源）。
+const pwOpen = ref(false);
+const pwCurrent = ref("");
+const pwNew = ref("");
+const pwConfirm = ref("");
+const pwErr = ref("");
+const pwOk = ref(false);
+const pwBusy = ref(false);
+const pwChecks = computed(() => checkPasswordRules(pwNew.value, username.value ?? ""));
+async function doChangePassword(): Promise<void> {
+  pwErr.value = "";
+  pwOk.value = false;
+  if (!pwChecks.value.ok) {
+    pwErr.value = `新密码未达标：${pwChecks.value.failures.join("、")}`;
+    return;
+  }
+  if (pwNew.value !== pwConfirm.value) {
+    pwErr.value = "两次输入的新密码不一致";
+    return;
+  }
+  pwBusy.value = true;
+  try {
+    await changePassword(pwCurrent.value, pwNew.value);
+    pwOk.value = true;
+    pwCurrent.value = "";
+    pwNew.value = "";
+    pwConfirm.value = "";
+  } catch (e) {
+    const err = e as { message?: string; code?: string };
+    pwErr.value = err.message ?? String(e);
+  } finally { pwBusy.value = false; }
+}
 </script>
 
 <template>
@@ -97,10 +157,40 @@ async function logout(): Promise<void> {
       <div class="right">
         <span class="svc" title="申请与授权服务"><span class="dot" :class="{ ok: apiOk, bad: apiOk === false }" />服务</span>
         <span class="svc" title="本机飞行桥接服务"><span class="dot" :class="{ ok: bridgeOk, bad: bridgeOk === false }" />桥接</span>
-        <span v-if="username" class="whoami" :title="`已登录：${username}`">{{ ROLE_LABEL[role ?? ""] ?? role }} · {{ username }}</span>
+        <span v-if="username" class="whoami" :title="whoamiTitle">{{ ROLE_LABEL[role ?? ""] ?? role }} · {{ username }}<span v-if="orgId" class="org-badge" data-test="org-badge">{{ orgId }}</span></span>
+        <button v-if="username" class="exit" title="修改密码（私钥不变——重封密封件，会话延续）" data-test="pw-change-open" @click="pwOpen = true">改密</button>
         <button class="exit" title="焚毁服务端会话并返回门户" @click="logout">退出</button>
       </div>
     </header>
+    <!-- 自助修改密码浮层（改密码=重封不动钥——私钥不变、会话延续） -->
+    <Transition name="fz-modal">
+      <div v-if="pwOpen" class="pw-mask" @click.self="pwOpen = false">
+        <div class="pw-modal panel" data-test="pw-change-modal">
+          <h2>修改密码</h2>
+          <p class="pw-desc">
+            改密码=换锁不换钥：您的私钥不变（登录与签名语义不受影响），服务端密封件
+            与资料密封件以新密码重封——本会话延续，其他已登录设备不受影响。
+          </p>
+          <label>当前密码</label>
+          <input v-model="pwCurrent" type="password" autocomplete="current-password" />
+          <label>新密码</label>
+          <input v-model="pwNew" type="password" autocomplete="new-password" />
+          <ul class="pw-rules">
+            <li v-for="c in pwChecks.checks" :key="c.label" :class="{ pass: c.pass }">{{ c.pass ? "✓" : "·" }} {{ c.label }}</li>
+          </ul>
+          <label>确认新密码</label>
+          <input v-model="pwConfirm" type="password" autocomplete="new-password" />
+          <p v-if="pwErr" class="pw-err">{{ pwErr }}</p>
+          <p v-if="pwOk" class="pw-done" data-test="pw-change-ok">✓ 密码已更换——密封件与资料已按新密码重封（下次登录用新密码）。</p>
+          <div style="display:flex;gap:10px;margin-top:12px">
+            <button class="btn" :disabled="pwBusy || !pwCurrent || !pwNew" @click="doChangePassword">
+              {{ pwBusy ? "重封中…" : "确认修改（重封密封件）" }}
+            </button>
+            <button class="btn ghost" @click="pwOpen = false">关闭</button>
+          </div>
+        </div>
+      </div>
+    </Transition>
     <main class="main">
       <router-view v-slot="{ Component }">
         <transition name="page" appear>
@@ -157,6 +247,13 @@ async function logout(): Promise<void> {
 .dot.bad { background: var(--bad); }
 /* （丙-2 M1）.audit-link 死样式已删除——模板零引用 */
 .whoami { font-size: 12.5px; color: var(--ink-2); background: var(--panel); border: var(--hairline); border-radius: 999px; padding: 4px 12px; }
+/* 机构域徽标（2026-10-12 修整窗口③）：登录态所属域常显——多机构形态的
+   「当前操作者是谁」可见事实；与 whoami 同胶囊，accent 描边区分 */
+.org-badge {
+  display: inline-block; margin-left: 7px; padding: 0 8px; border-radius: 999px;
+  font-size: 11px; font-weight: 650; color: var(--accent-ink);
+  background: var(--accent-soft); border: 1px solid #c9dbfb; vertical-align: 1px;
+}
 .exit {
   border: 1px solid var(--line-strong); background: var(--panel); color: var(--ink-2);
   font-size: 12.5px; padding: 4px 12px; border-radius: var(--r-sm); cursor: pointer;
@@ -164,6 +261,19 @@ async function logout(): Promise<void> {
 }
 .exit:hover { color: var(--ink); border-color: var(--ink-3); }
 .main { padding: 26px 34px; max-width: 1120px; width: 100%; margin: 0 auto; flex: 1; }
+
+/* 自助改密浮层（2026-10-12 修整窗口 P1） */
+.pw-mask { position: fixed; inset: 0; background: rgba(20, 28, 38, 0.45); backdrop-filter: blur(3px); z-index: 60; display: flex; align-items: center; justify-content: center; }
+.pw-modal { width: min(460px, 92vw); max-height: 86vh; overflow: auto; }
+.pw-desc { font-size: 12.5px; color: var(--ink-3); line-height: 1.7; margin: 6px 0 10px; }
+.pw-rules { list-style: none; margin: 6px 0; padding: 0; display: flex; flex-wrap: wrap; gap: 4px 14px; }
+.pw-rules li { font-size: 12px; color: var(--ink-3); }
+.pw-rules li.pass { color: var(--ok); }
+.pw-err { color: #c0392b; font-size: 12.5px; margin: 8px 0 0; }
+.pw-done { color: var(--ok); font-size: 12.5px; margin: 8px 0 0; }
+.fz-modal-enter-active { transition: opacity 160ms var(--ease); }
+.fz-modal-enter-from { opacity: 0; }
+.fz-modal-leave-active { display: none; }
 
 /* 路由过渡（视觉深化批 D：淡入+上浮 8px/180ms——叙事引导一次视线即静止） */
 .page-enter-active { transition: opacity 180ms var(--ease), transform 180ms var(--ease); }

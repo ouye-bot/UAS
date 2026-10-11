@@ -147,6 +147,67 @@ def keystore_upgrade_route(
     return JSONResponse(status_code=200, content={"code": "ok", "message": "", "data": None})
 
 
+class PasswordChangeIn(BaseModel):
+    """自助改密回传体：新密码 KEK 重封的 v4 信封（必填）+ 同口径重封的资料
+    密封件（选填——pilot 有 sealed_profile 时必须同请求原子换新，否则旧密码
+    仍可解资料=改密半吊子）。"""
+
+    sealed_blob: str = Field(min_length=32, max_length=8192)
+    sealed_profile: str | None = Field(default=None, min_length=32, max_length=16384)
+
+
+@router.post("/password/change")
+def password_change_route(
+    body: PasswordChangeIn,
+    request: Request,
+    session: Session = Depends(get_session),
+):
+    """自助修改密码（2026-10-12 修整窗口 P1——pm 走查件 Q4-1「最大产品缺口」）。
+
+    语义（改密码=重封不动钥）：私钥 sk 不变（登录挑战-应答、操作签名语义
+    不受影响），仅换人肉防线的 KEK 源——新密码重封 v4 信封（+资料密封件，
+    同请求原子换新）后回传。会话延续（Cookie 会话与密码无涉）；逐笔记入
+    account_admin_log 台账（operator=self，与离线重置同流可审计）。
+    校验复用惰性升级面（upgrade_sealed_blob：v4 形态+公钥绑定一致——不带病
+    入库）；属主自换（principal 即属主，无跨用户面）。"""
+    from app.accounts.models import AccountAdminLog
+
+    p = principal_from(request, session)
+    if p is None:
+        return JSONResponse(
+            status_code=401,
+            content={"code": "unauthorized", "message": "未登录或会话已失效", "data": None},
+        )
+    try:
+        row = get_account(session, p.username)
+        upgrade_sealed_blob(session, p.username, body.sealed_blob)
+        if body.sealed_profile:
+            if row.role != "pilot":
+                raise AccountError(
+                    "profile_not_applicable", "该账户无实名资料密封件——仅回传信封即可", 422
+                )
+            keep_profile(session, get_account(session, p.username), body.sealed_profile)
+        session.add(
+            AccountAdminLog(
+                action="password_change",
+                username=p.username,
+                operator=p.username,
+                detail="自助改密（会话内重封 v4 信封——私钥不变，仅换 KEK 源）",
+            )
+        )
+        session.commit()
+    except AccountError as exc:
+        return _err(exc)
+    return JSONResponse(
+        status_code=200,
+        content={
+            "code": "ok",
+            "message": "密码已更换——本会话延续；密封件与资料已按新密码重封",
+            "data": None,
+        },
+    )
+
+
 @router.post("/challenge/{username}")
 def challenge_route(username: str, request: Request, session: Session = Depends(get_session)):
     try:

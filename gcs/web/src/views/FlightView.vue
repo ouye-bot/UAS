@@ -29,6 +29,8 @@ const sessionSk = ref(sessionStorage.getItem("fzSessionSk") || "");
 // 私钥敏感遮蔽（视觉 X 批 X4）：默认 password 态防 shoulder-surfing，
 // 一键显隐（粘贴/核对时用）——键值与存储语义零改动
 const skVisible = ref(false);
+// 会话私钥框折叠态（默认收起——正常路径零接触；sessionStorage 自动填充照常）
+const skBoxOpen = ref(false);
 const busy = ref(false);
 const denyPickup = ref<{ code: string; message: string } | null>(null);
 const denyArm = ref<{ code: string; message: string } | null>(null);
@@ -146,7 +148,7 @@ const quotaExhausted = computed(() => quotaExhaustedFn(tokenConsumed.value, quot
 const armButton = computed(() => {
   if (busy.value) return { label: "解锁中…（写入围栏并确认）", disabled: true, title: "围栏三参数写入确认→ARM→上锁位确认" };
   if (canRearm.value) return { label: "重新解锁（同一授权延续）", disabled: false, title: "授权门仍开且飞控已回落上锁——重解锁不重复消费令牌" };
-  if (quotaExhausted.value) return { label: "✓ 已解锁过（令牌已消费）", disabled: true, title: "一次授权一次解锁——新飞行请回「起飞申请」申领新令牌" };
+  if (quotaExhausted.value) return { label: "✓ 已解锁过（配额已用尽）", disabled: true, title: "授权包配额已用尽——新飞行请回「起飞申请」重新出证并领取新令牌（多架次授权可多次解锁，用尽为止）" };
   if (!info.value) return { label: "解锁起飞", disabled: true, title: "先领取令牌" };
   return { label: "解锁起飞", disabled: false, title: "写入围栏参数并解锁电机" };
 });
@@ -518,7 +520,7 @@ const currentAltM = computed(() => {
 
 // ---- ARM 拒绝人话映射（闸门原因直出——2026-09-26 队长实测反馈） ----
 const ARM_REJECT_TEXT: Record<string, string> = {
-  token_used: "该令牌已使用过——一次授权一次解锁；请回「起飞申请」重新申请并领取新令牌",
+  token_used: "该令牌的解锁配额已用尽——请回「起飞申请」重新出证并领取新令牌（多架次授权可多次解锁，用尽为止）",
   bad_signature: "令牌签名核验未通过（非引擎签发或已被篡改）",
   window_expired: "令牌已过有效期——请重新申请",
   plan_mismatch: "令牌与当前计划不一致——计划在出证后不可改动",
@@ -757,11 +759,22 @@ onBeforeUnmount(() => {
       <div class="grid2">
         <div>
           <label>回执码</label><input v-model="receiptCode" class="mono" />
+          <!-- 会话私钥折叠（2026-10-12 修整窗口——pm 走查件：正常路径用户
+              永不需要看；折叠为「已在本机」声明，展开才是核对/粘贴面） -->
           <label>会话私钥（本地保存，零上传）</label>
-          <div class="sk-row">
-            <input v-model="sessionSk" class="mono" :type="skVisible ? 'text' : 'password'" autocomplete="off" spellcheck="false" />
-            <button class="btn ghost sk-toggle" type="button" :title="skVisible ? '遮蔽私钥（防旁人窥屏）' : '显示私钥（核对/粘贴时用）'" @click="skVisible = !skVisible">{{ skVisible ? "遮蔽" : "显示" }}</button>
-          </div>
+          <template v-if="skBoxOpen">
+            <div class="sk-row">
+              <input v-model="sessionSk" class="mono" :type="skVisible ? 'text' : 'password'" autocomplete="off" spellcheck="false" />
+              <button class="btn ghost sk-toggle" type="button" :title="skVisible ? '遮蔽私钥（防旁人窥屏）' : '显示私钥（核对/粘贴时用）'" @click="skVisible = !skVisible">{{ skVisible ? "遮蔽" : "显示" }}</button>
+            </div>
+            <p class="note">钥已在本机会话域（关浏览器即焚）——正常领取无需编辑；仅在跨会话恢复等异常路径按指引粘贴。</p>
+          </template>
+          <template v-else>
+            <p class="note" style="display:flex;align-items:center;gap:8px">
+              会话钥已在本机（自动填充，零上传）——正常领取无需查看。
+              <button class="btn ghost" style="padding:2px 10px;font-size:12px" data-test="sk-box-toggle" @click="skBoxOpen = true">展开私钥（核对/粘贴）</button>
+            </p>
+          </template>
           <div style="margin-top:12px">
             <button class="btn" :disabled="busy" @click="pickup">领取令牌</button>
           </div>

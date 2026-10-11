@@ -358,6 +358,48 @@ export async function unlockSk(password: string): Promise<string> {
   return sk;
 }
 
+// ---- 自助修改密码（2026-10-12 修整窗口 P1——pm 走查件 Q4-1）----
+// 改密码=重封不动钥：私钥 sk 不变（登录挑战-应答/操作签名语义不受影响），
+// 新密码 KEK 重封 v4 信封+资料密封件（同一请求原子换新——旧密码不得再解
+// 任何密封件）。会话延续（Cookie 会话与密码无涉）；服务端逐笔入台账。
+
+/** 当前密码错=unlockSk 抛 bad_password；新密码规范由调用方以
+ * checkPasswordRules（lib/enroll）先行校验（与注册/激活同门槛）。 */
+export async function changePassword(currentPw: string, newPw: string): Promise<void> {
+  const username = cachedUsername();
+  if (!username) throw new ApiError("not_logged_in", "未登录", 401);
+  const sk = await unlockSk(currentPw); // 解封+公钥核对（错密码即拒，不烧服务端）
+  const sm2Any = sm2 as unknown as { getPublicKeyFromPrivateKey: (sk: string) => string };
+  const pk = sm2Any.getPublicKeyFromPrivateKey(sk).replace(/^04/, "");
+  const fresh = await sealKeystoreV4(sk, pk, newPw);
+  // 资料密封件同口径重封（pilot 专属；KEK 同源——当前密码已验，解封必达）
+  let sealedProfile: string | undefined;
+  try {
+    const info = await me();
+    if (info?.sealed_profile) {
+      const meta = await unsealProfileSlot<{ cred: unknown; form: unknown }>(
+        JSON.parse(info.sealed_profile),
+        currentPw,
+      );
+      sealedProfile = JSON.stringify(await sealProfileSlot(meta, newPw));
+    }
+  } catch {
+    throw new ApiError(
+      "profile_reseal_failed",
+      "资料密封件重封失败（已中止改密）——请重试；密封件未被变更",
+      500,
+    );
+  }
+  await api("/auth/password/change", {
+    method: "POST",
+    body: JSON.stringify({
+      sealed_blob: JSON.stringify(fresh),
+      ...(sealedProfile ? { sealed_profile: sealedProfile } : {}),
+    }),
+  });
+  storeKeystore(fresh); // 本地缓存同步换新（明文钥仍只驻内存）
+}
+
 // ---- SM2 工具（与服务端 app.crypto.sm2 口径闭环——node↔python 实测对拍锚）----
 
 /** 敏感操作签名（登录挑战/审计发函/管理员批准——双控双签的客户端侧）。 */

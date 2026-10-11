@@ -2,6 +2,30 @@
 import { computed, nextTick, onMounted, ref } from "vue";
 import { api, apiBase, bridgeBase, fromHex } from "../lib/api";
 import { FZ_CIRCUIT_PIN_DIGEST } from "../lib/circuitPin";
+
+// ---- D1（2026-10-12）：电路指纹活数据化——消费 /verify/api/checks 的 pin 块
+// （本地=vendor MANIFEST 公式同构+链侧=PolicyRegistry.circuitPin 回读，与
+// /verify/ 分发页同一事实源）。链上公示值优先（「已公示上链」金标只挂链读
+// 成功时）；链不可达=本地构建指纹+灰标如实（不装一致）；两侧皆缺=诚实空态。
+// 常量 FZ_CIRCUIT_PIN_DIGEST 仅作 fetch 全败时的末位回落（诚实降级路径）。
+interface PinFace {
+  local_str: string | null;
+  local_digest_hex: string | null;
+  chain_digest_hex: string | null;
+  match: boolean | null;
+}
+const pinFace = ref<PinFace | null>(null);
+const pinDigest = computed(
+  () => pinFace.value?.chain_digest_hex ?? pinFace.value?.local_digest_hex ?? FZ_CIRCUIT_PIN_DIGEST,
+);
+async function loadPin(): Promise<void> {
+  try {
+    const out = await api<{ pin?: PinFace }>("/verify/api/checks");
+    pinFace.value = out.pin ?? null;
+  } catch {
+    pinFace.value = null; // 活数据不可达=末位回落常量（诚实降级，不谎报链上态）
+  }
+}
 import { logbookFindByAuthId, type LogbookEntry } from "../lib/material";
 import { useMaterialStore } from "../stores/material";
 import { classLabel } from "../lib/policy";
@@ -32,6 +56,9 @@ interface PanelData {
     proof_digest_hex: string;
     tx_hash: string;
     status: string;
+    /** D4（2026-10-12）：监管叫停态（凭证吊销联动 revokeAuth 链写后——
+     * Application.status 仍是 approved，公示面必须同步叫停，不再恒显已批准）。 */
+    chain_halted?: boolean;
     class_id: number;
     created_at: string | null;
   }[];
@@ -57,7 +84,13 @@ interface RecordDetail {
   verify_s: number | null;
   expected: Record<string, unknown> | null;
   archived: boolean;
-  chain: null | { proof_digest_hex: string; token_hash_hex: string; match: boolean };
+  chain: null | {
+    proof_digest_hex: string;
+    token_hash_hex: string;
+    match: boolean;
+    /** D4（2026-10-12）：链面授权状态原样回传（getAuth 第 9 位，0=有效）。 */
+    status?: number;
+  };
   chain_error?: string;
 }
 
@@ -369,6 +402,7 @@ function fmtTime(ts: string | number | null): string {
 onMounted(() => {
   material.reload(); // 档案镜像对账（localStorage 非响应式——挂载时现读）
   load();
+  void loadPin(); // D1：电路指纹活数据（/verify/api/checks 同源）
 });
 </script>
 
@@ -546,8 +580,10 @@ onMounted(() => {
             <div class="kv">
               <dt>电路指纹</dt>
               <dd class="pin-dd">
-                <HashText :value="FZ_CIRCUIT_PIN_DIGEST" />
-                <span class="fz-pill gold">已公示上链</span>
+                <HashText :value="pinDigest" />
+                <span v-if="pinFace?.chain_digest_hex" class="fz-pill gold">已公示上链</span>
+                <span v-else class="fz-pill gray">本地构建指纹（链上公示暂不可读）</span>
+                <span v-if="pinFace?.match === false" class="fz-pill amber">与本地构建不一致——换代窗（待重公示仪式对拍）</span>
               </dd>
             </div>
           </template>
@@ -568,7 +604,12 @@ onMounted(() => {
               <span class="mono">#{{ r.auth_id }}</span>
               <HashText :value="r.proof_digest_hex" />
               <span v-if="inMyLogbook(r.auth_id)" class="fz-pill blue">我的档案</span>
-              <StatusTag :tone="chainStatus(r.status).tone" :label="chainStatus(r.status).label" />
+              <StatusTag
+                v-if="r.chain_halted"
+                tone="bad"
+                label="已叫停（监管）"
+              />
+              <StatusTag v-else :tone="chainStatus(r.status).tone" :label="chainStatus(r.status).label" />
               <span class="caret">{{ openRecord === r.auth_id ? "收起" : "详情" }}</span>
             </button>
 
@@ -579,6 +620,17 @@ onMounted(() => {
                   <dt>链上原文核验</dt>
                   <dd v-if="details[r.auth_id].chain!.match" class="ok">一致（指纹=链上原文）</dd>
                   <dd v-else class="bad">不一致（链上公示与归档指纹存在差异）</dd>
+                  <!-- D4（2026-10-12）：链面授权状态（getAuth 第 9 位）——监管
+                      叫停（联动 revokeAuth/紧急禁飞）后在详情面如实呈现 -->
+                  <template v-if="details[r.auth_id].chain!.status != null">
+                    <dt>链面授权状态</dt>
+                    <dd>
+                      <StatusTag
+                        :tone="details[r.auth_id].chain!.status === 0 ? 'ok' : 'bad'"
+                        :label="details[r.auth_id].chain!.status === 0 ? '有效（status=0）' : `已叫停（status=${details[r.auth_id].chain!.status}）`"
+                      />
+                    </dd>
+                  </template>
                 </div>
                 <div v-else-if="details[r.auth_id].chain_error" class="kv">
                   <dt>链上原文核验</dt><dd class="sub">链暂不可达（{{ details[r.auth_id].chain_error }}）</dd>

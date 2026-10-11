@@ -54,17 +54,50 @@ def _recent_records(session, limit: int = 10) -> list[dict]:
         .order_by(AuthRecord.auth_id.desc())
         .limit(limit)
     ).all()
+    halted = _halted_auth_ids(session)
     return [
         {
             "auth_id": rec.auth_id,
             "proof_digest_hex": rec.proof_digest_hex,
             "tx_hash": rec.tx_hash,
             "status": app.status,
+            "chain_halted": int(rec.auth_id) in halted,
+            # D4 链上叫停反映（2026-10-12）：凭证吊销联动（revokeAuth）
+            # 后 Application.status 仍是 approved——公示面必须同步叫停态。
             "class_id": app.class_id,
             "created_at": rec.created_at.isoformat() if rec.created_at else None,
         }
         for rec, app in rows
     ]
+
+
+def _halted_auth_ids(session) -> set[int]:
+    """已叫停授权集（DB 联动台账派生——零额外链读）：RevocationLedger.detail
+    的 linked_auth_ids（凭证吊销联动 revokeAuth 链写成功）+ link_skipped
+    中“链上已是撤销态”项（紧急禁飞先行叫停）。append-only 台账与链写
+    同事务落定——公示面作为叫停事实的展示源与口径一致。"""
+    from app.ra.models import RevocationLedger
+
+    halted: set[int] = set()
+    for (detail_json,) in session.execute(
+        select(RevocationLedger.detail).order_by(RevocationLedger.id.desc()).limit(200)
+    ).all():
+        if not detail_json:
+            continue
+        try:
+            detail = json.loads(detail_json)
+        except (TypeError, ValueError):
+            continue
+        for aid in detail.get("linked_auth_ids") or []:
+            halted.add(int(aid))
+        for skip in detail.get("link_skipped") or []:
+            try:
+                aid = int(skip.get("auth_id"))  # type: ignore[union-attr]
+            except (TypeError, ValueError, AttributeError):
+                continue
+            if "撤销态" in str(skip.get("detail", "")):
+                halted.add(aid)
+    return halted
 
 
 def _binding_cached(name: str):
@@ -252,6 +285,9 @@ def record_detail(auth_id: int):
                     "proof_digest_hex": bytes(onchain[7]).hex(),
                     "token_hash_hex": bytes(onchain[0]).hex(),
                     "match": bytes(onchain[7]).hex() == rec.proof_digest_hex,
+                    # D4 （2026-10-12）：链面授权状态原样回传（getAuth 第 9 位，0=有效）——
+                    # 监管叫停（revokeAuth）后公示面不再恒显“已批准”。
+                    "status": int(onchain[8]),
                 }
             except Exception as e:  # noqa: BLE001 —— 链不可达=降级（归档面仍可用）
                 detail["chain"] = None

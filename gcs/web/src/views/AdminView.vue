@@ -1,11 +1,14 @@
 <script setup lang="ts">
-/** 机构台（2026-09-29 账户批 B3；批二异步化；2026-10-04 升格批）：机构管理员工作面
- * ——待批协作/台账/吊销。主线：收函（看明白为什么）→ 批准/驳回（管理员钥签）→ 留痕。
- * 批准即返回（后台自动出函+解锁——真链推链不再卡浏览器请求）；状态轮询
- * 流转：已批准·待执行 → 已执行 | 执行失败（可重试）。
- * 升格批（B1/B6/A5）：吊销=理由+两步式签名（预览句柄→FZ-REVOKE|v1 域）→
- * 联动清单回执；恢复双控发起（FZ-RESTORE|v1）；处置待办卡（后端未就绪隐藏）；
- * 历史签名复验按钮。 */
+/** 机构台（2026-09-29 账户批 B3；批二异步化；2026-10-04 升格批；2026-10-12
+ * 修整窗口拆四标签工作台）：机构管理员工作面。
+ * 主线（操作者视角首屏=待办）：收函（看明白为什么）→ 批准/驳回（管理员钥签）
+ * → 留痕。批准即返回（后台自动出函+解锁）；状态轮询流转：已批准·待执行 →
+ * 已执行 | 执行失败（可重试）。
+ * 拆标签订钉（复审 C-1 修法）：待办（默认首屏：处置待办+待批协作+未解锁令状）
+ * | 吊销与恢复 | 机队 | 台账与账户（折叠）——v-show 保 DOM 可达（浏览器 e2e
+ * 既有断言可达）；治理公示拆独立页 /governance（admin+auditor 双可见）。
+ * 门限仪式可视化（B3）：执行中卡片就地渲染逐域四关 trace（案乙回放）；台账行
+ * 「仪式留痕」按钮回放。 */
 import { onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { api, ApiError } from "../lib/api";
 import { signMsg, unlockSk } from "../lib/auth";
@@ -17,13 +20,14 @@ import {
   revokeMsg,
   verdictLabel,
   type DisposalTodo,
-  type GovernanceFace,
-  type GovernanceProposalRow,
+  type CeremonyFace,
+  type RevokePreview,
   type RestoreRequestRow,
   type RevokeResult,
   type SnapshotLeaf,
   type VerifySigsOut,
 } from "../lib/gov";
+import CeremonyTrace from "../components/CeremonyTrace.vue";
 import DenyBox from "../components/DenyBox.vue";
 import StatusTag from "../components/StatusTag.vue";
 import ParticleField from "../components/ParticleField.vue";
@@ -35,6 +39,20 @@ const busy = ref(false);
 const deny = ref<{ code: string; message: string } | null>(null);
 const flash = ref("");
 
+// ---- 标签工作台（2026-10-12 拆钉：待办=默认首屏「现在有什么事等我办」；
+// v-show 保 DOM 可达——浏览器 e2e 既有锚迁移最小化）----
+type TabKey = "todo" | "revoke" | "fleet" | "ledger";
+const tab = ref<TabKey>("todo");
+const TABS: { key: TabKey; label: string; hint: string }[] = [
+  { key: "todo", label: "待办", hint: "现在有什么事等我办" },
+  { key: "revoke", label: "吊销与恢复", hint: "凭证吊销与双控恢复" },
+  { key: "fleet", label: "机队", hint: "机队设备与子凭证" },
+  { key: "ledger", label: "台账与账户", hint: "协作/出函台账与账户管理" },
+];
+function goTab(k: TabKey): void {
+  tab.value = k;
+}
+
 // 台账状态 tone（视觉 S 批 S7：对齐审计台 S_META teal 语言——已执行=teal、
 // 已结案=gold、已驳回=bad；未知状态兜底 ok；文案原样不动）
 const LEDGER_TONE: Record<string, "teal" | "gold" | "bad" | "ok"> = {
@@ -43,16 +61,18 @@ const LEDGER_TONE: Record<string, "teal" | "gold" | "bad" | "ok"> = {
 
 interface ReqView {
   id: number; warrant_hash_hex: string; case_no: string; target_auth_id: number | null;
+  org_id?: string | null;
   legal_basis_text: string | null; note: string; status: string;
   auditor_username: string; auditor_fp: string; admin_username: string | null; admin_fp: string | null;
   reject_reason: string | null; execute_error: string | null;
   fzc2_fingerprint_hex: string | null; req_fp?: string;
   created_ts: string | null; decided_ts: string | null; executed_ts: string | null;
+  ceremony?: CeremonyFace | null;
 }
 interface Overview {
-  warrants: { warrant_hash_hex: string; case_no: string; target_auth_id: number | null; unlocked: boolean; created_ts: string | null }[];
-  collab_ledger: { warrant_hash_hex: string; master_cred_hash_hex: string; code_fingerprint_hex: string; issued_at: string | null }[];
-  accounts: { username: string; role: string; status: string; created_ts: string | null }[];
+  warrants: { warrant_hash_hex: string; case_no: string; target_auth_id: number | null; org_id?: string | null; unlocked: boolean; created_ts: string | null }[];
+  collab_ledger: { warrant_hash_hex: string; master_cred_hash_hex: string; org_id?: string | null; code_fingerprint_hex: string; issued_at: string | null }[];
+  accounts: { username: string; role: string; status: string; org_id?: string | null; created_ts: string | null }[];
   reset_log: { ts: string | null; action: string; username: string; operator: string; detail: string | null }[];
 }
 
@@ -63,11 +83,50 @@ const overview = ref<Overview | null>(null);
 const loaded = ref(false);
 const loadedOv = ref(false);
 
+// 登录态机构域（修整窗口③/D3 根修：机队吊销文案去 org-b 硬编码——操作者域
+// 从 whoami 取，拉取失败=「本机构域」诚实缺省，不装一致）
+const myOrg = ref<string | null>(null);
+async function refreshOrg(): Promise<void> {
+  try {
+    const out = await api<{ org_id?: string }>("/auth/whoami");
+    myOrg.value = out.org_id ?? null;
+  } catch { myOrg.value = null; }
+}
+
+// ---- 门限仪式回放（B3 案乙）：执行中/已执行卡按令状哈希回放逐域四关留痕 ----
+const ceremonies = ref<Record<string, CeremonyFace | null>>({});
+const ceremonyBusy = ref("");
+async function fetchCeremony(wh: string): Promise<void> {
+  if (ceremonies.value[wh] !== undefined) return; // 已取过（成功或空）不重取
+  ceremonyBusy.value = wh;
+  try {
+    ceremonies.value[wh] = await api<CeremonyFace>(`/ra/threshold/ceremony?warrant_hash_hex=${encodeURIComponent(wh)}`);
+  } catch {
+    ceremonies.value[wh] = null; // 回放不可达=不渲染（不装一致）
+  } finally {
+    ceremonyBusy.value = "";
+  }
+}
+/** 台账行展开的仪式（按请求 id 记——与缓存键共存） */
+const expandedCeremony = ref<number | null>(null);
+async function toggleCeremony(r: ReqView): Promise<void> {
+  if (expandedCeremony.value === r.id) {
+    expandedCeremony.value = null;
+    return;
+  }
+  await fetchCeremony(r.warrant_hash_hex);
+  expandedCeremony.value = r.id;
+}
+
 async function refresh(): Promise<void> {
   try {
     const all = (await api<{ items: ReqView[] }>("/admin/collab-requests")).items;
     pending.value = all.filter((x) => ["pending", "approved", "executing", "execute_failed"].includes(x.status));
     history.value = all.filter((x) => ["executed", "closed", "rejected"].includes(x.status));
+    // 执行中的卡就地拉仪式留痕（案乙回放——四关逐域判词执行窗内可见）
+    for (const x of pending.value) {
+      if (x.status === "approved" || x.status === "executing") void fetchCeremony(x.warrant_hash_hex);
+    }
   } catch { /* 401 由守卫层处理 */ }
   loaded.value = true;
   try { overview.value = await api<Overview>("/admin/overview"); } catch { overview.value = null; }
@@ -75,45 +134,7 @@ async function refresh(): Promise<void> {
   void refreshRevocation();
   void refreshRestores();
   void refreshTodos();
-  void refreshGovernance();
-}
-
-// ---- ③站治理公示大屏（/chain/governance——AdminGovernor k-of-n 公示只读）：
-// 提案全生命周期+席位/法定票数/时间锁档。链不可达/fake 档=整卡优雅隐藏
-// （todosAvailable 同范式——不谎称空、不装一致）。
-const gov = ref<GovernanceFace | null>(null);
-const govAvailable = ref(true);
-const govLoaded = ref(false);
-async function refreshGovernance(): Promise<void> {
-  try {
-    gov.value = await api<GovernanceFace>("/chain/governance");
-    govAvailable.value = true;
-  } catch {
-    govAvailable.value = false;
-  }
-  govLoaded.value = true;
-}
-function govTone(st: GovernanceProposalRow["status"]): string {
-  return { active: "amber", queued: "blue", executed: "teal", cancelled: "gray" }[st] ?? "gray";
-}
-function govLabel(st: GovernanceProposalRow["status"]): string {
-  return (
-    { active: "表决中", queued: "时间锁中", executed: "已执行", cancelled: "已取消" }[st] ??
-    String(st)
-  );
-}
-function govEta(etaUnixS: number): string {
-  if (!etaUnixS) return "—";
-  const remain = Math.round(etaUnixS - Date.now() / 1000);
-  if (remain <= 0) return "到期可执行";
-  const h = Math.floor(remain / 3600);
-  const m = Math.floor((remain % 3600) / 60);
-  return h > 0 ? `剩余 ${h}h${m}m` : `剩余 ${m}m${remain % 60}s`;
-}
-function govDelayTag(delayS: number): { text: string; tone: string } {
-  return delayS >= 86400
-    ? { text: "生产档 24h", tone: "teal" }
-    : { text: `演示档 ${delayS}s`, tone: "amber" };
+  void refreshPendingWarrants();
 }
 
 // KPI 指标带（与审计台同语言——机构视角五数；count-up：视觉深化批 C）
@@ -134,23 +155,23 @@ const kpiAccounts = useCountUp(computed(() => kpiRaw.value.accounts));
 
 // 轮询（4s）：批准后的后台执行态流转自动可见（approved→executed/execute_failed）
 let pollTimer: ReturnType<typeof setInterval> | null = null;
-// 治理公示面轮询（10s——链上公示节奏，与双控 4s 分离）
-let govTimer: ReturnType<typeof setInterval> | null = null;
 onMounted(() => {
   void refresh();
-  govTimer = setInterval(() => void refreshGovernance(), 10000);
+  void refreshOrg();
   pollTimer = setInterval(async () => {
     // 无条件轮询（同审计台 P1-7 根修：新 pending 请求自动出现，双控合流不靠 F5）
     try {
       const all = (await api<{ items: ReqView[] }>("/admin/collab-requests")).items;
       pending.value = all.filter((x) => ["pending", "approved", "executing", "execute_failed"].includes(x.status));
       history.value = all.filter((x) => ["executed", "closed", "rejected"].includes(x.status));
+      for (const x of pending.value) {
+        if (x.status === "approved" || x.status === "executing") void fetchCeremony(x.warrant_hash_hex);
+      }
     } catch { /* 下拍再试 */ }
   }, 4000);
 });
 onBeforeUnmount(() => {
   if (pollTimer) clearInterval(pollTimer);
-  if (govTimer) clearInterval(govTimer);
 });
 
 // ---- 管理员钥解锁（批准/驳回签名前置）----
@@ -255,17 +276,26 @@ async function deleteOrphan(username: string): Promise<void> {
 // FZ-REVOKE|v1|{句柄排序串}|{reason}|{epoch} 域 SM2 签名。句柄集前端无法预知
 // ——两步式：先 GET 预览端点取该用户有效凭证句柄与目标纪元，本地拼消息签名
 // 后正式提交。成功展示联动撤销授权清单（linked_auth_ids）+台账回执。
+// D2（2026-10-12）：提示纪元改绑**预览返回值**（服务端 _base_epoch()+1 权威
+// ——DB snapshot 镜像漂移不作签绑依据），预览挪到确认拍：确认句里亮权威纪元。
 const revokeUser = ref("");
 const revokeReason = ref("");
 const revokeConfirm = ref(false);
+const revokePreview = ref<RevokePreview | null>(null);
 const revokeResult = ref<RevokeResult | null>(null);
 // 确认态绑定用户名+理由：任一改动即撤回确认（防「看 A 批 B」误伤）
-watch([revokeUser, revokeReason], () => { revokeConfirm.value = false; });
+watch([revokeUser, revokeReason], () => {
+  revokeConfirm.value = false;
+  revokePreview.value = null;
+});
 function prefillRevoke(username: string, reason: string): void {
   revokeUser.value = username;
   revokeReason.value = reason;
   revokeConfirm.value = false;
+  revokePreview.value = null;
   revokeResult.value = null;
+  tab.value = "revoke"; // 处置待办「去吊销」跨标签带入——吊销与恢复页
+  flash.value = `✓ 已按待办预填吊销表单（${username}）——核对理由后签名执行`;
 }
 async function doRevoke(): Promise<void> {
   deny.value = null; flash.value = "";
@@ -274,19 +304,31 @@ async function doRevoke(): Promise<void> {
   if (!username) { deny.value = { code: "username_required", message: "请填写要吊销的用户名" }; return; }
   if (reason.length < 4) { deny.value = { code: "reason_required", message: "撤销理由须 ≥4 字（公示面必填——无理由强制撤销封堵）" }; return; }
   if (!sk.value) { deny.value = { code: "locked", message: "请先解锁管理员密钥（吊销须 SM2 签名留痕）" }; return; }
-  if (!revokeConfirm.value) { revokeConfirm.value = true; return; }
+  if (!revokeConfirm.value) {
+    // 第一拍=预览（D2：目标纪元取服务端权威预览，确认句亮出后再签）
+    busy.value = true;
+    try {
+      const preview = await api<RevokePreview>(
+        `/ra/revoke/by-username/preview?username=${encodeURIComponent(username)}`,
+      );
+      if (!preview.handles?.length) {
+        deny.value = { code: "nothing_to_revoke", message: "该用户无有效凭证（无可吊销项）" };
+        return;
+      }
+      revokePreview.value = preview;
+      revokeConfirm.value = true;
+    } catch (e) {
+      const err = e as ApiError;
+      deny.value = { code: err.code ?? "revoke_failed", message: err.message ?? String(e) };
+    } finally { busy.value = false; }
+    return;
+  }
+  const preview = revokePreview.value;
+  if (!preview) { revokeConfirm.value = false; return; }
   revokeConfirm.value = false;
   busy.value = true;
   try {
-    // 两步式第一拍：句柄预览（admin 只读）——句柄集+目标纪元
-    const preview = await api<{ username: string; handles: string[]; epoch: number }>(
-      `/ra/revoke/by-username/preview?username=${encodeURIComponent(username)}`,
-    );
-    if (!preview.handles?.length) {
-      deny.value = { code: "nothing_to_revoke", message: "该用户无有效凭证（无可吊销项）" };
-      return;
-    }
-    // 第二拍：本地拼 FZ-REVOKE 消息签名后正式提交（epoch=公示纪元+1）
+    // 第二拍：本地拼 FZ-REVOKE 消息签名后正式提交（epoch=预览权威纪元）
     const msg = revokeMsg(preview.handles, reason, preview.epoch);
     const sig_hex = signMsg(sk.value, msg);
     const out = await api<RevokeResult>("/ra/revoke/by-username", {
@@ -300,8 +342,7 @@ async function doRevoke(): Promise<void> {
     await refresh();
   } catch (e) {
     const err = e as ApiError;
-    const hint = err.status === 404 ? "（预览端点不可用——后端需部署两步式预览端点）" : "";
-    deny.value = { code: err.code ?? "revoke_failed", message: (err.message ?? String(e)) + hint };
+    deny.value = { code: err.code ?? "revoke_failed", message: err.message ?? String(e) };
   } finally { busy.value = false; }
 }
 
@@ -360,8 +401,8 @@ async function requestRestore(): Promise<void> {
   } finally { restoreBusyId.value = null; busy.value = false; }
 }
 
-// ---- 处置待办（A5/B2：结案属实→吊销处置的待办面）——后端并行开发中：
-// 404/网络不可达即整卡优雅隐藏，不谎称空 ----
+// ---- 处置待办（A5/B2：结案属实→吊销处置的待办面）——后端未就绪隐藏；
+// 读面按域（辖区分账）：跨域待办已被服务端过滤，行携带派生域徽标 ----
 const todos = ref<DisposalTodo[]>([]);
 const todosAvailable = ref(true);
 const todosLoaded = ref(false);
@@ -375,14 +416,12 @@ async function refreshTodos(): Promise<void> {
   }
   todosLoaded.value = true;
 }
-/** 去吊销（预填）：用户名+理由（案号+结论）带入吊销表单——处置闭环第一步。 */
+/** 去吊销（预填+切页）：用户名+理由（案号+结论）带入吊销表单——处置闭环第一步。 */
 function goRevoke(t: DisposalTodo): void {
   prefillRevoke(
     t.username,
     `案号 ${t.case_no} 审计结案结论「${conclusionLabel(t.conclusion)}」——依终局判词吊销该当事人全部有效凭证`,
   );
-  flash.value = `✓ 已按待办 #${t.id} 预填吊销表单（${t.username}）——核对理由后签名执行`;
-  document.getElementById("revoke-panel")?.scrollIntoView?.({ behavior: "smooth", block: "start" });
 }
 async function resolveTodo(t: DisposalTodo): Promise<void> {
   deny.value = null; flash.value = "";
@@ -398,6 +437,96 @@ async function resolveTodo(t: DisposalTodo): Promise<void> {
     const err = e as ApiError;
     deny.value = { code: err.code ?? "resolve_failed", message: err.message ?? String(e) };
   } finally { resolveBusyId.value = null; }
+}
+
+// ---- 未解锁令状（B4 手工出函工作面——匿名立案位令状自动流不可达，本卡为
+// 该分支唯一 UI 路径；读面按域+行携带派生域徽标）----
+interface PendingWarrantRow {
+  warrant_hash_hex: string; case_no: string; target_auth_id: number | null;
+  org_id: string | null; legal_basis_text: string | null; created_ts: string | null;
+}
+const pendingWarrants = ref<PendingWarrantRow[]>([]);
+const pwAvailable = ref(true);
+const pwLoaded = ref(false);
+const pwBusy = ref("");
+const pwIssued = ref<Record<string, { fingerprint: string }>>({});
+async function refreshPendingWarrants(): Promise<void> {
+  try {
+    pendingWarrants.value = (await api<PendingWarrantRow[]>("/ra/collab/pending")) ?? [];
+    pwAvailable.value = true;
+  } catch { pwAvailable.value = false; }
+  pwLoaded.value = true;
+}
+async function issueCollabCode(w: PendingWarrantRow): Promise<void> {
+  deny.value = null; flash.value = "";
+  pwBusy.value = w.warrant_hash_hex;
+  try {
+    const out = await api<{ code: string; fingerprint: string }>("/ra/collab-code", {
+      method: "POST",
+      body: JSON.stringify({ warrant_hash_hex: w.warrant_hash_hex }),
+    });
+    pwIssued.value = { ...pwIssued.value, [w.warrant_hash_hex]: { fingerprint: out.fingerprint } };
+    flash.value = `✓ 协作函已出具（FZC2 指纹 ${out.fingerprint}）——审计台凭函解锁（函-令状-凭证三方绑定）`;
+  } catch (e) {
+    const err = e as ApiError;
+    deny.value = { code: err.code ?? "collab_code_failed", message: err.message ?? String(e) };
+  } finally { pwBusy.value = ""; }
+}
+
+// ---- 主凭证级联视图（2026-10-12 P2）：公示撤销清单任一叶反查联动授权
+// （/ra/revocation/linkage——吊销回执是一次性的，级联常设化）----
+interface LinkageFace {
+  handle_hex: string;
+  org_id: string | null;
+  linked_auth_ids: number[];
+  link_skipped: { auth_id?: number; detail?: string }[];
+  ledger_rows: { ledger_id: number; epoch: number; reason: string; actor: string; linked_auth_ids: number[] }[];
+}
+const linkage = ref<Record<string, LinkageFace | null>>({});
+const linkageOpen = ref<string | null>(null);
+async function toggleLinkage(handleHex: string): Promise<void> {
+  if (linkageOpen.value === handleHex) {
+    linkageOpen.value = null;
+    return;
+  }
+  if (linkage.value[handleHex] === undefined) {
+    try {
+      linkage.value[handleHex] = await api<LinkageFace>(
+        `/ra/revocation/linkage?handle_hex=${encodeURIComponent(handleHex)}`,
+      );
+    } catch {
+      linkage.value[handleHex] = null; // 不可达=不渲染（不装一致）
+    }
+  }
+  linkageOpen.value = handleHex;
+}
+
+// ---- 设备飞行记录查询（2026-10-12 P2——C10 双向缺失根修）：设备行展开
+// 该机授权记录（DB join 零链读；匿名红线不破——行内零身份字段）----
+interface DeviceFlightsFace {
+  master_cred_hash_hex: string;
+  device_no: string;
+  flights: { auth_id: number; status: string; class_id: number; created_at: string | null; token_consumed_ts: string | null }[];
+}
+const flights = ref<Record<string, DeviceFlightsFace | null>>({});
+const flightsOpen = ref<string | null>(null);
+async function toggleFlights(handleHex: string): Promise<void> {
+  if (flightsOpen.value === handleHex) {
+    flightsOpen.value = null;
+    return;
+  }
+  if (flights.value[handleHex] === undefined) {
+    try {
+      flights.value[handleHex] = await api<DeviceFlightsFace>(
+        `/ra/fleet/device/flights?master_cred_hash_hex=${encodeURIComponent(handleHex)}`,
+      );
+    } catch (e) {
+      const err = e as ApiError;
+      deny.value = { code: err.code ?? "flights_failed", message: err.message ?? String(e) };
+      flights.value[handleHex] = null;
+    }
+  }
+  flightsOpen.value = handleHex;
 }
 
 // ---- 历史签名复验（A3）：台账行就地调 /admin/collab-requests/{id}/verify-sigs ----
@@ -601,510 +730,616 @@ async function doFleetRevoke(): Promise<void> {
       </div>
     </div>
 
-    <!-- ③站治理公示大屏：AdminGovernor k-of-n 链上公示只读（/chain/governance）
-        ——提案全生命周期/席位/法定票数/时间锁档。链不可达或 fake 档=整卡隐藏
-        （govAvailable=false，todosAvailable 同范式）。零身份：owner 展示链上
-        公示钥址短形态+role 标注，无实名。 -->
-    <div class="panel" v-if="govAvailable && gov">
-      <div style="display:flex;align-items:center;gap:10px;margin-bottom:4px;flex-wrap:wrap">
-        <h2 style="margin:0">链上治理（AdminGovernor k-of-n）</h2>
-        <template v-if="gov.chain">
-          <span class="fz-pill teal">{{ gov.chain.required }}/{{ gov.chain.owner_count }} 多签</span>
-          <span class="fz-pill" :class="govDelayTag(gov.chain.delay_s).tone">
-            {{ govDelayTag(gov.chain.delay_s).text }}
-          </span>
-          <span class="fz-pill gray">累计提案 {{ gov.chain.proposal_count }}</span>
-        </template>
-      </div>
-      <FzEmpty
-        v-if="!gov.chain"
-        :text="gov.mode === 'fake'
-          ? '演示链档——治理公示面随真链提供（AdminGovernor k-of-n：提案→多签→时间锁→执行）。'
-          : '链不可达——治理公示面暂不可读（恢复后自动填充）。'"
-        icon="doc"
-      />
-      <template v-if="gov.chain">
-      <p class="desc">
-        政策公示/指纹锚定/治理席位变更——每一条链上治理写入都经
-        「提案 → 多签确认 → 时间锁 → 执行」四步，全程事件上链可追责；
-        owner 增删与法定票数变更同样走此仪式（治理面变更不绕过治理面）。
-      </p>
-      <div class="tbl-wrap" v-if="gov.chain.proposals.length">
-        <table class="tbl">
-          <thead>
-            <tr><th>#</th><th>治理动作</th><th>目标</th><th>确认</th><th>状态</th><th>时间锁</th></tr>
-          </thead>
-          <tbody>
-            <tr v-for="p in gov.chain.proposals" :key="p.proposal_id">
-              <td class="mono">{{ p.proposal_id }}</td>
-              <td>{{ p.description || "—" }}</td>
-              <td class="mono">{{ p.target }}</td>
-              <td class="mono">{{ p.confirmations }}/{{ gov!.chain!.required }}</td>
-              <td><span class="fz-badge" :class="govTone(p.status)">{{ govLabel(p.status) }}</span></td>
-              <td class="mono">{{ p.status === "queued" ? govEta(p.eta_unix_s) : "—" }}</td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
-      <FzEmpty v-else text="尚无治理提案记录。" icon="doc" />
-      <!-- 1.3 件②：份额域失同步红牌（治理席位变更后未重分割——解锁面
-          第④关同步 fail-closed；红牌=漂移检测在案+reshare 提案已自动起草
-          （Queued 待确认），confirm/execute 由治理面人工完成） -->
-      <p
-        v-if="gov.threshold_sync && gov.threshold_sync.synced === false"
-        data-test="threshold-sync-flag"
-        class="req-meta"
-        style="color:#c0392b;border:1px solid #e6b0aa;border-radius:8px;padding:8px 12px;margin-top:10px"
+    <!-- 标签工作台（2026-10-12 拆钉）：待办=默认首屏；v-show 保 DOM 可达 -->
+    <div class="tabbar" data-test="admin-tabs" role="tablist">
+      <button
+        v-for="t in TABS"
+        :key="t.key"
+        class="tabbtn"
+        :class="{ active: tab === t.key }"
+        role="tab"
+        :aria-selected="tab === t.key"
+        :title="t.hint"
+        @click="goTab(t.key)"
       >
-        ⛔ 份额域失同步：治理席位已变更（owner-set 指纹漂移）而份额未重分割
-        ——门限解锁已被 fail-closed 拦截。同步 watcher 将自动起草重分割提案
-        （待治理多签确认+时间锁执行）；公示落地后系统自动完成份额重分割并
-        解除拦截（人工需完成多签确认与执行两步）。
-      </p>
-      <div class="req-meta" style="margin-top:6px">
-        治理席位（{{ gov.chain.owner_count }}）：
-        <span v-for="o in gov.chain.owners" :key="o.address" style="margin-right:10px">
-          <span class="mono">{{ o.short }}</span>
-          <span v-if="o.role" class="fz-badge blue">{{ o.role }}</span>
-        </span>
-      </div>
-      </template>
+        {{ t.label }}
+        <span v-if="t.key === 'todo' && kpiPending + kpiFailed > 0" class="tabdot">{{ kpiPending + kpiFailed }}</span>
+      </button>
+      <span class="tabhint">{{ TABS.find((t) => t.key === tab)?.hint }}</span>
     </div>
 
-    <!-- ⓪ 处置待办（A5/B2）：审计结案「属实」→ 机构处置的交接面——后端
-        并行开发中，404/不可达即整卡隐藏（todosAvailable=false） -->
-    <div class="panel" v-if="todosAvailable">
-      <div style="display:flex;align-items:center;gap:10px;margin-bottom:4px">
-        <h2 style="margin:0">待处置（审计结案交接）</h2>
-        <span class="fz-pill amber" v-if="todos.filter((t) => t.status === 'pending').length">
-          {{ todos.filter((t) => t.status === "pending").length }} 项待处置
-        </span>
-        <span class="fz-pill gray" v-else-if="todosLoaded">暂无待处置</span>
-      </div>
-      <p class="desc">审计员结案结论「属实」的案件在此汇为处置待办——核对后「去吊销」（已预填用户名与理由）或标记已处理。</p>
-      <div v-if="!todosLoaded" class="fz-skelset" aria-hidden="true" style="max-width:420px">
-        <div class="fz-skel" style="width:80%"></div>
-        <div class="fz-skel" style="width:58%"></div>
-      </div>
-      <FzEmpty v-else-if="!todos.length" text="暂无待处置案件——审计结案属实后自动汇入。" icon="inbox" />
-      <div v-else class="req-list">
-        <div v-for="t in todos" :key="t.id" class="todo-row" :class="{ done: t.status === 'done' }">
-          <div class="req-main">
-            <span class="mono case">{{ t.case_no }}</span>
-            <span class="fz-badge" :class="conclusionTone(t.conclusion)">{{ conclusionLabel(t.conclusion) }}</span>
-            <span class="fz-badge" :class="t.status === 'pending' ? 'amber' : 'gray'">
-              {{ t.status === "pending" ? "待处置" : "已处理" }}
-            </span>
+    <!-- ════ 标签一：待办（默认首屏——现在有什么事等我办）════ -->
+    <div v-show="tab === 'todo'">
+      <!-- ⓪ 处置待办（A5/B2）：审计结案「属实」→ 机构处置的交接面——后端
+          未就绪 404/不可达即整卡隐藏（todosAvailable=false） -->
+      <div class="panel" v-if="todosAvailable">
+        <div style="display:flex;align-items:center;gap:10px;margin-bottom:4px">
+          <h2 style="margin:0">待处置（审计结案交接）</h2>
+          <span class="fz-pill amber" v-if="todos.filter((t) => t.status === 'pending').length">
+            {{ todos.filter((t) => t.status === "pending").length }} 项待处置
+          </span>
+          <span class="fz-pill gray" v-else-if="todosLoaded">暂无待处置</span>
+        </div>
+        <p class="desc">审计员结案结论「属实」的案件在此汇为处置待办——核对后「去吊销」（已预填用户名与理由，跳转吊销与恢复页）或标记已处理。</p>
+        <div v-if="!todosLoaded" class="fz-skelset" aria-hidden="true" style="max-width:420px">
+          <div class="fz-skel" style="width:80%"></div>
+          <div class="fz-skel" style="width:58%"></div>
+        </div>
+        <FzEmpty v-else-if="!todos.length" text="暂无待处置案件——审计结案属实后自动汇入。" icon="inbox" />
+        <div v-else class="req-list">
+          <div v-for="t in todos" :key="t.id" class="todo-row" :class="{ done: t.status === 'done' }">
+            <div class="req-main">
+              <span class="mono case">{{ t.case_no }}</span>
+              <span class="fz-badge" :class="conclusionTone(t.conclusion)">{{ conclusionLabel(t.conclusion) }}</span>
+              <span class="fz-badge" :class="t.status === 'pending' ? 'amber' : 'gray'">
+                {{ t.status === "pending" ? "待处置" : "已处理" }}
+              </span>
+            </div>
+            <div class="req-meta">当事人 <span class="mono">{{ t.username }}</span> · {{ t.created_ts?.slice(5, 16).replace("T", " ") ?? "—" }}</div>
+            <div class="req-meta" v-if="t.resolved_note">处理备注：{{ t.resolved_note }}</div>
+            <div class="req-actions" style="display:flex;gap:8px;margin-top:4px" v-if="t.status === 'pending'">
+              <button class="btn sm" @click="goRevoke(t)">去吊销</button>
+              <button class="btn sm ghost" :disabled="resolveBusyId === t.id" @click="resolveTodo(t)">
+                {{ resolveBusyId === t.id ? "提交中…" : "标记已处理" }}
+              </button>
+            </div>
           </div>
-          <div class="req-meta">当事人 <span class="mono">{{ t.username }}</span> · {{ t.created_ts?.slice(5, 16).replace("T", " ") ?? "—" }}</div>
-          <div class="req-meta" v-if="t.resolved_note">处理备注：{{ t.resolved_note }}</div>
-          <div class="req-actions" style="display:flex;gap:8px;margin-top:4px" v-if="t.status === 'pending'">
-            <button class="btn sm" @click="goRevoke(t)">去吊销</button>
-            <button class="btn sm ghost" :disabled="resolveBusyId === t.id" @click="resolveTodo(t)">
-              {{ resolveBusyId === t.id ? "提交中…" : "标记已处理" }}
+        </div>
+      </div>
+
+      <!-- ① 待批协作 -->
+      <div class="panel">
+        <h2>待批协作请求</h2>
+        <p class="desc">
+          每张卡是审计员的一次协同解锁申请——依据原文、调查理由、目标与签名指纹完整在列。
+          看明白后批准（您签名后系统自动出函+解锁）或驳回（理由必填）。
+          执行中卡片就地呈现门限解锁仪式（各份额域逐域四关留痕）。
+        </p>
+        <template v-if="!unlockedOnce">
+          <label>解锁管理员密钥（密码——仅在解锁瞬间使用）</label>
+          <input v-model="unlockPass" type="password" @keyup.enter="doUnlock" />
+          <p v-if="unlockErr" class="step-err">{{ unlockErr }}</p>
+          <button class="btn ghost" @click="doUnlock">解锁密钥</button>
+        </template>
+        <template v-if="pending.length === 0">
+          <div v-if="!loaded" class="fz-skelset" aria-hidden="true" style="max-width:420px">
+            <div class="fz-skel" style="width:88%"></div>
+            <div class="fz-skel" style="width:70%"></div>
+            <div class="fz-skel" style="width:52%"></div>
+          </div>
+          <FzEmpty v-else text="暂无待批请求。" icon="inbox" />
+        </template>
+        <div v-for="r in pending" :key="r.id" class="req-card fz-enter" :class="[r.status, { 'fz-converge': convergedId === r.id }]"
+             @animationend="onConvergeEnd(r.id, $event)">
+          <div class="req-head">
+            <span class="case mono">{{ r.case_no }}</span>
+            <span class="fz-badge" :class="{
+              pending: 'amber', approved: 'blue', executing: 'blue', execute_failed: 'red',
+            }[r.status] ?? 'gray'">{{
+              { pending: '待批准', approved: '已批准 · 待执行', executing: '执行中', execute_failed: '执行失败' }[r.status] ?? r.status
+            }}</span>
+            <span v-if="r.target_auth_id == null" class="fz-pill gray" title="该令状未指定目标授权编号——无归属域可派生，全域待批（跨域出函在服务端域门兜底）">未定域 · 全域待批</span>
+          </div>
+          <!-- 双钥汇流图（丙-2 M3 装饰层）：审计员钥+管理员钥 → req_fp；
+               待批准时右钥灰点虚位——「缺一不可」叙事 -->
+          <FzConfluence class="req-cf" :auditor-fp="r.auditor_fp"
+            :admin-fp="r.admin_fp ?? r.fzc2_fingerprint_hex" :req-fp="r.req_fp" />
+          <div v-if="r.status === 'approved' || r.status === 'executing'" class="exec-hint">系统自动出函与解锁进行中——完成后状态自动流转…</div>
+          <div v-if="r.status === 'execute_failed'" class="exec-err">⚠ {{ r.execute_error }}（可重试）</div>
+          <div class="kv">
+            <dt>立案依据原文</dt><dd>{{ r.legal_basis_text ?? "—（历史案卷无原文）" }}</dd>
+            <dt>审计员理由</dt><dd>{{ r.note }}</dd>
+            <dt>目标授权编号</dt><dd class="mono">{{ r.target_auth_id ?? "—（未指定——不可自动执行）" }}</dd>
+            <dt>令状哈希</dt><dd class="mono">{{ r.warrant_hash_hex.slice(0, 24) }}…</dd>
+            <dt>发函人</dt><dd class="mono">{{ r.auditor_username }}（密钥指纹 {{ r.auditor_fp }}…）</dd>
+            <dt>请求指纹</dt><dd class="mono">{{ r.req_fp ?? "—" }}</dd>
+          </div>
+          <!-- 门限仪式留痕（B3 可视化）：执行窗内逐域四关回放 -->
+          <template v-if="(r.status === 'approved' || r.status === 'executing') && ceremonies[r.warrant_hash_hex]">
+            <CeremonyTrace :ceremony="ceremonies[r.warrant_hash_hex]" />
+          </template>
+          <div v-if="r.status === 'pending'" style="display:flex;gap:10px;margin-top:10px;align-items:center">
+            <button class="btn" :disabled="busy || !unlockedOnce" @click="approve(r)">
+              {{ busy ? "签名批准中…" : "批准（签名后自动执行解锁）" }}
+            </button>
+            <button class="btn ghost" style="border-color:#d98484;color:#a33" @click="rejecting = rejecting === r.id ? null : r.id">
+              驳回
+            </button>
+          </div>
+          <div v-if="r.status === 'execute_failed'" style="margin-top:10px">
+            <button class="btn" :disabled="busy" @click="retry(r)">重试执行</button>
+          </div>
+          <div v-if="rejecting === r.id" style="margin-top:8px">
+            <label>驳回理由（必填——审计员可见）</label>
+            <textarea v-model="rejectReason" rows="2"></textarea>
+            <button class="btn" style="border-color:#d98484;color:#a33" :disabled="busy || !unlockedOnce" @click="reject(r)">
+              确认驳回
             </button>
           </div>
         </div>
-      </div>
-    </div>
-
-    <!-- ① 待批协作 -->
-    <div class="panel">
-      <h2>待批协作请求</h2>
-      <p class="desc">
-        每张卡是审计员的一次协同解锁申请——依据原文、调查理由、目标与签名指纹完整在列。
-        看明白后批准（您签名后系统自动出函+解锁）或驳回（理由必填）。
-      </p>
-      <template v-if="!unlockedOnce">
-        <label>解锁管理员密钥（密码——仅在解锁瞬间使用）</label>
-        <input v-model="unlockPass" type="password" @keyup.enter="doUnlock" />
-        <p v-if="unlockErr" class="step-err">{{ unlockErr }}</p>
-        <button class="btn ghost" @click="doUnlock">解锁密钥</button>
-      </template>
-      <template v-if="pending.length === 0">
-        <div v-if="!loaded" class="fz-skelset" aria-hidden="true" style="max-width:420px">
-          <div class="fz-skel" style="width:88%"></div>
-          <div class="fz-skel" style="width:70%"></div>
-          <div class="fz-skel" style="width:52%"></div>
-        </div>
-        <FzEmpty v-else text="暂无待批请求。" icon="inbox" />
-      </template>
-      <div v-for="r in pending" :key="r.id" class="req-card fz-enter" :class="[r.status, { 'fz-converge': convergedId === r.id }]"
-           @animationend="onConvergeEnd(r.id, $event)">
-        <div class="req-head">
-          <span class="case mono">{{ r.case_no }}</span>
-          <span class="fz-badge" :class="{
-            pending: 'amber', approved: 'blue', executing: 'blue', execute_failed: 'red',
-          }[r.status] ?? 'gray'">{{
-            { pending: '待批准', approved: '已批准 · 待执行', executing: '执行中', execute_failed: '执行失败' }[r.status] ?? r.status
-          }}</span>
-        </div>
-        <!-- 双钥汇流图（丙-2 M3 装饰层）：审计员钥+管理员钥 → req_fp；
-             待批准时右钥灰点虚位——「缺一不可」叙事 -->
-        <FzConfluence class="req-cf" :auditor-fp="r.auditor_fp"
-          :admin-fp="r.admin_fp ?? r.fzc2_fingerprint_hex" :req-fp="r.req_fp" />
-        <div v-if="r.status === 'approved' || r.status === 'executing'" class="exec-hint">系统自动出函与解锁进行中——完成后状态自动流转…</div>
-        <div v-if="r.status === 'execute_failed'" class="exec-err">⚠ {{ r.execute_error }}（可重试）</div>
-        <div class="kv">
-          <dt>立案依据原文</dt><dd>{{ r.legal_basis_text ?? "—（历史案卷无原文）" }}</dd>
-          <dt>审计员理由</dt><dd>{{ r.note }}</dd>
-          <dt>目标授权编号</dt><dd class="mono">{{ r.target_auth_id ?? "—（未指定——不可自动执行）" }}</dd>
-          <dt>令状哈希</dt><dd class="mono">{{ r.warrant_hash_hex.slice(0, 24) }}…</dd>
-          <dt>发函人</dt><dd class="mono">{{ r.auditor_username }}（密钥指纹 {{ r.auditor_fp }}…）</dd>
-          <dt>请求指纹</dt><dd class="mono">{{ r.req_fp ?? "—" }}</dd>
-        </div>
-        <div v-if="r.status === 'pending'" style="display:flex;gap:10px;margin-top:10px;align-items:center">
-          <button class="btn" :disabled="busy || !unlockedOnce" @click="approve(r)">
-            {{ busy ? "签名批准中…" : "批准（签名后自动执行解锁）" }}
-          </button>
-          <button class="btn ghost" style="border-color:#d98484;color:#a33" @click="rejecting = rejecting === r.id ? null : r.id">
-            驳回
-          </button>
-        </div>
-        <div v-if="r.status === 'execute_failed'" style="margin-top:10px">
-          <button class="btn" :disabled="busy" @click="retry(r)">重试执行</button>
-        </div>
-        <div v-if="rejecting === r.id" style="margin-top:8px">
-          <label>驳回理由（必填——审计员可见）</label>
-          <textarea v-model="rejectReason" rows="2"></textarea>
-          <button class="btn" style="border-color:#d98484;color:#a33" :disabled="busy || !unlockedOnce" @click="reject(r)">
-            确认驳回
-          </button>
-        </div>
-      </div>
-      <p v-if="flash" class="flash">{{ flash }}</p>
-      <DenyBox v-if="deny" :code="deny.code" :message="deny.message" />
-    </div>
-
-    <!-- ② 协作台账 -->
-    <div class="panel">
-      <h2>协作台账</h2>
-      <p class="desc">发函/批准/执行全程带签名指纹——每一步可追责到人。</p>
-      <div class="tbl-wrap" v-if="history.length">
-        <table class="tbl">
-          <thead><tr><th>案号</th><th>状态</th><th>审计员</th><th>批准人</th><th>函指纹</th><th>执行时间</th><th>签名复验</th></tr></thead>
-          <tbody>
-            <tr v-for="r in history" :key="r.id">
-              <td class="mono">{{ r.case_no }}</td>
-              <td><StatusTag :tone="LEDGER_TONE[r.status] ?? 'ok'" :label="{ executed: '已执行·待结案', closed: '已结案', rejected: '已驳回' }[r.status] ?? r.status" /></td>
-              <td class="mono">{{ r.auditor_username }}</td>
-              <td class="mono">{{ r.admin_username ?? "—" }}</td>
-              <td class="mono">{{ r.fzc2_fingerprint_hex ?? "—" }}</td>
-              <td>{{ r.executed_ts ?? r.decided_ts ?? "—" }}</td>
-              <td>
-                <button class="btn sm ghost" :disabled="sigsBusyId === r.id" @click="checkSigs(r)">
-                  {{ sigsBusyId === r.id ? "复验中…" : "验签复核" }}
-                </button>
-                <div v-if="sigs[r.id]" class="sigs-out">
-                  <span class="sigs-line" :class="{ bad: sigs[r.id].auditor.ok === false }">{{ verdictLabel(sigs[r.id].auditor, "审计员签") }}</span>
-                  <span class="sigs-line" :class="{ bad: sigs[r.id].admin.ok === false }">{{ verdictLabel(sigs[r.id].admin, "管理员签") }}</span>
-                </div>
-              </td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
-      <div v-else-if="!loaded" class="fz-skelset" aria-hidden="true" style="max-width:420px">
-        <div class="fz-skel" style="width:80%"></div>
-        <div class="fz-skel" style="width:60%"></div>
-      </div>
-      <FzEmpty v-else text="台账空——尚无已办结的协作请求。" icon="doc" />
-    </div>
-
-    <!-- ③ 出函台账（FZC2）——mega-panel 拆分（视觉 S 批 S7）：原③一块大面板
-        拆为四个 .panel，全部文本原样保留 -->
-    <div class="panel">
-      <h2>出函台账（FZC2）</h2>
-      <div class="tbl-wrap" v-if="overview?.collab_ledger?.length">
-        <table class="tbl">
-          <thead><tr><th>令状哈希</th><th>函指纹</th><th>出具时间</th></tr></thead>
-          <tbody>
-            <tr v-for="(l, i) in overview.collab_ledger" :key="i">
-              <td class="mono">{{ l.warrant_hash_hex.slice(0, 24) }}…</td>
-              <td class="mono">{{ l.code_fingerprint_hex }}</td>
-              <td>{{ l.issued_at ?? "—" }}</td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
-      <div v-else-if="!loadedOv" class="fz-skelset" aria-hidden="true" style="max-width:420px">
-        <div class="fz-skel" style="width:76%"></div>
-        <div class="fz-skel" style="width:58%"></div>
-      </div>
-      <FzEmpty v-else text="尚无出函记录（出函只在批准时自动发生）。" icon="stamp" />
-    </div>
-
-    <!-- ④ 凭证吊销（B1 升格·两步式签名契约）+ 恢复双控发起（B6） -->
-    <div class="panel" id="revoke-panel">
-      <h2>凭证吊销</h2>
-      <p class="desc">
-        按人级联吊销：该用户全部有效凭证一次撤销（同纪元同根一次推链，即时生效）。
-        吊销须理由（≥4 字，公示面必填）+您的密钥签名——签名覆盖该用户全部有效凭证
-        句柄串与目标纪元（公示纪元+1），两步式：先预览句柄，签名后正式提交。
-      </p>
-      <div style="display:flex;gap:10px;align-items:flex-start;flex-wrap:wrap">
-        <input v-model="revokeUser" class="mono" placeholder="用户名" style="width:220px" />
-      </div>
-      <label>撤销理由（必填 ≥4 字——随叶落公示镜像，任何人可查）</label>
-      <textarea v-model="revokeReason" rows="2" placeholder="例：审计结案结论属实——围栏违规成立，依规吊销"></textarea>
-      <div style="display:flex;gap:10px;margin-top:10px;align-items:center">
-        <button class="btn" style="border-color:#d98484;color:var(--tone-red-fg)" :disabled="busy" @click="doRevoke">
-          {{ revokeConfirm ? "确认吊销（签名并推链）" : "吊销" }}
-        </button>
-        <span v-if="snapshotEpoch != null" class="note">当前公示纪元 <b class="mono">{{ snapshotEpoch }}</b>——签名将绑定纪元 {{ snapshotEpoch + 1 }}</span>
-      </div>
-      <div v-if="revokeConfirm && revokeUser.trim()" class="deny fz-enter">
-        <span class="code">二次确认</span>
-        将吊销 <b class="mono">{{ revokeUser.trim() }}</b> 的全部有效凭证（含授权轴联动与证件黑名单）——纪元根即时推链、不可撤销。确认执行？
-        <button class="btn" style="margin-left:10px" :disabled="busy" @click="doRevoke">确认吊销</button>
-        <button class="btn ghost" style="margin-left:8px" @click="revokeConfirm = false">取消</button>
+        <p v-if="flash" class="flash">{{ flash }}</p>
+        <DenyBox v-if="deny" :code="deny.code" :message="deny.message" />
       </div>
 
-      <!-- 吊销回执：联动撤销授权清单+台账指针（B1 升格展示面） -->
-      <div v-if="revokeResult" class="fp-box fz-enter">
-        <span class="fp-label">吊销回执（append-only 台账 #{{ revokeResult.ledger_id }}）</span>
-        <div class="kv" style="margin-top:4px">
-          <dt>新纪元 / 根</dt><dd class="mono">epoch {{ revokeResult.epoch }} · {{ revokeResult.root_hex.slice(0, 24) }}…</dd>
-          <dt>撤销凭证</dt><dd class="mono">{{ (revokeResult.revoked_handles_hex ?? []).join("  ") }}</dd>
-          <dt>联动撤销授权</dt>
-          <dd class="mono">{{ revokeResult.linked_auth_ids?.length ? revokeResult.linked_auth_ids.map((a) => `#${a}`).join(" ") : "—（无在案授权）" }}</dd>
+      <!-- 未解锁令状（B4 手工出函工作面）——读面按域；匿名立案位令状=该分支
+          唯一 UI 路径（自动流 cred_required 不可达，如实标注） -->
+      <div class="panel" v-if="pwAvailable" data-test="pending-warrants-panel">
+        <div style="display:flex;align-items:center;gap:10px;margin-bottom:4px">
+          <h2 style="margin:0">未解锁令状（随案协作函手工出具）</h2>
+          <span class="fz-pill gray" v-if="pwLoaded">逐案核对后出函</span>
         </div>
-      </div>
-
-      <div class="panel-head" style="margin-top:20px">
-        <h2 style="font-size:15px">公示撤销清单</h2>
-        <span class="fz-pill gray" v-if="snapshotEpoch != null">纪元 {{ snapshotEpoch }} · {{ revokedLeaves.length }} 叶</span>
-      </div>
-      <p class="desc">公示镜像的撤销叶（含子钥传播叶）——主凭证句柄可发起恢复（B6 双控：您发起，审计台复核后才执行）。</p>
-      <div v-if="!snapAvailable" class="note">公示镜像不可达——恢复发起暂不可用（下轮自动重试）。</div>
-      <FzEmpty v-else-if="!revokedLeaves.length" text="撤销集为空——尚无已吊销凭证。" icon="doc" />
-      <div v-else class="tbl-wrap">
-        <table class="tbl">
-          <thead><tr><th>句柄</th><th>理由</th><th>纪元</th><th>执行人</th><th>时间</th><th></th></tr></thead>
-          <tbody>
-            <tr v-for="leaf in revokedLeaves" :key="leaf.handle_hex" :class="{ 'row-on': restoreTarget?.handle_hex === leaf.handle_hex }">
-              <td class="mono">{{ leaf.handle_hex.slice(0, 16) }}…</td>
-              <td>{{ leaf.reason }}</td>
-              <td class="mono">{{ leaf.epoch }}</td>
-              <td class="mono">{{ leaf.revoked_by }}</td>
-              <td>{{ leaf.revoked_at?.slice(5, 16).replace("T", " ") ?? "—" }}</td>
-              <td>
-                <button class="btn sm ghost" :disabled="restoreBusyId === leaf.handle_hex" @click="pickRestore(leaf)">
-                  {{ restoreTarget?.handle_hex === leaf.handle_hex ? "已选中" : "发起恢复" }}
-                </button>
-              </td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
-      <template v-if="restoreTarget">
-        <div class="gate fz-enter" style="margin-top:10px">
-          <div class="gate-title">发起恢复：<span class="mono">{{ restoreTarget.handle_hex.slice(0, 24) }}…</span></div>
-          <p class="desc" style="margin-bottom:6px">
-            单签不执行——您签 FZ-RESTORE 域后请求落 pending，审计台复核第二签（FZ-RESTORE-COUNTERSIGN 域）才摘叶推链。
-          </p>
-          <label>恢复理由（必填 ≥4 字）</label>
-          <textarea v-model="restoreReason" rows="2" placeholder="例：误吊销——经复核凭证与设备均无异常"></textarea>
-          <div style="display:flex;gap:10px;margin-top:8px">
-            <button class="btn" :disabled="busy || !unlockedOnce" @click="requestRestore">
-              {{ busy ? "签名发起中…" : "签名并发起恢复请求" }}
-            </button>
-            <button class="btn ghost" @click="restoreTarget = null">取消</button>
+        <p class="desc">
+          审计立案后尚未解锁的令状在此汇列——核对依据后出具随案协作函（FZC2：
+          函-令状-凭证三方绑定，审计台凭函解锁）。未指定目标授权编号的令状
+          （匿名立案位）自动执行不可达，需审计台补充带凭证的重新立案——如实
+          标注，不提供手输凭证哈希的路径（登记权威永不手输哈希）。
+        </p>
+        <div v-if="!pwLoaded" class="fz-skelset" aria-hidden="true" style="max-width:420px">
+          <div class="fz-skel" style="width:72%"></div>
+          <div class="fz-skel" style="width:54%"></div>
+        </div>
+        <FzEmpty v-else-if="!pendingWarrants.length" text="暂无未解锁令状——全部令状已结办。" icon="doc" />
+        <div v-else class="req-list">
+          <div v-for="w in pendingWarrants" :key="w.warrant_hash_hex" class="req-row">
+            <div class="req-main">
+              <span class="mono case-mini">{{ w.case_no }}</span>
+              <span v-if="w.org_id" class="fz-badge blue">归属域 {{ w.org_id }}</span>
+              <span v-else class="fz-pill gray">未定域</span>
+            </div>
+            <div class="req-meta">
+              目标 <span class="mono">#{{ w.target_auth_id ?? "—（未指定）" }}</span> · {{ w.created_ts?.slice(5, 16).replace("T", " ") ?? "—" }}
+              <span v-if="w.legal_basis_text"> · 依据：{{ w.legal_basis_text }}</span>
+            </div>
+            <div class="req-meta mono">令状 {{ w.warrant_hash_hex.slice(0, 24) }}…</div>
+            <div class="req-actions" style="display:flex;gap:8px;margin-top:4px;align-items:center">
+              <button
+                class="btn sm"
+                :disabled="pwBusy === w.warrant_hash_hex || w.target_auth_id == null"
+                :title="w.target_auth_id == null ? '未指定目标授权——自动出函不可达（审计台补充带凭证重新立案）' : '出具 FZC2 协作函（函-令状-凭证三方绑定）'"
+                @click="issueCollabCode(w)"
+              >
+                {{ pwBusy === w.warrant_hash_hex ? "出函中…" : "出具协作函（显示 FZC2 指纹）" }}
+              </button>
+              <span v-if="pwIssued[w.warrant_hash_hex]" class="req-meta mono">
+                函指纹 {{ pwIssued[w.warrant_hash_hex]!.fingerprint }}
+              </span>
+            </div>
           </div>
         </div>
-      </template>
-
-      <div class="panel-head" style="margin-top:20px">
-        <h2 style="font-size:15px">恢复请求台账</h2>
-        <span class="fz-pill gray" v-if="restoresAvailable">pending 待复核 / executed 已恢复</span>
       </div>
-      <div v-if="!restoresAvailable" class="note">恢复台账不可达（后端未就绪时本区自动隐藏）。</div>
-      <FzEmpty v-else-if="!restores.length" text="尚无恢复请求。" icon="doc" />
-      <div v-else class="req-list">
-        <div v-for="row in restores" :key="row.id" class="req-row" :class="row.status === 'pending' ? 'amber' : 'gold'">
-          <div class="req-main">
-            <span class="mono case-mini">{{ row.handle_hex.slice(0, 16) }}…</span>
-            <span class="fz-badge" :class="row.status === 'pending' ? 'amber' : 'gold'">
-              {{ row.status === "pending" ? "待复核" : row.status === "executed" ? "已恢复" : row.status }}
-            </span>
-          </div>
-          <div class="req-meta">发起人 <span class="mono">{{ row.requested_by }}</span> · {{ row.created_ts?.slice(5, 16).replace("T", " ") ?? "—" }} · 理由：{{ row.reason }}</div>
-          <div class="req-meta" v-if="row.status === 'executed'">复核人 <span class="mono">{{ row.countersign_by ?? "—" }}</span> · {{ row.executed_ts?.slice(5, 16).replace("T", " ") ?? "—" }}</div>
-          <div class="req-err" v-if="row.execute_error">⚠ {{ row.execute_error }}</div>
-        </div>
-      </div>
-      <p v-if="flash" class="flash">{{ flash }}</p>
-      <DenyBox v-if="deny" :code="deny.code" :message="deny.message" />
     </div>
 
-    <!-- ③-b 机队设备管理（3.1——credKind=2 机构承诺主凭证）：机构管理员以
-        org 身份批量登记设备（kind=2 链上承诺）+机队子凭证批量签发（机构共享
-        池）+列表/吊销（org 署名推根即时生效）。设备档案（salt 原像）口令密封
-        本机存储；出示钥每张全新生成（跨申请不可链接）。 -->
-    <div class="panel" data-test="fleet-panel">
-      <h2>机队设备管理（机构承诺 credKind=2）</h2>
-      <p class="desc">
-        机构以自身登记权威为设备出具合规承诺（链上 kind=2 主凭证）并为设备批量签发飞行子凭证
-        （配额=机构级共享池{{ fleetPoolQuota != null ? `，上限 ${fleetPoolQuota} 张` : "" }}）。
-        设备序列号与地面站桥读数同源校验（SN 绑定——换机不可用）；吊销走 org 署名推根，即时生效。
-      </p>
-      <div class="panel-head">
-        <h2 style="font-size:15px">本机构机队设备</h2>
-        <button class="btn sm ghost" @click="refreshFleet">刷新</button>
-      </div>
-      <FzEmpty v-if="fleetLoaded && !fleetDevices.length" text="本机构暂无机队设备——下方表单批量登记。" icon="doc" />
-      <div v-else class="tbl-wrap">
-        <table class="tbl">
-          <thead><tr><th>登记号</th><th>序列号</th><th>资质</th><th>机型类</th><th>状态</th><th>子凭证</th><th></th></tr></thead>
-          <tbody>
-            <tr v-for="d in fleetDevices" :key="d.master_cred_hash_hex" :class="{ 'row-on': fleetRevokeTarget?.master_cred_hash_hex === d.master_cred_hash_hex }">
-              <td class="mono">{{ d.device_no }}</td>
-              <td class="mono">{{ d.sn }}</td>
-              <td class="mono">L{{ d.cert_level }}</td>
-              <td class="mono">{{ d.class_id }}</td>
-              <td><span class="fz-badge" :class="d.status === 1 ? 'teal' : d.status === 2 ? 'red' : 'gray'">{{ d.status === 1 ? "有效" : d.status === 2 ? "已吊销" : `状态${d.status}` }}</span></td>
-              <td class="mono">{{ d.sub_unconsumed }}/{{ d.sub_total }}</td>
-              <td>
-                <button v-if="d.status === 1" class="btn sm ghost" style="border-color:#d98484;color:var(--tone-red-fg)"
-                        @click="fleetRevokeTarget = fleetRevokeTarget?.master_cred_hash_hex === d.master_cred_hash_hex ? null : d">
-                  {{ fleetRevokeTarget?.master_cred_hash_hex === d.master_cred_hash_hex ? "已选中" : "吊销" }}
-                </button>
-              </td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
-      <template v-if="fleetRevokeTarget">
-        <div class="gate fz-enter" style="margin-top:10px">
-          <div class="gate-title">吊销设备：<span class="mono">{{ fleetRevokeTarget.device_no }}</span>（SN {{ fleetRevokeTarget.sn }}）</div>
-          <p class="desc" style="margin-bottom:6px">
-            FZ-REVOKE 域签名按句柄吊销（设备无用户名——不走按人预览）——共享树纪元根+org-b 署名锚同步推链，
-            未消费子凭证的出示钥并入撤销集（即时生效）。
-          </p>
-          <label>吊销理由（必填 ≥4 字）</label>
-          <textarea v-model="fleetRevokeReason" rows="2" placeholder="例：设备退役——机构台账核销依规吊销"></textarea>
-          <div style="display:flex;gap:10px;margin-top:8px">
-            <button class="btn" style="border-color:#d98484;color:var(--tone-red-fg)" :disabled="busy || !unlockedOnce" @click="doFleetRevoke">
-              {{ busy ? "签名吊销中…" : "签名并吊销设备" }}
-            </button>
-            <button class="btn ghost" @click="fleetRevokeTarget = null">取消</button>
+    <!-- ════ 标签二：吊销与恢复 ════ -->
+    <div v-show="tab === 'revoke'">
+      <!-- ④ 凭证吊销（B1 升格·两步式签名契约）+ 恢复双控发起（B6） -->
+      <div class="panel" id="revoke-panel">
+        <h2>凭证吊销</h2>
+        <p class="desc">
+          按人级联吊销：该用户全部有效凭证一次撤销（同纪元同根一次推链，即时生效）。
+          吊销须理由（≥4 字，公示面必填）+您的密钥签名——签名覆盖该用户全部有效凭证
+          句柄串与目标纪元（服务端权威预览给出），两步式：先预览句柄，确认后签名提交。
+        </p>
+        <div style="display:flex;gap:10px;align-items:flex-start;flex-wrap:wrap">
+          <input v-model="revokeUser" class="mono" placeholder="用户名" style="width:220px" />
+        </div>
+        <label>撤销理由（必填 ≥4 字——随叶落公示镜像，任何人可查）</label>
+        <textarea v-model="revokeReason" rows="2" placeholder="例：审计结案结论属实——围栏违规成立，依规吊销"></textarea>
+        <div style="display:flex;gap:10px;margin-top:10px;align-items:center">
+          <button class="btn" style="border-color:#d98484;color:var(--tone-red-fg)" :disabled="busy" @click="doRevoke">
+            {{ revokeConfirm ? "确认吊销（签名并推链）" : "吊销" }}
+          </button>
+          <span v-if="revokePreview" class="note">已取预览：签名将绑定纪元 <b class="mono">{{ revokePreview.epoch }}</b>（服务端权威——DB 镜像不作签绑依据）</span>
+          <span v-else class="note">目标纪元在预览时由服务端权威给出（不取镜像自算）</span>
+        </div>
+        <div v-if="revokeConfirm && revokePreview" class="deny fz-enter">
+          <span class="code">二次确认</span>
+          将吊销 <b class="mono">{{ revokeUser.trim() }}</b> 的全部有效凭证（{{ revokePreview.handles.length }} 项——含授权轴联动与证件黑名单）
+          ——签名绑定纪元 <b class="mono">{{ revokePreview.epoch }}</b>，纪元根即时推链、不可撤销。确认执行？
+          <button class="btn" style="margin-left:10px" :disabled="busy" @click="doRevoke">确认吊销</button>
+          <button class="btn ghost" style="margin-left:8px" @click="revokeConfirm = false">取消</button>
+        </div>
+
+        <!-- 吊销回执：联动撤销授权清单+台账指针（B1 升格展示面） -->
+        <div v-if="revokeResult" class="fp-box fz-enter">
+          <span class="fp-label">吊销回执（append-only 台账 #{{ revokeResult.ledger_id }}）</span>
+          <div class="kv" style="margin-top:4px">
+            <dt>新纪元 / 根</dt><dd class="mono">epoch {{ revokeResult.epoch }} · {{ revokeResult.root_hex.slice(0, 24) }}…</dd>
+            <dt>撤销凭证</dt><dd class="mono">{{ (revokeResult.revoked_handles_hex ?? []).join("  ") }}</dd>
+            <dt>联动撤销授权</dt>
+            <dd class="mono">{{ revokeResult.linked_auth_ids?.length ? revokeResult.linked_auth_ids.map((a) => `#${a}`).join(" ") : "—（无在案授权）" }}</dd>
           </div>
         </div>
-      </template>
 
-      <div class="panel-head" style="margin-top:18px">
-        <h2 style="font-size:15px">批量登记设备（kind=2 机构承诺）</h2>
-        <button class="btn sm ghost" @click="addFleetRow">添加设备行</button>
-      </div>
-      <div v-for="(row, i) in fleetRows" :key="i" style="display:flex;gap:8px;margin-top:6px;flex-wrap:wrap">
-        <input v-model="row.device_no" class="mono" placeholder="设备登记号（恰 18 字符）" style="width:230px" maxlength="18" />
-        <input v-model="row.sn" class="mono" placeholder="设备序列号（与目标桥一致）" style="width:220px" maxlength="64" />
-        <input v-model.number="row.cert_level" type="number" min="1" max="4" placeholder="资质 1-4" style="width:100px" />
-        <input v-model.number="row.class_id" type="number" min="0" max="255" placeholder="机型类" style="width:100px" />
-        <button class="btn sm ghost" @click="removeFleetRow(i)">移除</button>
-      </div>
-      <div v-if="fleetRows.length" style="margin-top:10px">
-        <button class="btn" :disabled="busy" @click="doFleetRegister">登记上链（kind=2 机构承诺）</button>
-      </div>
-
-      <template v-if="fleetRegs.length">
-        <div class="panel-head" style="margin-top:16px">
-          <h2 style="font-size:15px">登记回执（原像盐一次性——请立即密封档案）</h2>
+        <div class="panel-head" style="margin-top:20px">
+          <h2 style="font-size:15px">公示撤销清单</h2>
+          <span class="fz-pill gray" v-if="snapshotEpoch != null">纪元 {{ snapshotEpoch }} · {{ revokedLeaves.length }} 叶</span>
         </div>
-        <div class="tbl-wrap">
+        <p class="desc">公示镜像的撤销叶（含子钥传播叶）——主凭证句柄可发起恢复（B6 双控：您发起，审计台复核后才执行）。</p>
+        <div v-if="!snapAvailable" class="note">公示镜像不可达——恢复发起暂不可用（下轮自动重试）。</div>
+        <FzEmpty v-else-if="!revokedLeaves.length" text="撤销集为空——尚无已吊销凭证。" icon="doc" />
+        <div v-else class="tbl-wrap">
           <table class="tbl">
-            <thead><tr><th>登记号</th><th>句柄</th><th>原像盐（一次性）</th><th>回执时间</th></tr></thead>
+            <thead><tr><th>句柄</th><th>理由</th><th>纪元</th><th>执行人</th><th>时间</th><th></th></tr></thead>
             <tbody>
-              <tr v-for="m in fleetRegs" :key="m.master_cred_hash_hex">
-                <td class="mono">{{ m.device_no }}</td>
-                <td class="mono">{{ m.master_cred_hash_hex.slice(0, 16) }}…</td>
-                <td class="mono">{{ m.salt_hex.slice(0, 16) }}…</td>
-                <td class="mono">{{ m.registered_ts.slice(5, 16).replace("T", " ") }}</td>
+              <tr v-for="leaf in revokedLeaves" :key="leaf.handle_hex" :class="{ 'row-on': restoreTarget?.handle_hex === leaf.handle_hex }">
+                <td class="mono">{{ leaf.handle_hex.slice(0, 16) }}…</td>
+                <td>{{ leaf.reason }}</td>
+                <td class="mono">{{ leaf.epoch }}</td>
+                <td class="mono">{{ leaf.revoked_by }}</td>
+                <td>{{ leaf.revoked_at?.slice(5, 16).replace("T", " ") ?? "—" }}</td>
+                <td style="display:flex;gap:6px">
+                  <button class="btn sm ghost" :disabled="restoreBusyId === leaf.handle_hex" @click="pickRestore(leaf)">
+                    {{ restoreTarget?.handle_hex === leaf.handle_hex ? "已选中" : "发起恢复" }}
+                  </button>
+                  <button class="btn sm ghost" data-test="linkage-btn" @click="toggleLinkage(leaf.handle_hex)">
+                    {{ linkageOpen === leaf.handle_hex ? "收起级联" : "联动授权" }}
+                  </button>
+                </td>
               </tr>
             </tbody>
           </table>
         </div>
-        <div style="display:flex;gap:10px;margin-top:8px;align-items:center;flex-wrap:wrap">
-          <input v-model="fleetSealPass" type="password" placeholder="档案密封口令" style="width:220px" />
-          <button class="btn" :disabled="busy" @click="doFleetSeal">密封入机构档案（本机）</button>
+        <!-- 主凭证级联视图（P2 常设化）：该叶联动撤销的授权清单（事后可查） -->
+        <div v-if="linkageOpen && linkage[linkageOpen]" class="fp-box fz-enter" data-test="linkage-view">
+          <span class="fp-label">
+            级联视图——句柄 {{ linkageOpen.slice(0, 16) }}… 的联动撤销授权
+            <span v-if="linkage[linkageOpen]!.linked_auth_ids.length" class="fz-pill blue">
+              {{ linkage[linkageOpen]!.linked_auth_ids.length }} 项
+            </span>
+          </span>
+          <div class="kv" style="margin-top:4px">
+            <dt>联动撤销授权</dt>
+            <dd class="mono">{{ linkage[linkageOpen]!.linked_auth_ids.length ? linkage[linkageOpen]!.linked_auth_ids.map((a) => `#${a}`).join(" ") : "—（无在案授权）" }}</dd>
+            <template v-if="linkage[linkageOpen]!.ledger_rows.length">
+              <dt>台账行</dt>
+              <dd class="mono">
+                <span v-for="lr in linkage[linkageOpen]!.ledger_rows" :key="lr.ledger_id" style="display:block">
+                  台账 #{{ lr.ledger_id }} · 纪元 {{ lr.epoch }} · {{ lr.reason }} · 执行人 {{ lr.actor || "—" }}
+                </span>
+              </dd>
+            </template>
+          </div>
         </div>
-      </template>
+        <template v-if="restoreTarget">
+          <div class="gate fz-enter" style="margin-top:10px">
+            <div class="gate-title">发起恢复：<span class="mono">{{ restoreTarget.handle_hex.slice(0, 24) }}…</span></div>
+            <p class="desc" style="margin-bottom:6px">
+              单签不执行——您签 FZ-RESTORE 域后请求落 pending，审计台复核第二签（FZ-RESTORE-COUNTERSIGN 域）才摘叶推链。
+            </p>
+            <label>恢复理由（必填 ≥4 字）</label>
+            <textarea v-model="restoreReason" rows="2" placeholder="例：误吊销——经复核凭证与设备均无异常"></textarea>
+            <div style="display:flex;gap:10px;margin-top:8px">
+              <button class="btn" :disabled="busy || !unlockedOnce" @click="requestRestore">
+                {{ busy ? "签名发起中…" : "签名并发起恢复请求" }}
+              </button>
+              <button class="btn ghost" @click="restoreTarget = null">取消</button>
+            </div>
+          </div>
+        </template>
 
-      <div class="panel-head" style="margin-top:18px">
-        <h2 style="font-size:15px">机队子凭证批量签发（机构共享池）</h2>
-      </div>
-      <p class="desc">解封本机密封档案即对档案全量设备逐台签发（每台生成全新出示钥——一次性出示钥跨申请不可链接；每张 24h 有效期；已吊销设备由后端 cred_revoked 拒绝并人话回显）。</p>
-      <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
-        <input v-model="fleetUnsealPass" type="password" placeholder="档案解封口令" style="width:220px" />
-        <button class="btn" :disabled="busy" @click="doFleetIssue">解封档案并全量签发</button>
-      </div>
-      <div v-if="fleetIssueOut.length" class="fp-box fz-enter" style="margin-top:8px">
-        <span class="fp-label">签发回执（飞行材料包——出示私钥+受理三件套，丢失不可补发）</span>
-        <div v-for="o in fleetIssueOut" :key="o.sub_cred_hash_hex" class="req-meta mono" style="display:flex;gap:10px;align-items:center">
-          <span>{{ o.device_no }} · {{ o.sub_cred_hash_hex.slice(0, 16) }}… · 至 {{ o.expires_at.slice(5, 16).replace("T", " ") }}</span>
-          <button class="btn sm" @click="downloadFleetPackage(o)">下载部署包</button>
+        <div class="panel-head" style="margin-top:20px">
+          <h2 style="font-size:15px">恢复请求台账</h2>
+          <span class="fz-pill gray" v-if="restoresAvailable">pending 待复核 / executed 已恢复</span>
         </div>
+        <div v-if="!restoresAvailable" class="note">恢复台账不可达（后端未就绪时本区自动隐藏）。</div>
+        <FzEmpty v-else-if="!restores.length" text="尚无恢复请求。" icon="doc" />
+        <div v-else class="req-list">
+          <div v-for="row in restores" :key="row.id" class="req-row" :class="row.status === 'pending' ? 'amber' : 'gold'">
+            <div class="req-main">
+              <span class="mono case-mini">{{ row.handle_hex.slice(0, 16) }}…</span>
+              <span class="fz-badge" :class="row.status === 'pending' ? 'amber' : 'gold'">
+                {{ row.status === "pending" ? "待复核" : row.status === "executed" ? "已恢复" : row.status }}
+              </span>
+            </div>
+            <div class="req-meta">发起人 <span class="mono">{{ row.requested_by }}</span> · {{ row.created_ts?.slice(5, 16).replace("T", " ") ?? "—" }} · 理由：{{ row.reason }}</div>
+            <div class="req-meta" v-if="row.status === 'executed'">复核人 <span class="mono">{{ row.countersign_by ?? "—" }}</span> · {{ row.executed_ts?.slice(5, 16).replace("T", " ") ?? "—" }}</div>
+            <div class="req-err" v-if="row.execute_error">⚠ {{ row.execute_error }}</div>
+          </div>
+        </div>
+        <p v-if="flash" class="flash">{{ flash }}</p>
+        <DenyBox v-if="deny" :code="deny.code" :message="deny.message" />
       </div>
     </div>
 
-    <!-- ⑤ 账户总览 -->
-    <div class="panel">
-      <h2>账户总览</h2>
-      <p class="desc">机构账户密码重置已收回离线（部署方线下执行 seed 脚本）——线上任何角色（含管理员自己）都不能重置任何机构账户密码；每次重置逐笔记入下方台账。</p>
-      <div class="tbl-wrap" v-if="overview?.accounts?.length">
-        <table class="tbl">
-          <thead><tr><th>用户名</th><th>角色</th><th>状态</th><th>操作</th></tr></thead>
-          <tbody>
-            <tr v-for="a in overview.accounts" :key="a.username">
-              <td class="mono">{{ a.username }}</td>
-              <td>{{ { pilot: "飞手", auditor: "审计员", admin: "机构管理员" }[a.role] ?? a.role }}</td>
-              <td><StatusTag tone="accent" :label="{ pending_profile: '待补资料', pending_activation: '待激活', active: '已激活' }[a.status] ?? a.status" /></td>
-              <td>
-                <template v-if="a.status === 'pending_profile'">
-                  <button class="btn sm ghost" style="border-color:#d98484;color:var(--tone-red-fg)" :disabled="delBusy === a.username" @click="deleteOrphan(a.username)">
-                    {{ delBusy === a.username ? "删除中…" : "删除孤儿户" }}
+    <!-- ════ 标签三：机队 ════ -->
+    <div v-show="tab === 'fleet'">
+      <!-- ③-b 机队设备管理（3.1——credKind=2 机构承诺主凭证）：机构管理员以
+          org 身份批量登记设备（kind=2 链上承诺）+机队子凭证批量签发（机构共享
+          池）+列表/吊销（org 署名推根即时生效）。设备档案（salt 原像）口令密封
+          本机存储；出示钥每张全新生成（跨申请不可链接）。 -->
+      <div class="panel" data-test="fleet-panel">
+        <h2>机队设备管理（机构承诺 credKind=2）</h2>
+        <p class="desc">
+          机构以自身登记权威为设备出具合规承诺（链上 kind=2 主凭证）并为设备批量签发飞行子凭证
+          （配额=机构级共享池{{ fleetPoolQuota != null ? `，上限 ${fleetPoolQuota} 张` : "" }}）。
+          设备序列号与地面站桥读数同源校验（SN 绑定——换机不可用）；吊销走 org 署名推根，即时生效。
+        </p>
+        <div class="panel-head">
+          <h2 style="font-size:15px">本机构机队设备</h2>
+          <button class="btn sm ghost" @click="refreshFleet">刷新</button>
+        </div>
+        <FzEmpty v-if="fleetLoaded && !fleetDevices.length" text="本机构暂无机队设备——下方表单批量登记。" icon="doc" />
+        <div v-else class="tbl-wrap">
+          <table class="tbl">
+            <thead><tr><th>登记号</th><th>序列号</th><th>资质</th><th>机型类</th><th>状态</th><th>子凭证</th><th></th></tr></thead>
+            <tbody>
+              <tr v-for="d in fleetDevices" :key="d.master_cred_hash_hex" :class="{ 'row-on': fleetRevokeTarget?.master_cred_hash_hex === d.master_cred_hash_hex }">
+                <td class="mono">{{ d.device_no }}</td>
+                <td class="mono">{{ d.sn }}</td>
+                <td class="mono">L{{ d.cert_level }}</td>
+                <td class="mono">{{ d.class_id }}</td>
+                <td><span class="fz-badge" :class="d.status === 1 ? 'teal' : d.status === 2 ? 'red' : 'gray'">{{ d.status === 1 ? "有效" : d.status === 2 ? "已吊销" : `状态${d.status}` }}</span></td>
+                <td class="mono">{{ d.sub_unconsumed }}/{{ d.sub_total }}</td>
+                <td style="display:flex;gap:6px">
+                  <button v-if="d.status === 1" class="btn sm ghost" style="border-color:#d98484;color:var(--tone-red-fg)"
+                          @click="fleetRevokeTarget = fleetRevokeTarget?.master_cred_hash_hex === d.master_cred_hash_hex ? null : d">
+                    {{ fleetRevokeTarget?.master_cred_hash_hex === d.master_cred_hash_hex ? "已选中" : "吊销" }}
                   </button>
-                </template>
-                <template v-else>—</template>
-              </td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
-      <div v-else-if="!loadedOv" class="fz-skelset" aria-hidden="true" style="max-width:420px">
-        <div class="fz-skel" style="width:64%"></div>
-        <div class="fz-skel" style="width:48%"></div>
+                  <button class="btn sm ghost" data-test="flights-btn" @click="toggleFlights(d.master_cred_hash_hex)">
+                    {{ flightsOpen === d.master_cred_hash_hex ? "收起记录" : "飞行记录" }}
+                  </button>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <!-- 设备飞行记录（P2——设备行展开=该机授权记录；零身份：链上数据本就匿名） -->
+        <div v-if="flightsOpen && flights[flightsOpen]" class="fp-box fz-enter" data-test="flights-view">
+          <span class="fp-label">飞行记录——设备 {{ flights[flightsOpen]!.device_no }} 名下授权（链上公示数据，零身份）</span>
+          <FzEmpty v-if="!flights[flightsOpen]!.flights.length" text="该设备暂无飞行授权记录。" icon="doc" />
+          <div v-else class="tbl-wrap" style="margin-top:6px">
+            <table class="tbl">
+              <thead><tr><th>授权编号</th><th>状态</th><th>机型类</th><th>受理时间</th><th>配额消费</th></tr></thead>
+              <tbody>
+                <tr v-for="f in flights[flightsOpen]!.flights" :key="f.auth_id">
+                  <td class="mono">#{{ f.auth_id }}</td>
+                  <td><StatusTag :tone="f.status === 'approved' ? 'ok' : 'accent'" :label="{ approved: '已受理', pending: '审批中', rejected: '已驳回' }[f.status] ?? f.status" /></td>
+                  <td class="mono">{{ f.class_id }}</td>
+                  <td>{{ f.created_at?.slice(5, 16).replace("T", " ") ?? "—" }}</td>
+                  <td>{{ f.token_consumed_ts ? f.token_consumed_ts.slice(5, 16).replace("T", " ") : "—" }}</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+        <template v-if="fleetRevokeTarget">
+          <div class="gate fz-enter" style="margin-top:10px">
+            <div class="gate-title">吊销设备：<span class="mono">{{ fleetRevokeTarget.device_no }}</span>（SN {{ fleetRevokeTarget.sn }}）</div>
+            <p class="desc" style="margin-bottom:6px">
+              FZ-REVOKE 域签名按句柄吊销（设备无用户名——不走按人预览）——共享树纪元根+<b>{{ myOrg ?? "本机构域" }}</b> 署名锚同步推链，
+              未消费子凭证的出示钥并入撤销集（即时生效）。
+            </p>
+            <label>吊销理由（必填 ≥4 字）</label>
+            <textarea v-model="fleetRevokeReason" rows="2" placeholder="例：设备退役——机构台账核销依规吊销"></textarea>
+            <div style="display:flex;gap:10px;margin-top:8px">
+              <button class="btn" style="border-color:#d98484;color:var(--tone-red-fg)" :disabled="busy || !unlockedOnce" @click="doFleetRevoke">
+                {{ busy ? "签名吊销中…" : "签名并吊销设备" }}
+              </button>
+              <button class="btn ghost" @click="fleetRevokeTarget = null">取消</button>
+            </div>
+          </div>
+        </template>
+
+        <div class="panel-head" style="margin-top:18px">
+          <h2 style="font-size:15px">批量登记设备（kind=2 机构承诺）</h2>
+          <button class="btn sm ghost" @click="addFleetRow">添加设备行</button>
+        </div>
+        <div v-for="(row, i) in fleetRows" :key="i" style="display:flex;gap:8px;margin-top:6px;flex-wrap:wrap">
+          <input v-model="row.device_no" class="mono" placeholder="设备登记号（恰 18 字符）" style="width:230px" maxlength="18" />
+          <input v-model="row.sn" class="mono" placeholder="设备序列号（与目标桥一致）" style="width:220px" maxlength="64" />
+          <input v-model.number="row.cert_level" type="number" min="1" max="4" placeholder="资质 1-4" style="width:100px" />
+          <input v-model.number="row.class_id" type="number" min="0" max="255" placeholder="机型类" style="width:100px" />
+          <button class="btn sm ghost" @click="removeFleetRow(i)">移除</button>
+        </div>
+        <div v-if="fleetRows.length" style="margin-top:10px">
+          <button class="btn" :disabled="busy" @click="doFleetRegister">登记上链（kind=2 机构承诺）</button>
+        </div>
+
+        <template v-if="fleetRegs.length">
+          <div class="panel-head" style="margin-top:16px">
+            <h2 style="font-size:15px">登记回执（原像盐一次性——请立即密封档案）</h2>
+          </div>
+          <div class="tbl-wrap">
+            <table class="tbl">
+              <thead><tr><th>登记号</th><th>句柄</th><th>原像盐（一次性）</th><th>回执时间</th></tr></thead>
+              <tbody>
+                <tr v-for="m in fleetRegs" :key="m.master_cred_hash_hex">
+                  <td class="mono">{{ m.device_no }}</td>
+                  <td class="mono">{{ m.master_cred_hash_hex.slice(0, 16) }}…</td>
+                  <td class="mono">{{ m.salt_hex.slice(0, 16) }}…</td>
+                  <td class="mono">{{ m.registered_ts.slice(5, 16).replace("T", " ") }}</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <div style="display:flex;gap:10px;margin-top:8px;align-items:center;flex-wrap:wrap">
+            <input v-model="fleetSealPass" type="password" placeholder="档案密封口令" style="width:220px" />
+            <button class="btn" :disabled="busy" @click="doFleetSeal">密封入机构档案（本机）</button>
+          </div>
+        </template>
+
+        <div class="panel-head" style="margin-top:18px">
+          <h2 style="font-size:15px">机队子凭证批量签发（机构共享池）</h2>
+        </div>
+        <p class="desc">解封本机密封档案即对档案全量设备逐台签发（每台生成全新出示钥——一次性出示钥跨申请不可链接；每张 24h 有效期；已吊销设备由后端 cred_revoked 拒绝并人话回显）。部署包由机构地面站客户端导入消费（出示私钥+受理三件套齐备——丢失不可补发）。</p>
+        <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+          <input v-model="fleetUnsealPass" type="password" placeholder="档案解封口令" style="width:220px" />
+          <button class="btn" :disabled="busy" @click="doFleetIssue">解封档案并全量签发</button>
+        </div>
+        <div v-if="fleetIssueOut.length" class="fp-box fz-enter" style="margin-top:8px">
+          <span class="fp-label">签发回执（飞行材料包——出示私钥+受理三件套，丢失不可补发）</span>
+          <div v-for="o in fleetIssueOut" :key="o.sub_cred_hash_hex" class="req-meta mono" style="display:flex;gap:10px;align-items:center">
+            <span>{{ o.device_no }} · {{ o.sub_cred_hash_hex.slice(0, 16) }}… · 至 {{ o.expires_at.slice(5, 16).replace("T", " ") }}</span>
+            <button class="btn sm" @click="downloadFleetPackage(o)">下载部署包</button>
+          </div>
+        </div>
       </div>
     </div>
 
-    <!-- ⑥ 账户管理台账 -->
-    <div class="panel">
-      <h2>账户管理台账</h2>
-      <p class="desc">密码重置等敏感动作逐笔留痕（append-only）——唯一路径=离线种子脚本，动作/operator 全程可审计。</p>
-      <div class="tbl-wrap" v-if="overview?.reset_log?.length">
-        <table class="tbl">
-          <thead><tr><th>时间</th><th>动作</th><th>账户</th><th>操作者</th><th>明细</th></tr></thead>
-          <tbody>
-            <tr v-for="(g, i) in overview.reset_log" :key="i">
-              <td class="mono">{{ g.ts ?? "—" }}</td>
-              <td>{{ { password_reset: "密码重置", reseed_pending: "待激活重设" }[g.action] ?? g.action }}</td>
-              <td class="mono">{{ g.username }}</td>
-              <td class="mono">{{ g.operator }}</td>
-              <td class="mono">{{ g.detail ?? "—" }}</td>
-            </tr>
-          </tbody>
-        </table>
+    <!-- ════ 标签四：台账与账户（折叠面——藏拙清单：协作台账/出函台账/账户
+        总览/账户管理台账；演示主动线不进本标签）════ -->
+    <div v-show="tab === 'ledger'">
+      <!-- ② 协作台账 -->
+      <div class="panel">
+        <h2>协作台账</h2>
+        <p class="desc">发函/批准/执行全程带签名指纹——每一步可追责到人。已执行行可回放门限解锁仪式（各份额域逐域四关留痕）。</p>
+        <div class="tbl-wrap" v-if="history.length">
+          <table class="tbl">
+            <thead><tr><th>案号</th><th>状态</th><th>审计员</th><th>批准人</th><th>函指纹</th><th>执行时间</th><th>签名复验</th><th>仪式</th></tr></thead>
+            <tbody>
+              <tr v-for="r in history" :key="r.id">
+                <td class="mono">{{ r.case_no }}</td>
+                <td><StatusTag :tone="LEDGER_TONE[r.status] ?? 'ok'" :label="{ executed: '已执行·待结案', closed: '已结案', rejected: '已驳回' }[r.status] ?? r.status" /></td>
+                <td class="mono">{{ r.auditor_username }}</td>
+                <td class="mono">{{ r.admin_username ?? "—" }}</td>
+                <td class="mono">{{ r.fzc2_fingerprint_hex ?? "—" }}</td>
+                <td>{{ r.executed_ts ?? r.decided_ts ?? "—" }}</td>
+                <td>
+                  <button class="btn sm ghost" :disabled="sigsBusyId === r.id" @click="checkSigs(r)">
+                    {{ sigsBusyId === r.id ? "复验中…" : "验签复核" }}
+                  </button>
+                  <div v-if="sigs[r.id]" class="sigs-out">
+                    <span class="sigs-line" :class="{ bad: sigs[r.id].auditor.ok === false }">{{ verdictLabel(sigs[r.id].auditor, "审计员签") }}</span>
+                    <span class="sigs-line" :class="{ bad: sigs[r.id].admin.ok === false }">{{ verdictLabel(sigs[r.id].admin, "管理员签") }}</span>
+                  </div>
+                </td>
+                <td>
+                  <button
+                    v-if="r.status === 'executed' || r.status === 'closed'"
+                    class="btn sm ghost"
+                    data-test="ceremony-replay-btn"
+                    :disabled="ceremonyBusy === r.warrant_hash_hex"
+                    @click="toggleCeremony(r)"
+                  >
+                    {{ expandedCeremony === r.id ? "收起仪式" : "仪式留痕" }}
+                  </button>
+                  <span v-else>—</span>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <div v-else-if="!loaded" class="fz-skelset" aria-hidden="true" style="max-width:420px">
+          <div class="fz-skel" style="width:80%"></div>
+          <div class="fz-skel" style="width:60%"></div>
+        </div>
+        <FzEmpty v-else text="台账空——尚无已办结的协作请求。" icon="doc" />
+        <template v-for="r in history" :key="'cer-' + r.id">
+          <CeremonyTrace
+            v-if="expandedCeremony === r.id && ceremonies[r.warrant_hash_hex]"
+            :ceremony="ceremonies[r.warrant_hash_hex]"
+          />
+        </template>
       </div>
-      <div v-else-if="!loadedOv" class="fz-skelset" aria-hidden="true" style="max-width:420px">
-        <div class="fz-skel" style="width:70%"></div>
-        <div class="fz-skel" style="width:52%"></div>
+
+      <!-- ③ 出函台账（FZC2）——mega-panel 拆分（视觉 S 批 S7）：原③一块大面板
+          拆为四个 .panel，全部文本原样保留 -->
+      <div class="panel">
+        <h2>出函台账（FZC2）</h2>
+        <div class="tbl-wrap" v-if="overview?.collab_ledger?.length">
+          <table class="tbl">
+            <thead><tr><th>令状哈希</th><th>函指纹</th><th>出具时间</th></tr></thead>
+            <tbody>
+              <tr v-for="(l, i) in overview.collab_ledger" :key="i">
+                <td class="mono">{{ l.warrant_hash_hex.slice(0, 24) }}…</td>
+                <td class="mono">{{ l.code_fingerprint_hex }}</td>
+                <td>{{ l.issued_at ?? "—" }}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <div v-else-if="!loadedOv" class="fz-skelset" aria-hidden="true" style="max-width:420px">
+          <div class="fz-skel" style="width:76%"></div>
+          <div class="fz-skel" style="width:58%"></div>
+        </div>
+        <FzEmpty v-else text="尚无出函记录（出函只在批准时自动发生）。" icon="stamp" />
       </div>
-      <FzEmpty v-else text="尚无账户管理动作（无重置发生=常态）。" icon="doc" />
+
+      <!-- ⑤ 账户总览 -->
+      <div class="panel">
+        <h2>账户总览</h2>
+        <p class="desc">机构账户密码重置已收回离线（部署方线下执行 seed 脚本）——线上任何角色（含管理员自己）都不能重置任何机构账户密码；每次重置逐笔记入下方台账。本列表按您所属机构域过滤（读面按域）。</p>
+        <div class="tbl-wrap" v-if="overview?.accounts?.length">
+          <table class="tbl">
+            <thead><tr><th>用户名</th><th>角色</th><th>状态</th><th>操作</th></tr></thead>
+            <tbody>
+              <tr v-for="a in overview.accounts" :key="a.username">
+                <td class="mono">{{ a.username }}</td>
+                <td>{{ { pilot: "飞手", auditor: "审计员", admin: "机构管理员" }[a.role] ?? a.role }}</td>
+                <td><StatusTag tone="accent" :label="{ pending_profile: '待补资料', pending_activation: '待激活', active: '已激活' }[a.status] ?? a.status" /></td>
+                <td>
+                  <template v-if="a.status === 'pending_profile'">
+                    <button class="btn sm ghost" style="border-color:#d98484;color:var(--tone-red-fg)" :disabled="delBusy === a.username" @click="deleteOrphan(a.username)">
+                      {{ delBusy === a.username ? "删除中…" : "删除孤儿户" }}
+                    </button>
+                  </template>
+                  <template v-else>—</template>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <div v-else-if="!loadedOv" class="fz-skelset" aria-hidden="true" style="max-width:420px">
+          <div class="fz-skel" style="width:64%"></div>
+          <div class="fz-skel" style="width:48%"></div>
+        </div>
+      </div>
+
+      <!-- ⑥ 账户管理台账 -->
+      <div class="panel">
+        <h2>账户管理台账</h2>
+        <p class="desc">密码重置等敏感动作逐笔留痕（append-only）——唯一路径=离线种子脚本，动作/operator 全程可审计。</p>
+        <div class="tbl-wrap" v-if="overview?.reset_log?.length">
+          <table class="tbl">
+            <thead><tr><th>时间</th><th>动作</th><th>账户</th><th>操作者</th><th>明细</th></tr></thead>
+            <tbody>
+              <tr v-for="(g, i) in overview.reset_log" :key="i">
+                <td class="mono">{{ g.ts ?? "—" }}</td>
+                <td>{{ { password_reset: "密码重置", reseed_pending: "待激活重设", password_change: "自助改密" }[g.action] ?? g.action }}</td>
+                <td class="mono">{{ g.username }}</td>
+                <td class="mono">{{ g.operator }}</td>
+                <td class="mono">{{ g.detail ?? "—" }}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <div v-else-if="!loadedOv" class="fz-skelset" aria-hidden="true" style="max-width:420px">
+          <div class="fz-skel" style="width:70%"></div>
+          <div class="fz-skel" style="width:52%"></div>
+        </div>
+        <FzEmpty v-else text="尚无账户管理动作（无重置发生=常态）。" icon="doc" />
+      </div>
     </div>
   </div>
 </template>
 
 <style scoped>
+/* 标签工作台（2026-10-12 拆钉）：与门户 tab 同语言——下缘色条指示活动页 */
+.tabbar {
+  display: flex; align-items: center; gap: 6px; margin-bottom: 14px;
+  border-bottom: var(--hairline); padding-bottom: 0; flex-wrap: wrap;
+}
+.tabbtn {
+  border: 1px solid transparent; border-bottom: none; background: transparent;
+  color: var(--ink-2); font-size: 13.5px; padding: 9px 16px; cursor: pointer;
+  border-radius: var(--r-md) var(--r-md) 0 0; transition: all var(--t-fast);
+  position: relative; display: flex; align-items: center; gap: 6px;
+}
+.tabbtn:hover { background: var(--panel); color: var(--ink); }
+.tabbtn.active {
+  background: var(--accent-soft); color: var(--accent-ink); font-weight: 650;
+  border-color: #c9dbfb;
+}
+.tabbtn.active::after {
+  content: ""; position: absolute; left: 12px; right: 12px; bottom: -1px; height: 2px;
+  border-radius: 1px; background: linear-gradient(90deg, var(--accent), var(--teal));
+}
+.tabdot {
+  font-size: 11px; font-weight: 700; color: #fff; background: #c0392b;
+  border-radius: 999px; padding: 0 6px; line-height: 16px;
+}
+.tabhint { margin-left: auto; font-size: 12px; color: var(--ink-3); padding-bottom: 8px; }
+
 .req-card { border: var(--hairline); border-radius: var(--r-md); padding: 14px 16px; margin-top: 12px; background: var(--panel-2, transparent); border-left-width: 4px; }
 /* 列表 stagger（视觉深化批 D：依次入场 30ms 递增封顶 8 张——编排引导一次视线） */
 .req-card:nth-child(2) { animation-delay: 30ms; }

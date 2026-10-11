@@ -203,3 +203,73 @@ describe("链上对账徽章（/chain/record 三态）", () => {
     expect(w.text()).toContain("与链上一致");
   });
 });
+
+
+describe("D1/D4 修整窗口：指纹活数据+链上叫停徽章（2026-10-12）", () => {
+  function realPanelRes(records: unknown[]): Res {
+    return {
+      ok: true, status: 200,
+      json: async () => ({
+        ok: true,
+        data: {
+          mode: "real",
+          chain: { block_height: 9, rev_epoch: 1, rev_root_hex: "ee".repeat(32), checkpoints: [] },
+          records,
+          warrants: [],
+        },
+      }),
+    };
+  }
+  const REC = (over: Record<string, unknown>) => ({
+    auth_id: 1, proof_digest_hex: "ab".repeat(32), tx_hash: "0xtx",
+    status: "approved", class_id: 1, created_at: null, ...over,
+  });
+  const pinRes = (pin: unknown): Res => ({
+    ok: true, status: 200, json: async () => ({ code: "ok", data: { artifacts: [], pin } }),
+  });
+
+  it("D1 指纹活数据：链上公示值+「已公示上链」金标（/verify/api/checks 同源）", async () => {
+    route([
+      { match: (u) => u.includes("/chain/panel"), res: realPanelRes([]) },
+      { match: (u) => u.includes("/verify/api/checks"), res: pinRes({ local_str: "SM3(x|y)", local_digest_hex: "cd".repeat(32), chain_digest_hex: "ef".repeat(32), match: true }) },
+    ]);
+    const w = await mountView();
+    expect(w.text()).toContain("已公示上链");
+    // 链上公示值优先于本地构建值（HashText head=10/tail=8 截断形态）
+    expect(w.text()).toContain("ef".repeat(32).slice(0, 10));
+    expect(w.text()).not.toContain("本地构建指纹（链上公示暂不可读）");
+    w.unmount();
+  });
+
+  it("D1 链不可达：本地构建指纹+灰标（不装一致）", async () => {
+    route([
+      { match: (u) => u.includes("/chain/panel"), res: realPanelRes([]) },
+      { match: (u) => u.includes("/verify/api/checks"), res: pinRes({ local_str: "SM3(x|y)", local_digest_hex: "cd".repeat(32), chain_digest_hex: null, match: null }) },
+    ]);
+    const w = await mountView();
+    expect(w.text()).toContain("本地构建指纹（链上公示暂不可读）");
+    expect(w.text()).not.toContain("已公示上链");
+    w.unmount();
+  });
+
+  it("D1 换代窗：match=false 出警示（待重公示对拍）", async () => {
+    route([
+      { match: (u) => u.includes("/chain/panel"), res: realPanelRes([]) },
+      { match: (u) => u.includes("/verify/api/checks"), res: pinRes({ local_str: "SM3(x|y)", local_digest_hex: "cd".repeat(32), chain_digest_hex: "ef".repeat(32), match: false }) },
+    ]);
+    const w = await mountView();
+    expect(w.text()).toContain("与本地构建不一致");
+    w.unmount();
+  });
+
+  it("D4 链上叫停徽章：chain_halted 行=已叫停（监管）覆盖已批准", async () => {
+    route([
+      { match: (u) => u.includes("/chain/panel"), res: realPanelRes([REC({ auth_id: 1, chain_halted: true }), REC({ auth_id: 2 })]) },
+      { match: (u) => u.includes("/verify/api/checks"), res: pinRes(null) },
+    ]);
+    const w = await mountView();
+    expect(w.text()).toContain("已叫停（监管）");
+    expect(w.text()).toContain("已批准");
+    w.unmount();
+  });
+});

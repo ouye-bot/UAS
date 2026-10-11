@@ -875,6 +875,42 @@ def threshold_ceremony(
     return _ok(ceremony_replay(warrant_hash_hex.lower()))
 
 
+@router.get("/revocation/linkage")
+def revocation_linkage(
+    handle_hex: str,
+    session: Session = Depends(get_session),
+    p=Depends(require_role("admin")),
+):
+    """主凭证级联视图（2026-10-12 P2——回执 linked_auth_ids 常设化）：从
+    append-only 撤销台账反查该句柄的联动撤销授权清单。读面按域：句柄归属
+    域==操作者域（跨域句柄枚举=信息泄露面，域门先于内容回显）。"""
+    try:
+        return _ok(
+            _svc(session).revocation_linkage(handle_hex=handle_hex, operator_org_id=p.org_id)
+        )
+    except RaError as exc:
+        return _deny(exc)
+
+
+@router.get("/fleet/device/flights")
+def fleet_device_flights(
+    master_cred_hash_hex: str,
+    session: Session = Depends(get_session),
+    p=Depends(require_role("admin")),
+):
+    """设备飞行记录查询（2026-10-12 P2——完整性审计 C10 双向缺失根修）：设备
+    子凭证→申请→授权记录 纯 DB join（零链读，匿名红线不破——Application 表
+    零身份列）。读面按域：跨域 403 org_forbidden（域门先于存在性回显）。"""
+    try:
+        return _ok(
+            _svc(session).fleet_device_flights(
+                master_cred_hash_hex=master_cred_hash_hex, operator_org_id=p.org_id
+            )
+        )
+    except RaError as exc:
+        return _deny(exc)
+
+
 @router.get("/healthz")
 def ra_healthz():
     return {"service": "ra", "ok": True}
