@@ -44,6 +44,11 @@ PRODUCTION_REQUIRED_KEYS: tuple[tuple[str, str, str], ...] = (
     ("FZ_AUDIT_TOKEN", "审计台 API 令牌", "token"),
     ("FZ_RA_OPS_TOKEN", "RA 运维令牌", "token"),
     ("FZ_AUTHZ_BINDING_KEY", "授权绑定 HMAC-SM3 服务钥（32B hex）", "key32"),
+    # ⑫O-2 批第 11 钥（归约修订版 §6 原文行——OPAQUE 拖库面防护）：
+    # 拒启语义=生产档缺注入即拒绝以派生钥启动（派生钥=SM3(公开常量) 人人可算
+    # ⟹ OPAQUE 防护归零）；轮换=FZ_OPRF_SK→FZ_OPRF_SK_OLD 只读过渡窗+全量
+    # rwd 失效语义（oprf_key_for/oprf_key_id——accounts 域按记录 key_id 判别）。
+    ("FZ_OPRF_SK", "OPRF 拖库面防护服务钥（SM2 scalar，rwd 派生根）", "sk32"),
 )
 
 
@@ -202,3 +207,54 @@ def authz_binding_key() -> bytes:
     if sk:
         return bytes.fromhex(sk)
     return sm3_bytes(b"FZ-KMS|authz-binding")
+
+
+# ---- ⑫O-2 批：OPRF 服务钥（第 11 钥 FZ_OPRF_SK——归约修订版 §6/§10-G9） ----
+
+_OPRF_DOMAIN = b"FZ-KMS|oprf"
+
+
+def _oprf_key_from_env(name: str) -> str | None:
+    """env 取钥+形态门（64 hex、Z_n* 域 [1, n−1]——0/域外拒绝 fail-closed）。"""
+    sk = os.environ.get(name)
+    if not sk:
+        return None
+    if len(sk) != 64 or any(c not in "0123456789abcdefABCDEF" for c in sk):
+        raise ValueError(f"{name} 须 64 hex")
+    from gmssl.sm2 import default_ecc_table
+
+    n = int(default_ecc_table["n"], 16)
+    d = int(sk, 16)
+    if not 1 <= d <= n - 1:
+        raise ValueError(f"{name} 不在 Z_n* 域（[1, n−1]）")
+    return sk.lower()
+
+
+def oprf_key() -> str:
+    """OPRF 服务钥 k_oprf（env FZ_OPRF_SK 优先；缺省演示域派生——幂等锚，
+    非生产凭据；production 档由 assert_no_demo_keys_in_production 拒启兜底）。"""
+    sk = _oprf_key_from_env("FZ_OPRF_SK")
+    return sk if sk else _derive_priv(_OPRF_DOMAIN)
+
+
+def oprf_key_old() -> str | None:
+    """轮换过渡窗只读旧钥（env FZ_OPRF_SK_OLD；缺省 None=无过渡窗——§4.3）。"""
+    return _oprf_key_from_env("FZ_OPRF_SK_OLD")
+
+
+def oprf_key_id(sk_hex: str) -> str:
+    """钥指纹（accounts.opaque_key_id 判别键——设计 §4.3）：SM3(该钥公钥)前 8 hex。
+    与 rotate_kms_keys 的 16 hex 带外核对指纹同源不同宽（记录面取短判别）。"""
+    return sm3_bytes(bytes.fromhex(pubkey_from_priv(sk_hex))).hex()[:8]
+
+
+def oprf_key_for(key_id: str) -> str | None:
+    """按记录指纹取钥：current 优先；old 只读（过渡窗）；皆不匹配=None——
+    调用方（accounts 域 O-3）据 None 裁决记录作废（401 引导重置）。"""
+    cur = oprf_key()
+    if oprf_key_id(cur) == key_id:
+        return cur
+    old = oprf_key_old()
+    if old is not None and oprf_key_id(old) == key_id:
+        return old
+    return None

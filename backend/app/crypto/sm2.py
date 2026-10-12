@@ -67,6 +67,12 @@ def assert_pub(pub_hex: str) -> None:
 def _point_on_curve(pub_hex: str) -> bool:
     x = int(pub_hex[:64], 16)
     y = int(pub_hex[64:], 16)
+    if x >= _P or y >= _P:
+        # 坐标域检查（⑫O-2 批补全——OPAQUE 设计 §2.4：坐标 ∈ F_p）。
+        # 域外坐标可能经 mod-p 方程检查漏过（x=p+5 与 x=5 同判）——无效曲线
+        # 攻击前置防线；公钥（assert_pub）与 OPRF 群元素（app.crypto.oprf）
+        # 两调用方共享。
+        return False
     return (y * y - (x * x * x + _A * x + _B)) % _P == 0
 
 

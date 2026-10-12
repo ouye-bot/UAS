@@ -1,6 +1,6 @@
 """密码技术审计套件（crypto_audit）——三套件之一 · 批 1（docs/三大测试体系设计方案.md §3.1）。
 
-定位：算法正确性之上测**协议与生命周期**。八模块：
+定位：算法正确性之上测**协议与生命周期**。九模块（⑫O-2 批增 C9）：
 
     C1 向量对拍        三语言共享 JSON 事实源（app/crypto/vectors/*.json）+ tests 内联
                        HMAC/PBKDF2 官方向量，全量回放 Python 实现侧（app.crypto.*）
@@ -19,6 +19,9 @@
                        错误 p50 > 正确 p50 ×1.3 = fail（1.1~1.3 = xfail）
     C8 模糊注入护栏    解封函数与 SM2 验签灌 ≥1000 轮随机畸形输入（独立子进程）：
                        全部拒绝 + 进程不崩溃 + 无未捕获异常逃逸；任一通过=attack_success
+    C9 OPAQUE 原语矩阵 ⑫O-2 批：Z=−9 四准则锚点（独立判定器）/RFC 9380 K.1 官方
+                       xmd 向量/SSWU 恒等式 30 组/OPRF 回环黄金钉/Evaluate 恒时初验
+                       （拒绝路径时间域证据——O-1 前置的时间域证据面）
 
 形态：全函数级 + 临时 SQLite 夹具（零演示库/零真链副作用）；C3/C4 的 zkc 实弹直接
 调本地 zksvc/target/release/zkc.exe（期望门秒级，不跑真证明）。
@@ -1633,6 +1636,12 @@ def c6_dual_control(rb: ReportBuilder) -> None:
         username = "ca-admin"
         role = "admin"
         pubkey_hex = adm_pk
+        # org_id（2026-10-12 ⑫O-2 批顺手根修）：辖区分账 P0（25795b8）给批准路径
+        # 加了 _org_guard（collab.py:277 无条件访问 admin.org_id）——本桩缺列致
+        # C6-harness AttributeError（第四批门禁未含 crypto_audit，破损滞留至本批
+        # 全量实跑暴露）。目标案件=匿名令状（target None）⟹ 域门跳过，域值不参与
+        # 判定，补缺省域即可。
+        org_id = "org-a"
 
     note = "核实超限事件当事人实名"
 
@@ -2153,8 +2162,265 @@ def _guarded(rb: ReportBuilder, mod_key: str, fn, *args) -> None:
         )
 
 
+# ============================================================================
+# C9 OPAQUE/OPRF 原语矩阵（⑫O-2 批——归约修订版 §3/§2 锚点+Evaluate 恒时初验）
+# ============================================================================
+
+def c9_opaque(rb: ReportBuilder) -> None:
+    """⑫O-2 增例（设计 §9.1 的 O-2 切片）：Z=−9 四准则锚点/xmd 官方向量/SSWU
+    恒等式/OPRF 回环/Evaluate 时延初验。独立判定器从 tests.test_crypto_opaque
+    导入（与被测模块零共享代数——复评「从零判定器」方法论同构）；黄金自洽钉
+    同源共享（漂移双向即红）。C9-4~6/8~12 随 O-3/O-4/O-6 落地（设计 §9.1 全表）。"""
+    import hashlib
+
+    from app.crypto.oprf import (
+        FIELD_LEN,
+        H2C_DST,
+        SECURITY_K_BITS,
+        SM3_BLOCK_LEN,
+        SM3_OUT_LEN,
+        Z_SSWU,
+        OPRFError,
+        _poly_xp_mod_cubic,
+        _sswu_x_candidates,
+        _xmd_core,
+        blind,
+        blind_evaluate,
+        expand_message_xmd,
+        finalize,
+        hash_to_curve,
+        map_to_curve_sswu,
+        mul_blinded,
+        oprf_input_bytes,
+        parse_point_element,
+        point_to_hex,
+    )
+    from tests.test_crypto_opaque import (
+        A_P256,
+        A_SM2,
+        ANCHOR_GX0,
+        ANCHOR_X0,
+        ANCHOR_XP_COEFFS_ASC,
+        B_P256,
+        B_SM2,
+        GOLDEN_H2C,
+        GOLDEN_RT_ALPHA,
+        GOLDEN_RT_BETA,
+        GOLDEN_RT_OUT,
+        GOLDEN_XMD_96,
+        K_DEMO,
+        P_P256,
+        P_SM2,
+        RFC_DST_QUUX,
+        RFC_XMD_VECTORS,
+        _poly_xp_matrix_ref,
+        _poly_xp_ref,
+        _z_failures_ref,
+    )
+
+    m = rb.module(
+        "C9_opaque",
+        "C9 OPAQUE/OPRF 原语矩阵（Z=−9 锚点/RFC 9380 官方向量/SSWU 恒等式/"
+        "OPRF 回环/Evaluate 恒时初验——⑫O-2 批）",
+    )
+    from app.kms import oprf_key
+
+    k_hex = oprf_key()  # demo 档域派生（审计进程零 env 依赖）
+
+    def _verdict(name: str, ok: bool, defense: str, expect: str, actual, detail=None) -> None:
+        if ok:
+            m.pass_(name, defense_ref=defense, detail=detail)
+        else:
+            m.fail(
+                name, expected=expect, actual=actual,
+                defense_ref=defense, attack_success=True, detail=detail,
+            )
+
+    # --- C9-01 Z=−9 四准则：SM2 ±1..12 唯一通过（独立判定器） ---
+    domain_z = list(range(-12, 0)) + list(range(1, 13))
+    sm2_pass = [z for z in domain_z if not _z_failures_ref(P_SM2, A_SM2, B_SM2, z)]
+    _verdict(
+        "C9-01 Z=−9 全域唯一性（SM2 |Z|≤12 正负域，独立判定器）",
+        sm2_pass == [-9],
+        "归约修订版 §3.2（RFC 9380 §6.6.2 四准则）+tests.test_crypto_opaque 判定器",
+        "通过集=[−9]", f"通过集={sm2_pass}",
+        detail={"sm2_pass_set": sm2_pass},
+    )
+
+    # --- C9-02 三系数双路径逐字锚（多项式模幂 vs 伴随矩阵幂 vs 模块实现） ---
+    c = (B_SM2 - (-9)) % P_SM2
+    poly = _poly_xp_ref(A_SM2, c, P_SM2)
+    mat = _poly_xp_matrix_ref(A_SM2, c, P_SM2)
+    mod = _poly_xp_mod_cubic(A_SM2, c, P_SM2)
+    asc = ANCHOR_XP_COEFFS_ASC
+    _verdict(
+        "C9-02 x^p mod (g(x)−Z) 三系数双路径逐字锚",
+        mat == asc and poly == (asc[2], asc[1], asc[0]) and mod == (asc[2], asc[1], asc[0]),
+        "归约修订版 §3.2 附录 A（预期值逐字）",
+        str([hex(v) for v in asc]),
+        f"poly={poly} mat={mat} mod={mod}",
+    )
+
+    # --- C9-03 例外锚 x0/g(x0)/Z mod p ---
+    x0 = B_SM2 % P_SM2 * pow(-9 * A_SM2 % P_SM2, -1, P_SM2) % P_SM2
+    g0 = (pow(x0, 3, P_SM2) + A_SM2 * x0 + B_SM2) % P_SM2
+    z_modp = Z_SSWU % P_SM2
+    _verdict(
+        "C9-03 例外锚 x0=B/(Z·A)/g(x0) 平方/Z mod p（逐字）",
+        x0 == ANCHOR_X0
+        and g0 == ANCHOR_GX0
+        and pow(g0, (P_SM2 - 1) // 2, P_SM2) == 1
+        and z_modp == 0xFFFFFFFEFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF00000000FFFFFFFFFFFFFFF6,
+        "归约修订版 §3.2 c4 锚点",
+        f"x0={hex(ANCHOR_X0)} g0={hex(ANCHOR_GX0)}",
+        f"x0={hex(x0)} g0={hex(g0)}",
+        detail={"x0": hex(x0), "g0": hex(g0)},
+    )
+
+    # --- C9-04 P-256 交叉验证：唯一通过 −10=RFC 9380 发布值 ---
+    p256_pass = [z for z in domain_z if not _z_failures_ref(P_P256, A_P256, B_P256, z)]
+    _verdict(
+        "C9-04 P-256 交叉验证（判定器 256-bit 尺度端到端锚）",
+        p256_pass == [-10],
+        "归约修订版 §3.2（RFC 9380 套件发布值对拍）",
+        "通过集=[−10]", f"通过集={p256_pass}",
+        detail={"p256_pass_set": p256_pass},
+    )
+
+    # --- C9-05 xmd RFC 9380 K.1 官方向量（SHA-256 实例化——结构独立锚） ---
+    ok5 = True
+    for msg_v, len_v, expect_hex in RFC_XMD_VECTORS:
+        out = _xmd_core(msg_v, RFC_DST_QUUX, len_v, lambda b: hashlib.sha256(b).digest(), 64)
+        ok5 = ok5 and out.hex() == expect_hex
+    _verdict(
+        "C9-05 expand_message_xmd RFC 9380 K.1 官方向量（SHA-256，3 例含多块）",
+        ok5,
+        "RFC 9380 附录 K.1（rfc-editor 原文 2026-10-12 拉取）",
+        "MATCH", "MISMATCH",
+    )
+
+    # --- C9-06 SM2 套件边界四行+黄金钉 ---
+    out96 = expand_message_xmd(b"abc", H2C_DST, 96)
+    ok6 = (
+        SM3_OUT_LEN * 8 == 2 * SECURITY_K_BITS
+        and SM3_BLOCK_LEN == 64
+        and FIELD_LEN == 48
+        and len(out96) == 96
+        and out96.hex() == GOLDEN_XMD_96
+    )
+    _verdict(
+        "C9-06 SM2 套件边界（b≥2k 达线/ell/96B）+xmd 黄金钉",
+        ok6,
+        "设计 §3.4 边界账+GOLDEN_XMD_96 回归锁",
+        "边界四行+黄金钉 MATCH", "MISMATCH",
+    )
+
+    # --- C9-07 SSWU 恒等式 30 组+例外锚+on-curve+sgn0 ---
+    ok7 = True
+    for _ in range(30):
+        u = secrets.randbelow(P_SM2)
+        t, x1, gx1, x2, gx2 = _sswu_x_candidates(u)
+        if t == 0:
+            continue  # 例外点恒等式不适用（RFC 以 c4 保证）
+        z3u6 = pow(Z_SSWU, 3, P_SM2) * pow(u, 6, P_SM2) % P_SM2
+        sq1 = pow(gx1, (P_SM2 - 1) // 2, P_SM2) == 1
+        sq2 = pow(gx2, (P_SM2 - 1) // 2, P_SM2) == 1
+        ok7 = ok7 and gx2 == z3u6 * gx1 % P_SM2 and sq1 != sq2
+        mx, my = map_to_curve_sswu(u)
+        ok7 = ok7 and (my * my - (mx**3 + A_SM2 * mx + B_SM2)) % P_SM2 == 0
+        ok7 = ok7 and (my - u) % 2 == 0
+    t0_, x1_0, gx1_0, _x2, _gx2 = _sswu_x_candidates(0)
+    ok7 = ok7 and t0_ == 0 and x1_0 == ANCHOR_X0 and gx1_0 == ANCHOR_GX0
+    _verdict(
+        "C9-07 SSWU 恒等式 g(x2)=Z³u⁶g(x1)+恰一平方 30 组+例外锚+sgn0",
+        ok7,
+        "归约修订版 §3.2（复评实测口径 30 组）",
+        "恒等式+恰一平方+例外锚全过", "MISMATCH",
+    )
+
+    # --- C9-08 h2c 黄金钉+on-curve+确定性 ---
+    msg_v = oprf_input_bytes("vector-user", "vector-password")
+    hx, hy = hash_to_curve(msg_v)
+    ok8 = (
+        point_to_hex(hx, hy) == GOLDEN_H2C
+        and hash_to_curve(msg_v) == (hx, hy)
+        and (hy * hy - (hx**3 + A_SM2 * hx + B_SM2)) % P_SM2 == 0
+    )
+    _verdict(
+        "C9-08 hash_to_curve 六步复合（黄金钉+on-curve+确定性）",
+        ok8,
+        "归约修订版 §3.4+GOLDEN_H2C 回归锁",
+        GOLDEN_H2C, point_to_hex(hx, hy),
+    )
+
+    # --- C9-09 OPRF 回环黄金钉（固定 r/k——黄金=K_DEMO 固定钥生成，与 kms 派生钥无关） ---
+    alpha_g = mul_blinded(int("17" * 32, 16), GOLDEN_H2C)
+    beta_g = blind_evaluate(alpha_g, K_DEMO)
+    out_g = finalize(msg_v, int("17" * 32, 16), beta_g)
+    ok9 = (
+        alpha_g == GOLDEN_RT_ALPHA
+        and beta_g == GOLDEN_RT_BETA
+        and out_g.hex() == GOLDEN_RT_OUT
+    )
+    rnd = blind(oprf_input_bytes("audit-rnd", secrets.token_hex(8)))
+    out_r = finalize(
+        oprf_input_bytes("audit-rnd", secrets.token_hex(8)),
+        rnd[1],
+        blind_evaluate(rnd[0], k_hex),
+    )
+    _verdict(
+        "C9-09 OPRF 回环黄金钉（固定 r/k）+随机回环 32B 输出",
+        ok9 and len(out_r) == 32,
+        "归约修订版 §2.2 正确性恒等式+GOLDEN_RT 回归锁",
+        "黄金逐字+32B", "MISMATCH",
+    )
+
+    # --- C9-10 Evaluate 时延初验（拒绝路径不进标量乘的时间域证据+合法点稳定） ---
+    n_s = 400
+    valid_pts = [
+        point_to_hex(*hash_to_curve(oprf_input_bytes("audit-t", secrets.token_hex(8))))
+        for _ in range(30)
+    ]
+    x_g, y_g = parse_point_element(valid_pts[0])
+    off_pt = point_to_hex(x_g, (y_g + 1) % P_SM2)  # 离曲线（必拒——O-1 前置）
+    it = {"i": 0}
+
+    def _eval_valid():
+        it["i"] += 1
+        blind_evaluate(valid_pts[it["i"] % 30], k_hex)
+
+    def _eval_reject():
+        try:
+            blind_evaluate(off_pt, k_hex)
+        except OPRFError:
+            pass
+
+    valid_s, reject_s, meta_t = _samples_ms_interleaved(_eval_valid, _eval_reject, n_s)
+    vs, rs = _stats_of(valid_s), _stats_of(reject_s)
+    vp50, rp50 = vs["p50_ms"], rs["p50_ms"]
+    half = len(valid_s) // 2
+    h1 = _stats_of(valid_s[:half])["p50_ms"]
+    h2 = _stats_of(valid_s[half:])["p50_ms"]
+    stability = (max(h1, h2) / min(h1, h2)) if min(h1, h2) > 0 else 99.0
+    ratio = (rp50 / vp50) if vp50 else 99.0
+    _verdict(
+        f"C9-10 Evaluate 时延初验（拒绝路径快速性+合法点稳定，n={n_s}/侧）",
+        ratio < 0.5 and stability <= 1.3,
+        "归约 §2.3 O-1 前置（拒绝不进标量乘——时间域证据）+设计 §9.1 C9-7",
+        "reject_p50<valid_p50×0.5 且合法点半间 p50 比 ≤1.3",
+        f"reject/valid={ratio:.4f} stability={stability:.3f}",
+        detail={
+            "valid_p50_ms": round(vp50, 4),
+            "reject_p50_ms": round(rp50, 5),
+            "reject_over_valid": round(ratio, 5),
+            "valid_halves_p50_ratio": round(stability, 3),
+            "sampling": meta_t,
+        },
+    )
+
+
 def main() -> int:
-    ap = argparse.ArgumentParser(description="飞证密码技术审计套件（C1~C8）")
+    ap = argparse.ArgumentParser(description="飞证密码技术审计套件（C1~C9）")
     ap.add_argument(
         "--quick",
         action="store_true",
@@ -2177,6 +2443,8 @@ def main() -> int:
     # 批 2-2.4：C7 采样规格 ≥3000/侧为下限（c7 内部再抬升）——--quick 不缩水
     _guarded(rb, "C7_constant_time", c7_constant_time, 3000)
     _guarded(rb, "C8_fuzz", c8_fuzz, 600 if not args.quick else 500)
+    # ⑫O-2 批：C9 OPAQUE/OPRF 原语矩阵（归约修订版锚点+恒时初验——设计 §9.1）
+    _guarded(rb, "C9_opaque", c9_opaque)
 
     rep = rb.build()
     rb.save(str(BACKEND / "reports"))

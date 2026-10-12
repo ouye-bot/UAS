@@ -135,3 +135,74 @@ def test_rotate_script_material_and_fingerprint():
             assert _fingerprint(kind, v) == sm3_bytes(v.encode()).hex()[:16]
         # CSPRNG：两次生成不重合（确定性派生=本批根除的缺陷面）
         assert _material(kind) != v
+
+
+# ---- 第 11 钥 FZ_OPRF_SK（⑫O-2 批：OPRF 拖库面防护服务钥+轮换双钥过渡窗） ----
+
+
+def test_oprf_key_in_production_table():
+    """FZ_OPRF_SK 在生产注册表（第 11 钥——形态 sk32；拒启语义随表自动生效）。"""
+    rows = [name for name, _desc, _kind in PRODUCTION_REQUIRED_KEYS]
+    assert rows.count("FZ_OPRF_SK") == 1
+    row = next(r for r in PRODUCTION_REQUIRED_KEYS if r[0] == "FZ_OPRF_SK")
+    assert row[2] == "sk32"
+    assert "OPRF" in row[1]
+
+
+def test_oprf_key_demo_derived_and_stable(_clean_kms_env):
+    """demo 档缺省=SM3 域派生（确定性幂等锚——非生产凭据纪律，B1-d3 同款）。"""
+    from app import kms
+
+    k1 = kms.oprf_key()
+    assert len(k1) == 64 and all(c in "0123456789abcdef" for c in k1)
+    assert k1 == kms.oprf_key()
+    assert k1 == kms._derive_priv(b"FZ-KMS|oprf")
+
+
+def test_oprf_key_env_injection_and_validation(_clean_kms_env, monkeypatch):
+    """env 注入优先；非法形态（非 64hex/非 hex/域外 k=0）拒绝——fail-closed。"""
+    from app import kms
+
+    monkeypatch.setenv("FZ_OPRF_SK", "ab" * 32)
+    assert kms.oprf_key() == "ab" * 32
+    monkeypatch.setenv("FZ_OPRF_SK", "zz" * 32)
+    with pytest.raises(ValueError):
+        kms.oprf_key()
+    monkeypatch.setenv("FZ_OPRF_SK", "00" * 32)
+    with pytest.raises(ValueError):
+        kms.oprf_key()
+    monkeypatch.setenv("FZ_OPRF_SK", "ab" * 31)
+    with pytest.raises(ValueError):
+        kms.oprf_key()
+
+
+def test_oprf_key_rotation_dual_window(_clean_kms_env, monkeypatch):
+    """轮换双钥过渡窗（设计 §4.3）：key_id 指纹判别——current 优先/old 只读/
+    皆不匹配=None（记录作废的裁决面归调用方）；old 未注入=过渡窗已收口。"""
+    from app import kms
+
+    k_cur, k_old = "ab" * 32, "cd" * 32
+    monkeypatch.setenv("FZ_OPRF_SK", k_cur)
+    monkeypatch.setenv("FZ_OPRF_SK_OLD", k_old)
+    id_cur, id_old = kms.oprf_key_id(k_cur), kms.oprf_key_id(k_old)
+    assert id_cur != id_old and len(id_cur) == 8
+    assert kms.oprf_key_for(id_cur) == k_cur
+    assert kms.oprf_key_for(id_old) == k_old
+    assert kms.oprf_key_for("ffffffff") is None
+    monkeypatch.delenv("FZ_OPRF_SK_OLD")
+    assert kms.oprf_key_for(id_old) is None
+    assert kms.oprf_key_for(id_cur) == k_cur
+
+
+def test_production_missing_oprf_key_refuses(_clean_kms_env, monkeypatch):
+    """production 档缺 FZ_OPRF_SK 拒启且点名（拒启语义=派生钥顶替归零防线——
+    归约 §6 原文；其余十钥齐备只缺这一枚）。"""
+    from scripts.rotate_kms_keys import _material
+
+    monkeypatch.setenv("FZ_DEPLOYMENT", "production")
+    for name, _d, kind in PRODUCTION_REQUIRED_KEYS:
+        if name != "FZ_OPRF_SK":
+            monkeypatch.setenv(name, _material(kind))
+    with pytest.raises(RuntimeError) as ei:
+        create_app()
+    assert "FZ_OPRF_SK" in str(ei.value)

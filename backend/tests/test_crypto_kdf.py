@@ -97,3 +97,42 @@ def test_dklen_partial_block():
 def test_iterations_must_be_positive():
     with pytest.raises(ValueError):
         pbkdf2_hmac_sm3(b"pw", b"salt", 0, 32)
+
+
+# ---- HKDF-SM3（RFC 5869 双层——⑫O-2 批增例：G5「构造自证」口径） ----
+
+
+def test_hkdf_sm3_extract_reference_composition():
+    """Extract 与 RFC 5869 伪代码直呼 HMAC-SM3 逐字节一致（空盐=HashLen 零串补位）。"""
+    from app.crypto.hmac_sm3 import hmac_sm3
+    from app.crypto.kdf import hkdf_sm3_extract
+
+    ikm = b"O2-hkdf-ikm-sample"
+    assert hkdf_sm3_extract(b"", ikm) == hmac_sm3(b"\x00" * 32, ikm)
+    salt = b"\x11" * 32
+    assert hkdf_sm3_extract(salt, ikm) == hmac_sm3(salt, ikm)
+
+
+def test_hkdf_sm3_expand_reference_composition():
+    """Expand 与 RFC 5869 T(i) 链直呼一致（48B=1.5 块截断+单块）。"""
+    from app.crypto.hmac_sm3 import hmac_sm3
+    from app.crypto.kdf import hkdf_sm3_expand
+
+    prk = b"\x22" * 32
+    info = b"FZ-OPAQUE-MaskingKey|v1"
+    t1 = hmac_sm3(prk, info + b"\x01")
+    t2 = hmac_sm3(prk, t1 + info + b"\x02")
+    assert hkdf_sm3_expand(prk, info, 48) == t1 + t2[:16]
+    assert hkdf_sm3_expand(prk, info, 32) == t1
+
+
+def test_hkdf_sm3_domain_separation_and_bounds():
+    """info 域分离（不同 info ⟹ 不同 OKM）；长度边界 fail-closed（0 与 >255 块）。"""
+    from app.crypto.kdf import hkdf_sm3_expand
+
+    prk = b"\x33" * 32
+    assert hkdf_sm3_expand(prk, b"A|v1", 32) != hkdf_sm3_expand(prk, b"B|v1", 32)
+    with pytest.raises(ValueError):
+        hkdf_sm3_expand(prk, b"info", 0)
+    with pytest.raises(ValueError):
+        hkdf_sm3_expand(prk, b"info", 255 * 32 + 1)
