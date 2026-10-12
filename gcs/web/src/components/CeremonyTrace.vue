@@ -9,6 +9,7 @@
  * 诚实红线（复审洞 4）：只画**应召域**（summoned）——「凑够 k 域即停，第三域
  * 未被征询（少一次份额点出借=正确安全姿态）」must 显性讲出；「三域全列」即
  * 失真。关名用业务语言：请求台账在案/令状链上在案/双控批文在案/份额域同步。 */
+import { computed } from "vue";
 import FzEmpty from "./FzEmpty.vue";
 import type { CeremonyFace, CeremonyRow } from "../lib/gov";
 
@@ -26,6 +27,22 @@ const CHECK_LABEL: Record<string, string> = {
 const CHECK_ORDER = ["request_registered", "warrant_on_chain", "collab_approved", "owner_set_synced"];
 
 const props = defineProps<{ ceremony: CeremonyFace | null }>();
+
+// 形状容错（2026-10-12 彩排偏差⑤根修）：案甲（响应附带）带
+// summoned/granted/not_summoned 三键；案乙回放（trace/回放端点）只有
+// rows+domains——应召域=留痕行去重、已出份额=granted 行、未征询=域集差集
+// （回放语义同构：未被征询的域本就没有审计行）。缺键派生，不臆造。
+const summoned = computed(() => props.ceremony?.summoned ?? [
+    ...new Set((props.ceremony?.rows ?? []).map((r) => r.role)),
+]);
+const granted = computed(
+  () => props.ceremony?.granted ?? (props.ceremony?.rows ?? []).filter((r) => r.decision === "granted").map((r) => r.role),
+);
+const notSummoned = computed(() => {
+  if (props.ceremony?.not_summoned) return props.ceremony.not_summoned;
+  const seen = new Set(summoned.value);
+  return (props.ceremony?.domains ?? []).filter((x) => !seen.has(x));
+});
 
 function checksOf(row: CeremonyRow): { key: string; ok: boolean }[] {
   return CHECK_ORDER.filter((k) => k in (row.checks ?? {})).map((k) => ({
@@ -45,7 +62,7 @@ function decisionLabel(d: string): string {
     <div class="ceremony-head">
       <span class="ceremony-title">门限解锁仪式</span>
       <span class="fz-pill teal">{{ ceremony.threshold ?? `${ceremony.k}-of-${ceremony.domains.length}` }} 门限</span>
-      <span class="fz-pill blue">应召 {{ ceremony.summoned.length }}/{{ ceremony.domains.length }} 域</span>
+      <span class="fz-pill blue">应召 {{ summoned.length }}/{{ ceremony.domains.length }} 域</span>
     </div>
     <p class="ceremony-note">
       实名解锁的钥匙层：解密钥拆为 {{ ceremony.domains.length }} 份入各治理角色域，任 {{ ceremony.k }} 域各自过四关校验后各出一份解密份额点、数学合成——
@@ -64,11 +81,15 @@ function decisionLabel(d: string): string {
         </div>
       </div>
     </div>
-    <p v-if="ceremony.not_summoned?.length" class="ceremony-notsummoned">
-      未征询：{{ ceremony.not_summoned.map((d) => ROLE_LABEL[d] ?? d).join("、") }}——已凑足 {{ ceremony.k }} 域即停（未被征询的域不出份额点、无审计行——少一次份额点出借是正确安全姿态）。
+    <p v-if="notSummoned.length" class="ceremony-notsummoned">
+      未征询：{{ notSummoned.map((d) => ROLE_LABEL[d] ?? d).join("、") }}——已凑足 {{ ceremony.k }} 域即停（未被征询的域不出份额点、无审计行——少一次份额点出借是正确安全姿态）。
     </p>
   </div>
-  <FzEmpty v-else text="暂无门限仪式留痕（legacy 信封历史数据无仪式——如实缺省）。" icon="doc" />
+  <FzEmpty
+    v-else
+    text="暂无门限仪式留痕（解锁尚未执行，或 legacy 信封历史数据无仪式——如实缺省）。"
+    icon="doc"
+  />
 </template>
 
 <style scoped>

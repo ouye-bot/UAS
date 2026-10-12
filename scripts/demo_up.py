@@ -54,6 +54,9 @@ CHECKLIST = """
 【全真判决行】scenario_S1_fullchain.py 46 断言（登记→出证→ARM 真 SITL→
   合规飞行→TRAIL 证书→围栏触发取证→令状追溯，零替身）。
   面板数据验收：verify_panel_chain.py 17 断言（面板=链上事实）。
+【现行全量基线（2026-10-12 修整窗口后）】后端 pytest 567 ｜ 前端 vitest 169 ｜
+  浏览器级 UI 回归 40 断言（3 分钟演示动线：docs/演示动线3分钟.md，彩排器
+  scripts/demo_rehearse_3min.py）。口径权威=docs/答辩口径卡.md 与 MEMORY。
 ========================================================
 """
 
@@ -85,8 +88,12 @@ def preclean() -> None:
     下必删）。"""
     import subprocess as _sp
 
-    out = _sp.run(["netstat", "-ano"], capture_output=True, text=True, encoding="gbk",
-                  errors="replace").stdout or ""
+    out = (
+        _sp.run(
+            ["netstat", "-ano"], capture_output=True, text=True, encoding="gbk", errors="replace"
+        ).stdout
+        or ""
+    )
     pids: dict[str, set] = {}
     for line in out.splitlines():
         parts = line.split()
@@ -101,10 +108,14 @@ def preclean() -> None:
     # worker 按「进程名=python.exe ∧ 命令行含 app.zk.worker」清（Name 过滤——
     # 纯 CommandLine 匹配会把普查命令自身的进程链当目标，2026-09-27 实锤误杀）
     out = _sp.run(
-        ["powershell", "-NoProfile", "-Command",
-         "Get-CimInstance Win32_Process -Filter \"name='python.exe' and "
-         "commandline like '%app.zk.worker%'\" "
-         "| Select-Object -ExpandProperty processid"],
+        [
+            "powershell",
+            "-NoProfile",
+            "-Command",
+            "Get-CimInstance Win32_Process -Filter \"name='python.exe' and "
+            "commandline like '%app.zk.worker%'\" "
+            "| Select-Object -ExpandProperty processid",
+        ],
         capture_output=True,
     ).stdout.decode("gbk", errors="replace")
     for tok in out.split():
@@ -114,19 +125,24 @@ def preclean() -> None:
     # WSL 侧：只清桥（gcs_bridge_start.sh 重建）——fz-sitl2/链/裸 arducopter
     # 均为常驻基础设施不动（W-11 分层）
     _sp.run(
-        ["wsl", "-u", "root", "bash", "-c",
-         "systemctl stop fz-bridge 2>/dev/null; "
-         "pkill -f 'uvicorn server:app' 2>/dev/null; true"],
+        [
+            "wsl",
+            "-u",
+            "root",
+            "bash",
+            "-c",
+            "systemctl stop fz-bridge 2>/dev/null; pkill -f 'uvicorn server:app' 2>/dev/null; true",
+        ],
         capture_output=True,
     )
 
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--fake", action="store_true",
-                    help="无链模式（CI/离线演示——真链为 R1-3 默认）")
-    ap.add_argument("--no-clean", action="store_true",
-                    help="跳过启动前清场（默认清——残留防治纪律）")
+    ap.add_argument("--fake", action="store_true", help="无链模式（CI/离线演示——真链为 R1-3 默认）")
+    ap.add_argument(
+        "--no-clean", action="store_true", help="跳过启动前清场（默认清——残留防治纪律）"
+    )
     args = ap.parse_args()
 
     if not args.no_clean:
@@ -140,9 +156,13 @@ def main() -> int:
 
         def _chain_up() -> bool:
             try:
-                req = _u.Request("http://127.0.0.1:8545", data=json.dumps(
-                    {"jsonrpc": "2.0", "method": "getBlockNumber", "params": [1], "id": 1}
-                ).encode(), headers={"Content-Type": "application/json"})
+                req = _u.Request(
+                    "http://127.0.0.1:8545",
+                    data=json.dumps(
+                        {"jsonrpc": "2.0", "method": "getBlockNumber", "params": [1], "id": 1}
+                    ).encode(),
+                    headers={"Content-Type": "application/json"},
+                )
                 with _u.urlopen(req, timeout=3) as r:
                     return b"result" in r.read()
             except Exception:
@@ -226,15 +246,44 @@ def main() -> int:
     _logd.mkdir(parents=True, exist_ok=True)
     if os.environ.get("FZ_DEMO_LOGS", "1") != "0":
         _blog = open(_logd / "backend.log", "ab")
-        procs.append(subprocess.Popen(
-            [str(PY), "-m", "uvicorn", "app.main:create_app", "--factory",
-             "--host", "127.0.0.1", "--port", "8000"],
-            cwd=str(BACKEND), env=env, stdout=_blog, stderr=subprocess.STDOUT))
+        procs.append(
+            subprocess.Popen(
+                [
+                    str(PY),
+                    "-m",
+                    "uvicorn",
+                    "app.main:create_app",
+                    "--factory",
+                    "--host",
+                    "127.0.0.1",
+                    "--port",
+                    "8000",
+                ],
+                cwd=str(BACKEND),
+                env=env,
+                stdout=_blog,
+                stderr=subprocess.STDOUT,
+            )
+        )
     else:
-        procs.append(subprocess.Popen(
-            [str(PY), "-m", "uvicorn", "app.main:create_app", "--factory",
-             "--host", "127.0.0.1", "--port", "8000"],
-            cwd=str(BACKEND), env=env, creationflags=flags))
+        procs.append(
+            subprocess.Popen(
+                [
+                    str(PY),
+                    "-m",
+                    "uvicorn",
+                    "app.main:create_app",
+                    "--factory",
+                    "--host",
+                    "127.0.0.1",
+                    "--port",
+                    "8000",
+                ],
+                cwd=str(BACKEND),
+                env=env,
+                creationflags=flags,
+            )
+        )
     # ③GCS 化拓扑统一（2026-09-27）：桥=SITL 同侧（WSL）——Windows 桥
     # （FakeLink）退役（真实测试策略：产品路径零合成遥测）。启动=模板脚本
     # （gcs_bridge_start.sh，自持真实 C 盘路径与密钥读文件）复制到 ASCII
@@ -246,6 +295,7 @@ def main() -> int:
     # gcs_bridge_start.sh 头注）。目标目录默认=系统临时目录（FZ_ASCII_DIR 可覆盖），
     # WSL 侧路径由 wslpath 现场换算（不硬编码盘符）。
     import os as _os
+
     # 🔴 缺省必须 ASCII 无中文（wsl.exe 传中文路径乱码——本注释存在的原因）；
     # 系统临时目录含中文用户名，不可用。
     _ascii_dir = _os.environ.get("FZ_ASCII_DIR", "D:/fz_bridge_tmp")  # noqa: 正斜杠——反斜杠会被 shell 层吃掉
@@ -256,27 +306,41 @@ def main() -> int:
     _env_src = UAS / ".local_env"
     if _env_src.exists():
         (Path(_ascii_dir) / ".local_env").write_text(
-            _env_src.read_text(encoding="utf-8"), encoding="utf-8", newline="\n")
+            _env_src.read_text(encoding="utf-8"), encoding="utf-8", newline="\n"
+        )
     # WSL 侧路径纯字符串换算（D:/x/y → /mnt/d/x/y）——wslpath 子进程在部分
     # 调用环境返回空（2026-10-02 终验实弹），字符串换算零依赖且确定。
     _wsl_sh = "/mnt/" + _sh_dst.drive[0].lower() + _sh_dst.as_posix()[2:]
     # 前清 failed 态（transient 单元失败后驻留——不 reset 则 systemd-run 静默拒，
     # capture_output 吞掉报错=桥"无原因"起不来；2026-10-02 终验实弹）
-    subprocess.run(["wsl", "-u", "root", "systemctl", "reset-failed", "fz-bridge"],
-                   capture_output=True, timeout=30)
     subprocess.run(
-        ["wsl", "-u", "root", "systemd-run", "--unit=fz-bridge", "--uid=ouye",
-         "bash", _wsl_sh],
-        capture_output=True, timeout=30)
+        ["wsl", "-u", "root", "systemctl", "reset-failed", "fz-bridge"],
+        capture_output=True,
+        timeout=30,
+    )
+    subprocess.run(
+        ["wsl", "-u", "root", "systemd-run", "--unit=fz-bridge", "--uid=ouye", "bash", _wsl_sh],
+        capture_output=True,
+        timeout=30,
+    )
     # 验证 worker（R1：产品面全链——申请→真实验证→取件不再是诚实拒绝而是真通）
-    procs.append(subprocess.Popen(
-        [str(PY), "-m", "app.zk.worker"],
-        cwd=str(BACKEND), env=env, creationflags=flags))
-    procs.append(subprocess.Popen(
-        ["npm", "run", "dev", "--", "--port", "5174", "--strictPort"],
-        cwd=str(WEB), env=env, creationflags=flags, shell=(os.name == "nt")))
+    procs.append(
+        subprocess.Popen(
+            [str(PY), "-m", "app.zk.worker"], cwd=str(BACKEND), env=env, creationflags=flags
+        )
+    )
+    procs.append(
+        subprocess.Popen(
+            ["npm", "run", "dev", "--", "--port", "5174", "--strictPort"],
+            cwd=str(WEB),
+            env=env,
+            creationflags=flags,
+            shell=(os.name == "nt"),
+        )
+    )
 
     import time as _t
+
     _t.sleep(5)  # WSL 桥 nohup 启动缓冲（③GCS 化：桥走 WSL 侧）
     ok_api = wait_http("http://127.0.0.1:8000/healthz")
     ok_bridge = wait_http("http://127.0.0.1:8100/engine_pub")

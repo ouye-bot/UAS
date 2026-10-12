@@ -97,7 +97,10 @@ async function refreshOrg(): Promise<void> {
 const ceremonies = ref<Record<string, CeremonyFace | null>>({});
 const ceremonyBusy = ref("");
 async function fetchCeremony(wh: string): Promise<void> {
-  if (ceremonies.value[wh] !== undefined) return; // 已取过（成功或空）不重取
+  // 缓存语义（彩排偏差⑦根修）：已有**实质留痕行**才免取——批准后即时回放
+  // 常落在解锁执行前（rows 空），缓存空结果会让执行完成后的回放永远拿不到
+  const prev = ceremonies.value[wh];
+  if (prev !== undefined && prev !== null && prev.rows?.length) return;
   ceremonyBusy.value = wh;
   try {
     ceremonies.value[wh] = await api<CeremonyFace>(`/ra/threshold/ceremony?warrant_hash_hex=${encodeURIComponent(wh)}`);
