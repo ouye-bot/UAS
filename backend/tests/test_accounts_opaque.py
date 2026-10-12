@@ -1023,10 +1023,35 @@ GOLDEN_CHAIN = {
     "masking_key": "c2dc3b71cf96db31e9a0f31b82921ae5efb69e576c8e9e14fb0c34e2d667d341",
     "kek": "61bb6113cd71bfd30f22f911f16d0921",
     "masked": (
-        "aa49f8616ea1abebe3cc319d5a1b36d0eaac42c65e0f75fcf6182b8dc12987f557a55890deeefe984aff3659221066e65d3a39f0769e7e18e1315cbf57650a87c6c5defb7c8255f4dc68576b869462e2fb3285d8d1422cde9ba8fb567b36c8d4829411f81c27fa116c53a16e97cfffd696f315763fc1ad923835fc2a5e3fa0ae1214f49170684dd03207bc7025940e9871544a8357c0012db4af2b630588e6e9c5fa8e4c521b2ef08e83b29325cb14ebc887ab1d51c36dc044d76b27e0aa3a2b2560ef3ab03676cf25cb401e01ef88aefd27369a202d4b00e7d3b429851639edf186a0384ed9ee907a031a57a1034e08b7ef7463331bdc3b68b66939f84e99ad23005d3c029e2f2e7639e948aeb049e2623bc7abe2925043df28a8dfbc65798cbdb39762e66fdb759959a8127bd6197753a90161156af1c4092d48bdfecafe36ecbcb39281807b8f74dd9b11d281036b6e643e24176f19513aa48a6c93cae345e60198d23b031f6eb8f1742fbe6d5f69e95c48fcb8bf96c62c14446af4b05e84d9413b6660d59baa492a680301552537cae53fdb9ef55622e2b94aad2a07c2e6a52d6e7c0b90ff05"
+        "aa49f8616ea1abebe3cc319d5a1b36d0eaac42c65e0f75fcf6182b8dc12987f5"
+        "57a55890deeefe984aff3659221066e65d3a39f0769e7e18e1315cbf57650a87"
+        "c6c5defb7c8255f4dc68576b869462e2fb3285d8d1422cde9ba8fb567b36c8d4"
+        "829411f81c27fa116c53a16e97cfffd696f315763fc1ad923835fc2a5e3fa0ae"
+        "1214f49170684dd03207bc7025940e9871544a8357c0012db4af2b630588e6e9"
+        "c5fa8e4c521b2ef08e83b29325cb14ebc887ab1d51c36dc044d76b27e0aa3a2b"
+        "2560ef3ab03676cf25cb401e01ef88aefd27369a202d4b00e7d3b429851639ed"
+        "f186a0384ed9ee907a031a57a1034e08b7ef7463331bdc3b68b66939f84e99ad"
+        "23005d3c029e2f2e7639e948aeb049e2623bc7abe2925043df28a8dfbc65798c"
+        "bdb39762e66fdb759959a8127bd6197753a90161156af1c4092d48bdfecafe36"
+        "ecbcb39281807b8f74dd9b11d281036b6e643e24176f19513aa48a6c93cae345"
+        "e60198d23b031f6eb8f1742fbe6d5f69e95c48fcb8bf96c62c14446af4b05e84"
+        "d9413b6660d59baa492a680301552537cae53fdb9ef55622e2b94aad2a07c2e6"
+        "a52d6e7c0b90ff05"
     ),
-    "server_pub": "064bc3ac38298569bffb83e84042ff93389816c2042de5fc1285f3d76e3c458060612430734bff243a00eaa51663e947ed1ed6ee9a0c28007338d99759a7626d",
-    "env": '{"v":6,"pk":"' + "11" * 64 + '","enc":{"kdf":"opaque-rwd-v1","env_nonce":"' + "ab" * 12 + '","nonce":"' + "cd" * 12 + '","ct":"38d4c0b211076ffd88029958d437251bf540c1470ac1d9af4d9073acc9dd7509","tag":"790a853428b159016adb4a834d1e3b5b"}}',
+    "server_pub": (
+        "064bc3ac38298569bffb83e84042ff93389816c2042de5fc1285f3d76e3c4580"
+        "60612430734bff243a00eaa51663e947ed1ed6ee9a0c28007338d99759a7626d"
+    ),
+    "env": (
+        '{"v":6,"pk":"'
+        + "11" * 64
+        + '","enc":{"kdf":"opaque-rwd-v1","env_nonce":"'
+        + "ab" * 12
+        + '","nonce":"'
+        + "cd" * 12
+        + '","ct":"38d4c0b211076ffd88029958d437251bf540c1470ac1d9af4d9073acc9dd7509"'
+        + ',"tag":"790a853428b159016adb4a834d1e3b5b"}}'
+    ),
 }
 
 
@@ -1035,17 +1060,18 @@ def test_golden_client_chain_pins():
     oprf_output=GOLDEN_RT_OUT/盐 4e×16/迭代 600k/env_nonce ab×12/nonce cd×12/
     掩码 nonce aa×32/pk 11×64/sk ab×32；JS 侧（tests/lib/opaque.test.ts）镜像
     同常量——漂移双向即红。"""
-    from tests.test_crypto_opaque import GOLDEN_RT_OUT
-
     from app.accounts.client import derive_rwd_chain, kek_from_rwd
-    from app.accounts.opaque import mask_credential_response
     from app.accounts.envelope import open_envelope_v6, seal_envelope_v6
+    from app.accounts.opaque import mask_credential_response
     from app.kms import engine_pub_hex
+    from tests.test_crypto_opaque import GOLDEN_RT_OUT
 
     oprf_output = bytes.fromhex(GOLDEN_RT_OUT)
     rwd, mk = derive_rwd_chain(oprf_output, "4e" * 16, 600_000)
     kek = kek_from_rwd(rwd, "ab" * 12)
-    env = seal_envelope_v6("ab" * 32, "11" * 64, rwd.hex(), env_nonce_hex="ab" * 12, nonce_hex="cd" * 12)
+    env = seal_envelope_v6(
+        "ab" * 32, "11" * 64, rwd.hex(), env_nonce_hex="ab" * 12, nonce_hex="cd" * 12
+    )
     masked = mask_credential_response(mk, bytes.fromhex("aa" * 32), env.encode())
     assert rwd.hex() == GOLDEN_CHAIN["rwd"]
     assert mk.hex() == GOLDEN_CHAIN["masking_key"]

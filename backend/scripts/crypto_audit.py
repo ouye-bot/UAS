@@ -346,9 +346,7 @@ def _seal_v4(sk_hex: str, passphrase: str, *, iterations: int = 4096) -> str:
     from app.accounts.envelope import seal_envelope_v4
     from app.crypto.sm2 import pubkey_from_priv
 
-    return seal_envelope_v4(
-        sk_hex, pubkey_from_priv(sk_hex), passphrase, iterations=iterations
-    )
+    return seal_envelope_v4(sk_hex, pubkey_from_priv(sk_hex), passphrase, iterations=iterations)
 
 
 def c2_envelope(rb: ReportBuilder) -> None:
@@ -583,7 +581,9 @@ def _gate_case(
     inst = ["0" * 64] * 26
     # SN 绑定换代（2026-10-06 ⑦代批收口）：实例 25=sn_hash——与 _gate_kwargs
     # build_message 的 serial 常量同源（服务端权威 SM3(serial) 折叠口径）。
-    inst[25] = _fe_be32_hex_from_bytes32(sm3_bytes(b"FZ-SN-CRYPTO-AUDIT"))  # 词折叠环 fold_words_be（S1 根修定谳口径）
+    inst[25] = _fe_be32_hex_from_bytes32(
+        sm3_bytes(b"FZ-SN-CRYPTO-AUDIT")
+    )  # 词折叠环 fold_words_be（S1 根修定谳口径）
     challenge = binding_challenge(plan_hash_hex, nonce_hex)
     inst[19] = _fe_be32_hex_from_digest(sm3_bytes(bytes.fromhex(challenge)))
     pred_str = plan_hash_hex + "|" + nonce_hex + "|" + POLICY_VERSION
@@ -666,7 +666,7 @@ def _gate_kwargs(
     )
     base.update(over or {})
     # SN 溯源落库（⑥代查库面回写）：sub_cred_hash→SubCredential→Credential
-    #（serial 原文=与实例 25 同源的常量；幂等——同 hash 重跑不重复插）。
+    # （serial 原文=与实例 25 同源的常量；幂等——同 hash 重跑不重复插）。
     if seed_session is not None:
         import datetime as dt
 
@@ -777,7 +777,9 @@ def _c3_body(rb: ReportBuilder, m: Module, session, eng) -> None:
 
     # 正例对照：诚实申请受理（pending + 128bit 回执）
     case0 = _gate_case(secrets.token_bytes(32).hex(), secrets.token_bytes(16).hex(), t_start=now)
-    kw0 = _gate_kwargs(case0, session_pk_hex=spk, t_start=now, t_end=now + 3600, seed_session=session)
+    kw0 = _gate_kwargs(
+        case0, session_pk_hex=spk, t_start=now, t_end=now + 3600, seed_session=session
+    )
     try:
         row = service.admission_gate(session, _fake_deps(), **kw0)
         r = session.get(Receipt, row.receipt_id)
@@ -804,11 +806,15 @@ def _c3_body(rb: ReportBuilder, m: Module, session, eng) -> None:
 
     # 高度轴·政策类边界（门控层高度轴=政策类查表；高度数值本体由电路 RangeCheck 强制）
     caseA = _gate_case(secrets.token_bytes(32).hex(), secrets.token_bytes(16).hex(), t_start=now)
-    kwA = _gate_kwargs(caseA, session_pk_hex=spk, t_start=now, t_end=now + 3600, seed_session=session, class_id=0)
+    kwA = _gate_kwargs(
+        caseA, session_pk_hex=spk, t_start=now, t_end=now + 3600, seed_session=session, class_id=0
+    )
     caseB = _gate_case(
         secrets.token_bytes(32).hex(), secrets.token_bytes(16).hex(), t_start=now, class_id=1
     )
-    kwB = _gate_kwargs(caseB, session_pk_hex=spk, t_start=now, t_end=now + 3600, seed_session=session, class_id=1)
+    kwB = _gate_kwargs(
+        caseB, session_pk_hex=spk, t_start=now, t_end=now + 3600, seed_session=session, class_id=1
+    )
     try:
         ra = service.admission_gate(session, _fake_deps(), **kwA)
         rbo = service.admission_gate(session, _fake_deps(), **kwB)
@@ -856,7 +862,9 @@ def _c3_body(rb: ReportBuilder, m: Module, session, eng) -> None:
 
     # 窗上限边界：恰好等于 → 放行；+1 → window_too_long（S5「10 年令牌」门）
     caseW = _gate_case(secrets.token_bytes(32).hex(), secrets.token_bytes(16).hex(), t_start=now)
-    kwW = _gate_kwargs(caseW, session_pk_hex=spk, t_start=now, t_end=now + max_window, seed_session=session)
+    kwW = _gate_kwargs(
+        caseW, session_pk_hex=spk, t_start=now, t_end=now + max_window, seed_session=session
+    )
     try:
         row = service.admission_gate(session, _fake_deps(), **kwW)
         if row.status == "pending":
@@ -1428,7 +1436,6 @@ def c5_key_lifecycle(rb: ReportBuilder) -> None:
     # （B1 升格契约：理由≥4 字+admin SM2 签名（FZ-REVOKE|v1 域）+纪元绑定=
     # 公示纪元+1；先证「缺签名=401 bad_sig」再走真签正例）
     from app.crypto.sm2 import sign as _ca_sign
-
     from app.ra.service import revoke_msg
 
     rev_reason = "crypto-audit C5"
@@ -1436,8 +1443,12 @@ def c5_key_lifecycle(rb: ReportBuilder) -> None:
     adm_sk, adm_pk = generate_keypair()
     try:
         svc.revoke(
-            master_cred_hash_hex=reg["master_cred_hash_hex"], reason=rev_reason,
-            admin_username="ca-admin", admin_pub_hex=adm_pk, admin_sig_hex="", epoch=rev_epoch,
+            master_cred_hash_hex=reg["master_cred_hash_hex"],
+            reason=rev_reason,
+            admin_username="ca-admin",
+            admin_pub_hex=adm_pk,
+            admin_sig_hex="",
+            epoch=rev_epoch,
         )
         m.fail(
             "C5-06pre 缺管理员签名撤销",
@@ -1460,8 +1471,10 @@ def c5_key_lifecycle(rb: ReportBuilder) -> None:
                 defense_ref="app/ra/service.py:_verify_admin_sig",
             )
     out = svc.revoke(
-        master_cred_hash_hex=reg["master_cred_hash_hex"], reason=rev_reason,
-        admin_username="ca-admin", admin_pub_hex=adm_pk,
+        master_cred_hash_hex=reg["master_cred_hash_hex"],
+        reason=rev_reason,
+        admin_username="ca-admin",
+        admin_pub_hex=adm_pk,
         admin_sig_hex=_ca_sign(
             adm_sk, revoke_msg([reg["master_cred_hash_hex"]], rev_reason, rev_epoch).encode()
         ),
@@ -1848,7 +1861,12 @@ def _stats_of(samples: list[float]) -> dict:
 
 
 def _ct_verdict(
-    m: Module, name: str, correct: list[float], wrong: list[float], defense: str, note: str,
+    m: Module,
+    name: str,
+    correct: list[float],
+    wrong: list[float],
+    defense: str,
+    note: str,
     sampling_meta: dict | None = None,
 ) -> None:
     """宽松护栏（规格口径不变）：错误中位数 > 正确 ×1.3=fail（attack_success）；
@@ -2166,6 +2184,7 @@ def _guarded(rb: ReportBuilder, mod_key: str, fn, *args) -> None:
 # C9 OPAQUE/OPRF 原语矩阵（⑫O-2 批——归约修订版 §3/§2 锚点+Evaluate 恒时初验）
 # ============================================================================
 
+
 def c9_opaque(rb: ReportBuilder) -> None:
     """⑫O-2 增例（设计 §9.1 的 O-2 切片）：Z=−9 四准则锚点/xmd 官方向量/SSWU
     恒等式/OPRF 回环/Evaluate 时延初验。独立判定器从 tests.test_crypto_opaque
@@ -2232,8 +2251,12 @@ def c9_opaque(rb: ReportBuilder) -> None:
             m.pass_(name, defense_ref=defense, detail=detail)
         else:
             m.fail(
-                name, expected=expect, actual=actual,
-                defense_ref=defense, attack_success=True, detail=detail,
+                name,
+                expected=expect,
+                actual=actual,
+                defense_ref=defense,
+                attack_success=True,
+                detail=detail,
             )
 
     # --- C9-01 Z=−9 四准则：SM2 ±1..12 唯一通过（独立判定器） ---
@@ -2243,7 +2266,8 @@ def c9_opaque(rb: ReportBuilder) -> None:
         "C9-01 Z=−9 全域唯一性（SM2 |Z|≤12 正负域，独立判定器）",
         sm2_pass == [-9],
         "归约修订版 §3.2（RFC 9380 §6.6.2 四准则）+tests.test_crypto_opaque 判定器",
-        "通过集=[−9]", f"通过集={sm2_pass}",
+        "通过集=[−9]",
+        f"通过集={sm2_pass}",
         detail={"sm2_pass_set": sm2_pass},
     )
 
@@ -2283,7 +2307,8 @@ def c9_opaque(rb: ReportBuilder) -> None:
         "C9-04 P-256 交叉验证（判定器 256-bit 尺度端到端锚）",
         p256_pass == [-10],
         "归约修订版 §3.2（RFC 9380 套件发布值对拍）",
-        "通过集=[−10]", f"通过集={p256_pass}",
+        "通过集=[−10]",
+        f"通过集={p256_pass}",
         detail={"p256_pass_set": p256_pass},
     )
 
@@ -2296,7 +2321,8 @@ def c9_opaque(rb: ReportBuilder) -> None:
         "C9-05 expand_message_xmd RFC 9380 K.1 官方向量（SHA-256，3 例含多块）",
         ok5,
         "RFC 9380 附录 K.1（rfc-editor 原文 2026-10-12 拉取）",
-        "MATCH", "MISMATCH",
+        "MATCH",
+        "MISMATCH",
     )
 
     # --- C9-06 SM2 套件边界四行+黄金钉 ---
@@ -2312,7 +2338,8 @@ def c9_opaque(rb: ReportBuilder) -> None:
         "C9-06 SM2 套件边界（b≥2k 达线/ell/96B）+xmd 黄金钉",
         ok6,
         "设计 §3.4 边界账+GOLDEN_XMD_96 回归锁",
-        "边界四行+黄金钉 MATCH", "MISMATCH",
+        "边界四行+黄金钉 MATCH",
+        "MISMATCH",
     )
 
     # --- C9-07 SSWU 恒等式 30 组+例外锚+on-curve+sgn0 ---
@@ -2335,7 +2362,8 @@ def c9_opaque(rb: ReportBuilder) -> None:
         "C9-07 SSWU 恒等式 g(x2)=Z³u⁶g(x1)+恰一平方 30 组+例外锚+sgn0",
         ok7,
         "归约修订版 §3.2（复评实测口径 30 组）",
-        "恒等式+恰一平方+例外锚全过", "MISMATCH",
+        "恒等式+恰一平方+例外锚全过",
+        "MISMATCH",
     )
 
     # --- C9-08 h2c 黄金钉+on-curve+确定性 ---
@@ -2350,18 +2378,15 @@ def c9_opaque(rb: ReportBuilder) -> None:
         "C9-08 hash_to_curve 六步复合（黄金钉+on-curve+确定性）",
         ok8,
         "归约修订版 §3.4+GOLDEN_H2C 回归锁",
-        GOLDEN_H2C, point_to_hex(hx, hy),
+        GOLDEN_H2C,
+        point_to_hex(hx, hy),
     )
 
     # --- C9-09 OPRF 回环黄金钉（固定 r/k——黄金=K_DEMO 固定钥生成，与 kms 派生钥无关） ---
     alpha_g = mul_blinded(int("17" * 32, 16), GOLDEN_H2C)
     beta_g = blind_evaluate(alpha_g, K_DEMO)
     out_g = finalize(msg_v, int("17" * 32, 16), beta_g)
-    ok9 = (
-        alpha_g == GOLDEN_RT_ALPHA
-        and beta_g == GOLDEN_RT_BETA
-        and out_g.hex() == GOLDEN_RT_OUT
-    )
+    ok9 = alpha_g == GOLDEN_RT_ALPHA and beta_g == GOLDEN_RT_BETA and out_g.hex() == GOLDEN_RT_OUT
     rnd = blind(oprf_input_bytes("audit-rnd", secrets.token_hex(8)))
     out_r = finalize(
         oprf_input_bytes("audit-rnd", secrets.token_hex(8)),
@@ -2372,7 +2397,8 @@ def c9_opaque(rb: ReportBuilder) -> None:
         "C9-09 OPRF 回环黄金钉（固定 r/k）+随机回环 32B 输出",
         ok9 and len(out_r) == 32,
         "归约修订版 §2.2 正确性恒等式+GOLDEN_RT 回归锁",
-        "黄金逐字+32B", "MISMATCH",
+        "黄金逐字+32B",
+        "MISMATCH",
     )
 
     # --- C9-10 Evaluate 时延初验（拒绝路径不进标量乘的时间域证据+合法点稳定） ---
@@ -2445,10 +2471,292 @@ def main() -> int:
     _guarded(rb, "C8_fuzz", c8_fuzz, 600 if not args.quick else 500)
     # ⑫O-2 批：C9 OPAQUE/OPRF 原语矩阵（归约修订版锚点+恒时初验——设计 §9.1）
     _guarded(rb, "C9_opaque", c9_opaque)
+    _guarded(rb, "C9_opaque_protocol", c9_opaque_protocol)
 
     rep = rb.build()
     rb.save(str(BACKEND / "reports"))
     return 0 if rep["summary"]["verdict"] == "success" else 1
+
+
+# ============================================================================
+# C9-EXT OPAQUE 协议面（⑫O-6 扩例——枚举不可区分/模糊注入/keystore 前置序/
+# 迁移序：设计合同 §9.1 C9-4~6/8/11/12 的审计面落地）
+# ============================================================================
+
+
+def c9_opaque_protocol(rb: ReportBuilder) -> None:
+    """⑫O-6 C9 协议面扩例：evaluate 三态恒形+枚举不可区分统计（§6.1/§6.2）、
+    evaluate 口模糊注入（§9-5——O-1 前置+零崩溃零逃逸）、keystore 前置序
+    （§5.5——410/429）、迁移序（§5.4 原子换新+台账）。函数级驱动+内存库——
+    与 C3 同工艺；HTTP 面经 TestClient（同进程 ASGI，零网络依赖）。"""
+    from fastapi.testclient import TestClient
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+
+    import app.accounts.models  # noqa: F401  先注册共享 Base（accounts 表）再建表
+    from app.accounts.envelope import seal_envelope_v4
+    from app.accounts.models import Account
+    from app.crypto.oprf import hash_to_curve, oprf_input_bytes, point_to_hex
+    from app.db import get_session
+    from app.main import create_app
+    from app.ra.models import Base
+
+    m = rb.module(
+        "C9_opaque_protocol",
+        "C9-EXT OPAQUE 协议面（枚举不可区分/evaluate 模糊注入/keystore 前置序/迁移序——⑫O-6 扩例）",
+    )
+    from app.kms import oprf_key
+
+    k_hex = oprf_key()
+
+    # 文件库（:memory: 在 TestClient 门户线程下每连接独立空库——C3 函数级
+    # 形态无此面；此处走 HTTP 面须跨线程共享）
+    import tempfile as _tempfile
+    from pathlib import Path as _Path
+
+    _dbfile = _Path(_tempfile.mkdtemp(prefix="fzca-c9ext-")) / "c9ext.db"
+    eng = create_engine(f"sqlite:///{_dbfile.as_posix()}")
+    Base.metadata.create_all(eng)
+    TestSession = sessionmaker(bind=eng, expire_on_commit=False)
+
+    def _sess():
+        s = TestSession()
+        try:
+            yield s
+            s.commit()
+        except Exception:  # noqa: BLE001
+            s.rollback()
+            raise
+        finally:
+            s.close()
+
+    app = create_app()
+    app.dependency_overrides[get_session] = _sess
+    client = TestClient(app)
+
+    from app.crypto.sm2 import generate_keypair
+
+    def _client_blind(username: str, password: str):
+        from app.crypto.oprf import blind
+
+        return blind(oprf_input_bytes(username, password))
+
+    def _client_finish(r_scalar: int, response: dict) -> str:
+        from app.accounts.client import client_finish_login
+
+        return client_finish_login(r_scalar, response)
+
+    def _client_seal(username: str, password: str, sk_hex: str, pk_hex: str, key: str) -> dict:
+        from app.accounts.client import client_seal_v6
+
+        return client_seal_v6(username, password, sk_hex, pk_hex, k_hex=key)
+
+    def _reg_v6(username: str, password: str = "C9-Ext-Pw-1"):
+        sk, pk = generate_keypair()
+        body = _client_seal(username, password, sk, pk, k_hex)
+        r = client.post(
+            "/auth/register",
+            json={"username": username, "pubkey_hex": pk, **body},
+        )
+        assert r.status_code == 201, r.text
+        return sk, pk
+
+    def _seed_v4(username: str):
+        sk, pk = generate_keypair()
+        sess = TestSession()
+        try:
+            sess.add(
+                Account(
+                    username=username,
+                    role="pilot",
+                    status="active",
+                    pubkey_hex=pk,
+                    sealed_blob=seal_envelope_v4(sk, pk, "C9-Ext-Pw-1", iterations=4096),
+                )
+            )
+            sess.commit()
+        finally:
+            sess.close()
+        return sk, pk
+
+    def _challenge_login(username: str, sk_hex: str):
+        from app.crypto.sm2 import sign
+
+        nonce = client.post(f"/auth/challenge/{username}").json()["data"]["nonce_hex"]
+        return client.post(
+            "/auth/login",
+            json={
+                "username": username,
+                "nonce_hex": nonce,
+                "sig_hex": sign(sk_hex, f"FZ-AUTH-LOGIN|{nonce}".encode()),
+            },
+        )
+
+    def _clear_buckets():
+        """限流桶清账（limiter 与被测 O-1/枚举面正交——逐节清账防 429 污染断言）。"""
+        from app.accounts.models import RateLimitBucket
+
+        sess = TestSession()
+        try:
+            sess.query(RateLimitBucket).delete()
+            sess.commit()
+        finally:
+            sess.close()
+
+    # --- C9-11 枚举不可区分（§6.1/§6.2 三态恒形+60 样本零重合） ---
+    _reg_v6("pilot_enum")
+    _seed_v4("pilot_v4e")
+    lens = None
+    seen = set()
+    dup = False
+    len_drift = False
+    for i in range(60):
+        if i % 9 == 0:
+            _clear_buckets()
+        username = ("pilot_enum", "ghost_none", "pilot_v4e")[i % 3]
+        alpha, _r = _client_blind(username, "Whatever-1a")
+        r = client.post("/auth/opaque/evaluate", json={"username": username, "alpha_hex": alpha})
+        assert r.status_code == 200, r.text
+        data = r.json()["data"]
+        cur = tuple(
+            len(data[k2])
+            for k2 in ("evaluated_message", "masking_nonce", "masked_response", "kdf_salt_hex")
+        )
+        if lens is None:
+            lens = cur
+        elif cur != lens:
+            len_drift = True
+        if data["masked_response"] in seen:
+            dup = True
+        seen.add(data["masked_response"])
+    ok11 = (not len_drift) and (not dup) and len(seen) == 60
+    if ok11:
+        m.pass_(
+            "C9-11 枚举不可区分（三态 60 样本：四键长度恒定+masked_response 零重合）",
+            defense_ref="归约修订版 §5.4/§6.1-2（fake-record 分布等价）",
+            detail={"samples": 60, "unique_masked": len(seen), "len_drift": len_drift},
+        )
+    else:
+        m.fail(
+            "C9-11 枚举不可区分（三态 60 样本：四键长度恒定+masked_response 零重合）",
+            expected="长度恒定+60 唯一",
+            actual=f"drift={len_drift} dup={dup}",
+            defense_ref="归约修订版 §5.4",
+            attack_success=True,
+        )
+
+    # --- C9-12 evaluate 口模糊注入（§9-5——600 轮畸形全拒零崩溃） ---
+    import secrets as _secrets
+
+    good = point_to_hex(*hash_to_curve(oprf_input_bytes("c9f", "x")))
+    xg = int(good[:64], 16)
+    yg = int(good[64:], 16)
+    pmod = 2**256 - 2**224 - 2**96 + 2**64 - 1
+    bad_pool = [
+        format((xg + 1) % pmod, "064x") + format(yg % pmod, "064x"),
+        format((xg + pmod) % (2**256), "064x") + format(yg, "064x"),
+        "zz" * 64,
+        "1" * 127,
+        good[:-2],
+    ]
+    rejects = 0
+    crashes = 0
+    for i in range(600):
+        _clear_buckets()
+        bad = (
+            _secrets.choice(bad_pool)
+            if i % 2 == 0
+            else _flip_hex_byte(good, _secrets.randbelow(128))
+        )
+        try:
+            r = client.post(
+                "/auth/opaque/evaluate",
+                json={"username": "pilot_enum", "alpha_hex": bad},
+            )
+            if r.status_code in (400, 422):
+                rejects += 1
+        except Exception:  # noqa: BLE001
+            crashes += 1
+    ok12 = rejects == 600 and crashes == 0
+    if ok12:
+        m.pass_(
+            "C9-12 evaluate 口模糊注入（600 轮畸形全拒零崩溃——O-1 前置）",
+            defense_ref="归约修订版 §2.3 O-1 前置+设计 §9-5（结构化拒绝族）",
+            detail={"rounds": 600, "rejected": rejects, "crashes": crashes},
+        )
+    else:
+        m.fail(
+            "C9-12 evaluate 口模糊注入（600 轮畸形全拒零崩溃——O-1 前置）",
+            expected="600/600 拒绝零崩溃",
+            actual=f"{rejects}/600 拒绝崩溃 {crashes}",
+            defense_ref="归约修订版 §2.3",
+            attack_success=True,
+        )
+
+    # --- C9-13 keystore 前置序（§5.5——v6=410/限流 429 恰第 11 发） ---
+    _clear_buckets()
+    codes = [client.get("/auth/keystore/pilot_enum").status_code for _ in range(11)]
+    ok13 = codes[:10] == [410] * 10 and codes[10] == 429
+    if ok13:
+        m.pass_(
+            "C9-13 keystore 前置序（v6=410 掩码通道+限流 429 恰第 11 发）",
+            defense_ref="设计 §5.5（O-3 先行红线——删除事务前的收口面）",
+            detail={"codes_head": codes[:3], "code_11": codes[10]},
+        )
+    else:
+        m.fail(
+            "C9-13 keystore 前置序（v6=410 掩码通道+限流 429 恰第 11 发）",
+            expected="410×10+429",
+            actual=str(codes),
+            defense_ref="设计 §5.5",
+            attack_success=True,
+        )
+
+    # --- C9-14 迁移序（§5.4 原子换新+台账一行） ---
+    from app.accounts.models import AccountAdminLog
+
+    sk4, pk4 = _seed_v4("pilot_mig")
+    _challenge_login("pilot_mig", sk4)
+    body = _client_seal("pilot_mig", "C9-Ext-Pw-1", sk4, pk4, k_hex)
+    r_mig = client.post(
+        "/auth/opaque/migrate",
+        json={
+            "sealed_blob": body["sealed_blob"],
+            "masking_key_hex": body["masking_key_hex"],
+            "kdf_salt_hex": body["kdf_salt_hex"],
+            "kdf_iter": body["kdf_iter"],
+        },
+    )
+    r_ks = client.get("/auth/keystore/pilot_mig")
+    sess = TestSession()
+    v6_ok = False
+    logs = -1
+    try:
+        row = sess.query(Account).filter_by(username="pilot_mig").one()
+        import json as _jsonmod
+
+        v6_ok = _jsonmod.loads(row.sealed_blob)["v"] == 6
+        logs = (
+            sess.query(AccountAdminLog)
+            .filter_by(username="pilot_mig", action="opaque_migrate")
+            .count()
+        )
+    finally:
+        sess.close()
+    ok14 = r_mig.status_code == 200 and r_ks.status_code == 410 and v6_ok and logs == 1
+    if ok14:
+        m.pass_(
+            "C9-14 迁移序（migrate 200 原子换新+keystore 410+台账一行）",
+            defense_ref="设计 §5.1-3/§5.4（删除事务+§5.5-3 断言）",
+        )
+    else:
+        m.fail(
+            "C9-14 迁移序（migrate 200 原子换新+keystore 410+台账一行）",
+            expected="200/410/v6/台账 1",
+            actual=f"{r_mig.status_code}/{r_ks.status_code}/v6={v6_ok}/logs {logs}",
+            defense_ref="设计 §5.4",
+            attack_success=True,
+        )
 
 
 if __name__ == "__main__":
