@@ -11,7 +11,7 @@ pkill -9 -x arducopter 2>/dev/null
 pkill -9 -f fz_relay.py 2>/dev/null
 sleep 2
 echo "残留检查: arducopter=$(pgrep -cx arducopter) relay=$(pgrep -cf fz_relay.py)"
-cp '${UAS_WSL}/scripts/sitl_relay.py' /root/fz_relay.py
+cp "${UAS_WSL}/scripts/sitl_relay.py" /root/fz_relay.py
 systemd-run --unit=fz-sitl --working-directory=/root /home/ouye/ardupilot/build/sitl/bin/arducopter --model + --speedup 1 -I0
 systemd-run --unit=fz-relay /usr/bin/python3 /root/fz_relay.py
 sleep 12

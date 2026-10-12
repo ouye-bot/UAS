@@ -281,9 +281,13 @@ def sortie_flight(i: int, mats: dict, expect_checkpoint: bool, breach: bool) -> 
            f"架次{i} 遥测链 genesis（authId+围栏态绑定）", str(ch)[:150])
     n0, breached, event = 0, False, None
     t0 = time.time()
+    _climb_refusal_shown = False
     while time.time() - t0 < (300 if breach else 12):
         if breach and not breached:
-            bpost("/sitl/climb?pwm=2000&hold_s=1.2", {}, timeout=30)
+            _cr = bpost("/sitl/climb?pwm=2000&hold_s=1.2", {}, timeout=30)
+            if _cr.get("ok") is False and not _climb_refusal_shown:
+                _climb_refusal_shown = True
+                print(f"    [climb-refused] {str(_cr)[:160]}", flush=True)
         s = bget(f"/telemetry/sitl_sample?t_epoch={int(time.time())}")
         if s.get("ok"):
             n0 = s.get("n", n0)

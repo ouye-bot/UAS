@@ -1,0 +1,57 @@
+{
+ "schema_version": 1,
+ "run_id": "6e40947aaad4",
+ "suite": "security_chain",
+ "env": {
+  "timestamp": "2026-10-11T05:45:47",
+  "git_commit": "051f192",
+  "platform": "Windows-11-10.0.26200-SP0",
+  "python": "3.13.12",
+  "hostname": "蜡笔小新",
+  "cores": 16,
+  "ram_gb": 19.8,
+  "circuit": {
+   "name": "AUTH@2026-10 换代",
+   "constraints": 19578,
+   "proof_bytes": 22675632
+  },
+  "prove_max_concurrent": "1",
+  "chain_mode": ""
+ },
+ "summary": {
+  "total": 1,
+  "passed": 0,
+  "failed": 0,
+  "xfail": 0,
+  "environment_error": 1,
+  "pass_rate": 0.0,
+  "duration_s": 10.3,
+  "verdict": "failed",
+  "aborted": true,
+  "abort_reason": "P/P-5 worker 在场: 环境错误——整套中止（{'detail': '无 app.zk.worker 进程'}）",
+  "attack_success": []
+ },
+ "modules": {
+  "P": {
+   "display": "环境前置断言",
+   "passed": 0,
+   "failed": 0,
+   "xfail": 0,
+   "total": 1,
+   "items": [
+    {
+     "name": "P-5 worker 在场",
+     "verdict": "environment_error",
+     "expected": "",
+     "actual": "",
+     "defense_ref": "",
+     "attack_success": false,
+     "latency_ms": null,
+     "detail": {
+      "detail": "无 app.zk.worker 进程"
+     }
+    }
+   ]
+  }
+ }
+}

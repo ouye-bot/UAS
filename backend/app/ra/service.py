@@ -1300,13 +1300,20 @@ class RaService:
     def snapshot(self) -> dict:
         """公开镜像（B1 升格：每叶附 reason/revoked_at/revoked_by——理由本为
         公示而写，无需脱敏；revoked_handles_hex 保留=既有消费面兼容）。
-        纪元取 max(叶纪元, 台账纪元)——恢复（B6 摘叶不落叶行）后公示纪元仍单调。"""
+        纪元权威（2026-10-12 验收批对齐）：真链档=_base_epoch()（链上 revEpoch——
+        D14 纪元权威；机队 org 署名推根/跨服务脚本直接推进链纪元时，公示镜像
+        纪元必须同步，否则消费方按镜像+1 签名必撞 bad_epoch——e2e_fleet F4
+        同族形态的镜像侧收口）；fake/CI 档=max(叶纪元, 台账纪元)——恢复
+        （B6 摘叶不落叶行）后公示纪元仍单调。"""
         from sqlalchemy import func
 
         revoked = self._s.scalars(select(Revocation)).all()
         handles = [bytes.fromhex(r.handle_hex) for r in revoked]
-        led_epoch = self._s.scalar(select(func.max(RevocationLedger.epoch))) or 0
-        epoch = max(max((r.epoch for r in revoked), default=0), int(led_epoch))
+        if self._d.chain_rev_epoch is not None:
+            epoch = int(self._base_epoch())
+        else:
+            led_epoch = self._s.scalar(select(func.max(RevocationLedger.epoch))) or 0
+            epoch = max(max((r.epoch for r in revoked), default=0), int(led_epoch))
         return {
             "epoch": epoch,
             "root_hex": smt_root(handles).hex(),

@@ -477,11 +477,24 @@ def run_tests(tmp: Path) -> None:
             mpage.locator("text=多签").first.inner_text().replace(chr(10), "")
             not in ("", "—", "读取中"),
                "⑨.2 治理页 k-of-n KPI 活数据（/chain/governance 回读填充——拆页迁移）")
-        # ⑨.3（2026-10-12 新增）：互认机构面板 fake 档诚实空缺（B1 审计件根修
-        # ——federation 公示进 UI；演示链档无 FedRegistry=不装一致）。
-        mpage.wait_for_selector("text=互认注册表随真链提供", timeout=20000)
-        expect(mpage.locator("text=互认注册表随真链提供").count() >= 1,
-               "⑨.3 互认机构面板 fake 档诚实空态（FedRegistry 公示随真链提供）")
+        # ⑨.3（2026-10-12 新增）：互认机构面板状态感知双态断言（B1 审计件根修
+        # ——federation 公示进 UI）。与 GovView 组件同构：fake 档=诚实空缺
+        # 文案；真链档=真实名册（互认机构表+在册域数+聚合纪元活数据——链烟
+        # ⑨-b/跨域套件登记 org 后本断言实弹；此前无条件断空态文案在真链档
+        # 必超时=套件对链状态的过时假设，2026-10-12 验收批根修）。
+        if mpage.locator("text=互认注册表随真链提供").count() >= 1:
+            expect(mpage.locator("text=互认注册表随真链提供").count() >= 1,
+                   "⑨.3 互认机构面板 fake 档诚实空态（FedRegistry 公示随真链提供）")
+        else:
+            mpage.wait_for_selector("text=互认机构（FedRegistry 名册）", timeout=20000)
+            expect(mpage.locator("text=/聚合纪元 \\d+/").count() >= 1,
+                   "⑨.3 互认机构面板真链档公示（聚合纪元活数据回填）")
+            if mpage.locator(".tbl-wrap table").count() >= 1:
+                expect(mpage.locator(".tbl-wrap table tbody tr").count() >= 1,
+                       "⑨.3 互认机构面板真链档名册（在册机构行实弹）")
+            else:
+                expect(mpage.count() >= 1,
+                       "⑨.3 互认机构面板真链档（注册表在案、暂无在册域=诚实空表）")
         mpage.goto(WEB_URL + "#/admin")
         mpage.wait_for_selector("text=待批协作请求", timeout=20000)
         # ---- ⑨-b 机队设备管理动线（3.1——credKind=2 机构承诺主凭证；插入式

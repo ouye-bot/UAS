@@ -2,7 +2,9 @@
 
 核心 index_events 可注入（fetch_block_txs/decode_tx 替身位）；服务侧
 run_indexer_once 用真实链客户端（块扫描过滤锚定合约 to 地址→receipt 解码）。
-幂等：同（tx,block,auth,eventType,eventHash）不重复插入；游标=max(block)+1。
+幂等：同（tx,block,auth,eventType,eventHash）不重复插入；游标=持久化扫描位
+（IndexerCursor.last_scanned_block——扫描过即推进与事件行解耦；无行时按
+max(block)+1/部署块种子回退——2026-10-12 验收批根修空窗停摆缺陷）。
 """
 
 from __future__ import annotations
@@ -84,13 +86,42 @@ def index_events(
 
 
 def next_cursor(session: Session) -> int:
-    """游标=已索引最大块+1；空表=合约部署块（TelemetryAnchor.address.block）。"""
+    """种子游标=已索引最大块+1；空表=合约部署块（TelemetryAnchor.address.block）。
+
+    （2026-10-12 验收批起仅作无持久化游标行时的种子回退——正式游标=
+    IndexerCursor.last_scanned_block，扫描过即推进，与事件行解耦。）"""
     from sqlalchemy import func
 
     from app.telemetry.models import ChainEvent as CE
 
     max_b = session.scalar(select(func.max(CE.block)))
     return int(max_b or 0) + 1 if max_b is not None else _deploy_block()
+
+
+def scan_bounds(session: Session, head: int, max_blocks: int) -> tuple[int, int] | None:
+    """本轮扫描窗 [start, end]；head 之前已扫尽=None。
+
+    start=持久化游标+1（无行时按 next_cursor 种子——旧语义回退）。"""
+    from app.telemetry.models import IndexerCursor
+
+    row = session.get(IndexerCursor, 1)
+    start = (int(row.last_scanned_block) + 1) if row is not None else next_cursor(session)
+    if start > head:
+        return None
+    return start, min(start + max_blocks - 1, head)
+
+
+def advance_cursor(session: Session, scanned_end: int) -> None:
+    """游标推进到已扫描末块（无论该窗有无事件——空窗也必须跨越，
+    否则事件稀疏段>单轮窗时索引器永久停摆=2026-10-12 验收批实测定谳）。"""
+    from app.telemetry.models import IndexerCursor
+
+    row = session.get(IndexerCursor, 1)
+    if row is None:
+        session.add(IndexerCursor(id=1, last_scanned_block=int(scanned_end)))
+    else:
+        row.last_scanned_block = max(int(row.last_scanned_block), int(scanned_end))
+    session.commit()
 
 
 def _deploy_block() -> int:
@@ -130,11 +161,11 @@ def run_indexer_once(session: Session, *, max_blocks: int = 500) -> int:
             return []
         return anchor.decode_logs(receipt)
 
-    start = next_cursor(session)
-    end = min(start + max_blocks - 1, client.block_number())
-    if end < start:
+    bounds = scan_bounds(session, client.block_number(), max_blocks)
+    if bounds is None:
         return 0
-    return index_events(
+    start, end = bounds
+    inserted = index_events(
         session,
         fetch_block_txs=fetch_block_txs,
         decode_tx=decode_tx,
@@ -142,6 +173,9 @@ def run_indexer_once(session: Session, *, max_blocks: int = 500) -> int:
         end=end,
         anchor_address=addresses["TelemetryAnchor"]["address"],
     )
+    # 游标推进与事件解耦：空窗也跨越（停摆缺陷根治——见 advance_cursor 注）
+    advance_cursor(session, end)
+    return inserted
 
 
 def start_background_indexer(interval_s: float = 10.0) -> None:

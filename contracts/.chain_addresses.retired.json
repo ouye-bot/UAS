@@ -304,5 +304,59 @@
       "address": "0xdb7ba33ee6796e202f09dd7b28cf9b35f2aeaf90",
       "block": 8379
     }
+  },
+  {
+    "retired_at": 1791791377,
+    "AdminGovernor": {
+      "address": "0x8a78e2a84c5e23a8e69861c64d5b789ea1902858",
+      "block": 9557
+    },
+    "IdentityRegistry": {
+      "address": "0x44c2612fee22cfbc49700c1487b58f0fa71def3e",
+      "block": 9558
+    },
+    "PolicyRegistry": {
+      "address": "0xdb6ae9db0c61330aa8c0fff121ade029ca88e6ff",
+      "block": 9559
+    },
+    "FlightAuthRegistry": {
+      "address": "0x2ea79a261211568dd52600ac876e57414d7be5c8",
+      "block": 9560
+    },
+    "TelemetryAnchor": {
+      "address": "0x5115732543b14629359c2883ccfdc14a9925028c",
+      "block": 9561
+    },
+    "FedRegistry": {
+      "address": "0x535317fdca59237fd7bd6d679c6a918bd3a5170a",
+      "block": 9562
+    }
+  },
+  {
+    "retired_at": 1791795438,
+    "AdminGovernor": {
+      "address": "0x65d1ad1fb22b357b3c5062052df6d0701177b575",
+      "block": 10568
+    },
+    "IdentityRegistry": {
+      "address": "0x1e1f853293f402cdb69142d7217950b522202360",
+      "block": 10569
+    },
+    "PolicyRegistry": {
+      "address": "0xc51ca39566449944b7b8afe737fca53f7b089bb1",
+      "block": 10570
+    },
+    "FlightAuthRegistry": {
+      "address": "0xb3f64ac73e253570464d1ad04714e886da75fb17",
+      "block": 10571
+    },
+    "TelemetryAnchor": {
+      "address": "0xcb955178f560dfd2a670a7d316921197c3ebe9a2",
+      "block": 10572
+    },
+    "FedRegistry": {
+      "address": "0xd683e6b78e17dd4b448cbbfe3b3a504dbd925329",
+      "block": 10573
+    }
   }
 ]

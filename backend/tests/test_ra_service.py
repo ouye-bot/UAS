@@ -468,3 +468,28 @@ def test_revoke_epoch_chain_authoritative(session):
     assert out["epoch"] == 44
     roots = [c for c in fake.calls if c[0] == "set_revocation_root"]
     assert roots and roots[-1][1][0] == 44
+
+
+def test_snapshot_epoch_chain_authoritative(session):
+    """公示镜像纪元对齐链权威（2026-10-12 验收批）：真链档（chain_rev_epoch
+    注入）下 snapshot.epoch=_base_epoch()——机队 org 署名推根直接推进链纪元时
+    （e2e_fleet F4 同族形态的镜像侧收口），公示纪元若滞留本地台账，消费方按
+    「镜像+1」签名必撞 bad_epoch。fake 档（chain_rev_epoch=None）维持本地
+    max(叶纪元, 台账纪元) 语义不变。"""
+    ra_priv, ra_pub = generate_keypair()
+    calls = {"n": 0}
+
+    def _chain_rev_epoch() -> int:
+        calls["n"] += 1
+        return 10
+
+    deps = RaDeps(
+        ra_priv_hex=ra_priv,
+        ra_pub_hex=ra_pub,
+        anchor=ChainAnchor(call=FakeAnchor()),
+        chain_rev_epoch=_chain_rev_epoch,
+    )
+    s = RaService(session, deps)
+    out = s.snapshot()
+    assert out["epoch"] == 10, "真链档公示纪元=链上 revEpoch 权威（非本地台账）"
+    assert calls["n"] >= 1 and out["root_hex"], "链纪元查询发生且根照常返回"

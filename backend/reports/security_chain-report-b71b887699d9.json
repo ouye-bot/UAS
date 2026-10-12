@@ -1,0 +1,703 @@
+{
+ "schema_version": 1,
+ "run_id": "b71b887699d9",
+ "suite": "security_chain",
+ "env": {
+  "timestamp": "2026-10-11T01:40:27",
+  "git_commit": "faa6501",
+  "platform": "Windows-11-10.0.26200-SP0",
+  "python": "3.13.12",
+  "hostname": "蜡笔小新",
+  "cores": 16,
+  "ram_gb": 19.8,
+  "circuit": {
+   "name": "AUTH@2026-10 换代",
+   "constraints": 19578,
+   "proof_bytes": 22675632
+  },
+  "prove_max_concurrent": "1",
+  "chain_mode": ""
+ },
+ "summary": {
+  "total": 24,
+  "passed": 21,
+  "failed": 2,
+  "xfail": 1,
+  "environment_error": 0,
+  "pass_rate": 0.875,
+  "duration_s": 25.4,
+  "verdict": "failed",
+  "aborted": false,
+  "abort_reason": "",
+  "attack_success": [
+   "S2/S2-5 激活限速实弹"
+  ]
+ },
+ "modules": {
+  "P": {
+   "display": "环境前置断言",
+   "passed": 1,
+   "failed": 0,
+   "xfail": 0,
+   "total": 1,
+   "items": [
+    {
+     "name": "P 环境前置：backend 真链档+桥 SITL+worker [34208, 35764] 在场+/metrics 可达",
+     "verdict": "pass",
+     "expected": "",
+     "actual": "",
+     "defense_ref": "scripts/demo_up.py",
+     "attack_success": false,
+     "latency_ms": null,
+     "detail": {
+      "worker_pids": [
+       34208,
+       35764
+      ],
+      "backend_pids": [
+       33252,
+       34552
+      ],
+      "link": {
+       "mode": "sitl",
+       "conn": "tcp:127.0.0.1:5760",
+       "breach_seen": false,
+       "last_statustext": null
+      },
+      "panel": "real"
+     }
+    }
+   ]
+  },
+  "A": {
+   "display": "机构会话激活",
+   "passed": 1,
+   "failed": 0,
+   "xfail": 0,
+   "total": 1,
+   "items": [
+    {
+     "name": "A-1 种子账户激活+会话（auditor/admin 挑战-应答）",
+     "verdict": "pass",
+     "expected": "",
+     "actual": "",
+     "defense_ref": "scripts/script_auth.py:script_login",
+     "attack_success": false,
+     "latency_ms": null,
+     "detail": {
+      "auditor": "active",
+      "admin": "active"
+     }
+    }
+   ]
+  },
+  "S1": {
+   "display": "会话隔离——角色×面交叉 403/401 全遍历（自有面不实弹）",
+   "passed": 13,
+   "failed": 0,
+   "xfail": 0,
+   "total": 13,
+   "items": [
+    {
+     "name": "S1-pilot→audit",
+     "verdict": "pass",
+     "expected": "",
+     "actual": "",
+     "defense_ref": "app/accounts/deps.py:require_role",
+     "attack_success": false,
+     "latency_ms": 8.3,
+     "detail": {
+      "status": 403,
+      "rej_code": "forbidden"
+     }
+    },
+    {
+     "name": "S1-pilot→admin",
+     "verdict": "pass",
+     "expected": "",
+     "actual": "",
+     "defense_ref": "app/accounts/deps.py:require_role",
+     "attack_success": false,
+     "latency_ms": 19.2,
+     "detail": {
+      "status": 403,
+      "rej_code": "forbidden"
+     }
+    },
+    {
+     "name": "S1-pilot→revoke",
+     "verdict": "pass",
+     "expected": "",
+     "actual": "",
+     "defense_ref": "app/accounts/deps.py:require_role",
+     "attack_success": false,
+     "latency_ms": 28.0,
+     "detail": {
+      "status": 403,
+      "rej_code": "forbidden"
+     }
+    },
+    {
+     "name": "S1-auditor→admin",
+     "verdict": "pass",
+     "expected": "",
+     "actual": "",
+     "defense_ref": "app/accounts/deps.py:require_role",
+     "attack_success": false,
+     "latency_ms": 24.3,
+     "detail": {
+      "status": 403,
+      "rej_code": "forbidden"
+     }
+    },
+    {
+     "name": "S1-auditor→revoke",
+     "verdict": "pass",
+     "expected": "",
+     "actual": "",
+     "defense_ref": "app/accounts/deps.py:require_role",
+     "attack_success": false,
+     "latency_ms": 27.7,
+     "detail": {
+      "status": 403,
+      "rej_code": "forbidden"
+     }
+    },
+    {
+     "name": "S1-auditor→pilot",
+     "verdict": "pass",
+     "expected": "",
+     "actual": "",
+     "defense_ref": "app/accounts/deps.py:require_role",
+     "attack_success": false,
+     "latency_ms": 27.3,
+     "detail": {
+      "status": 403,
+      "rej_code": "forbidden"
+     }
+    },
+    {
+     "name": "S1-admin→audit",
+     "verdict": "pass",
+     "expected": "",
+     "actual": "",
+     "defense_ref": "app/accounts/deps.py:require_role",
+     "attack_success": false,
+     "latency_ms": 23.5,
+     "detail": {
+      "status": 403,
+      "rej_code": "forbidden"
+     }
+    },
+    {
+     "name": "S1-admin→pilot",
+     "verdict": "pass",
+     "expected": "",
+     "actual": "",
+     "defense_ref": "app/accounts/deps.py:require_role",
+     "attack_success": false,
+     "latency_ms": 6.2,
+     "detail": {
+      "status": 403,
+      "rej_code": "forbidden"
+     }
+    },
+    {
+     "name": "S1-anon→audit",
+     "verdict": "pass",
+     "expected": "",
+     "actual": "",
+     "defense_ref": "app/accounts/deps.py:require_role",
+     "attack_success": false,
+     "latency_ms": 25.2,
+     "detail": {
+      "status": 401,
+      "rej_code": "unauthorized"
+     }
+    },
+    {
+     "name": "S1-anon→admin",
+     "verdict": "pass",
+     "expected": "",
+     "actual": "",
+     "defense_ref": "app/accounts/deps.py:require_role",
+     "attack_success": false,
+     "latency_ms": 25.1,
+     "detail": {
+      "status": 401,
+      "rej_code": "unauthorized"
+     }
+    },
+    {
+     "name": "S1-anon→revoke",
+     "verdict": "pass",
+     "expected": "",
+     "actual": "",
+     "defense_ref": "app/accounts/deps.py:require_role",
+     "attack_success": false,
+     "latency_ms": 18.0,
+     "detail": {
+      "status": 401,
+      "rej_code": "unauthorized"
+     }
+    },
+    {
+     "name": "S1-anon→pilot",
+     "verdict": "pass",
+     "expected": "",
+     "actual": "",
+     "defense_ref": "app/accounts/deps.py:require_role",
+     "attack_success": false,
+     "latency_ms": 16.0,
+     "detail": {
+      "status": 401,
+      "rej_code": "unauthorized"
+     }
+    },
+    {
+     "name": "S1-痕迹 越权拒绝全数落 /metrics+X-Request-ID 贯穿（8 面×2 码全增量）",
+     "verdict": "pass",
+     "expected": "",
+     "actual": "",
+     "defense_ref": "app/main.py:obs_middleware",
+     "attack_success": false,
+     "latency_ms": null,
+     "detail": {
+      "attack_rows": 12,
+      "request_id_all": true
+     }
+    }
+   ]
+  },
+  "S2": {
+   "display": "挑战一次性+登录限速 429（login|ip|username 键控）",
+   "passed": 6,
+   "failed": 1,
+   "xfail": 1,
+   "total": 8,
+   "items": [
+    {
+     "name": "S2-1 挑战 nonce 重放 → 401 bad_challenge（一次性消费）",
+     "verdict": "pass",
+     "expected": "",
+     "actual": "",
+     "defense_ref": "app/accounts/service.py:login",
+     "attack_success": false,
+     "latency_ms": 7.2,
+     "detail": {
+      "first": 200,
+      "replay": 401,
+      "consumed_ts": "2026-10-10 17:40:36"
+     }
+    },
+    {
+     "name": "S2-1痕迹 重放拒绝落 /metrics(401)",
+     "verdict": "pass",
+     "expected": "",
+     "actual": "",
+     "defense_ref": "app/main.py:obs_middleware",
+     "attack_success": false,
+     "latency_ms": null,
+     "detail": {
+      "delta": 1.0
+     }
+    },
+    {
+     "name": "S2-2 429 限流实弹：10 发 401 后第 11 发触发 429（窗口 300s）",
+     "verdict": "pass",
+     "expected": "",
+     "actual": "",
+     "defense_ref": "app/accounts/service.py:AttemptLimiter",
+     "attack_success": false,
+     "latency_ms": 23.7,
+     "detail": {
+      "trigger_at": 11,
+      "metric429": 1.0
+     }
+    },
+    {
+     "name": "S2-2痕迹 429 落 /metrics(429)",
+     "verdict": "pass",
+     "expected": "",
+     "actual": "",
+     "defense_ref": "app/main.py:obs_middleware",
+     "attack_success": false,
+     "latency_ms": null,
+     "detail": {
+      "delta": 1.0
+     }
+    },
+    {
+     "name": "S2-3 限速键控隔离：limit 用户 429 中，auditor 挑战 200+新用户登录 200",
+     "verdict": "pass",
+     "expected": "",
+     "actual": "",
+     "defense_ref": "app/accounts/router.py:_client_key",
+     "attack_success": false,
+     "latency_ms": null,
+     "detail": {
+      "auditor_challenge": 200,
+      "iso_login": 200
+     }
+    },
+    {
+     "name": "S2-4 300s 窗口恢复（默认档不真等）",
+     "verdict": "xfail",
+     "expected": "",
+     "actual": "",
+     "defense_ref": "app/accounts/service.py:AttemptLimiter",
+     "attack_success": false,
+     "latency_ms": null,
+     "detail": {
+      "reason": "限速窗 300s 真等仅 --recover 档执行——默认 xfail 标注非软通道"
+     }
+    },
+    {
+     "name": "S2-5 激活限速实弹",
+     "verdict": "fail",
+     "expected": "恰第 6 发 429",
+     "actual": "trigger_at=None curve=[{'n': 5, 'status': 422, 'code': None}, {'n': 6, 'status': 422, 'code': None}, {'n': 7, 'status': 422, 'code': None}]",
+     "defense_ref": "app/accounts/router.py:activate_route",
+     "attack_success": true,
+     "latency_ms": null,
+     "detail": {}
+    },
+    {
+     "name": "S2-5b 激活限速键控隔离：邻桶不受累（独立 username 独立窗）",
+     "verdict": "pass",
+     "expected": "",
+     "actual": "",
+     "defense_ref": "app/accounts/service.py:activation_rate_key",
+     "attack_success": false,
+     "latency_ms": null,
+     "detail": {
+      "isolated_status": 422,
+      "isolated_code": null
+     }
+    }
+   ]
+  },
+  "X": {
+   "display": "X",
+   "passed": 0,
+   "failed": 1,
+   "xfail": 0,
+   "total": 1,
+   "items": [
+    {
+     "name": "套件未预期异常中止",
+     "verdict": "fail",
+     "expected": "无异常",
+     "actual": "ProgrammingError: Cannot operate on a closed database.",
+     "defense_ref": "",
+     "attack_success": false,
+     "latency_ms": null,
+     "detail": {}
+    }
+   ]
+  }
+ },
+ "chain_sections": {
+  "s1_matrix": [
+   {
+    "module": "P",
+    "attack": "P 环境前置：backend 真链档+桥 SITL+worker [34208, 35764] 在场+/metrics 可达",
+    "verdict": "pass",
+    "expected": "",
+    "actual": "",
+    "attack_success": false,
+    "defense_ref": "scripts/demo_up.py"
+   },
+   {
+    "module": "A",
+    "attack": "A-1 种子账户激活+会话（auditor/admin 挑战-应答）",
+    "verdict": "pass",
+    "expected": "",
+    "actual": "",
+    "attack_success": false,
+    "defense_ref": "scripts/script_auth.py:script_login"
+   },
+   {
+    "module": "S1 会话隔离——角色×面交叉 403/401 全遍历（自有面不实弹）",
+    "attack": "S1-pilot→audit",
+    "verdict": "pass",
+    "expected": "",
+    "actual": "",
+    "attack_success": false,
+    "defense_ref": "app/accounts/deps.py:require_role"
+   },
+   {
+    "module": "S1 会话隔离——角色×面交叉 403/401 全遍历（自有面不实弹）",
+    "attack": "S1-pilot→admin",
+    "verdict": "pass",
+    "expected": "",
+    "actual": "",
+    "attack_success": false,
+    "defense_ref": "app/accounts/deps.py:require_role"
+   },
+   {
+    "module": "S1 会话隔离——角色×面交叉 403/401 全遍历（自有面不实弹）",
+    "attack": "S1-pilot→revoke",
+    "verdict": "pass",
+    "expected": "",
+    "actual": "",
+    "attack_success": false,
+    "defense_ref": "app/accounts/deps.py:require_role"
+   },
+   {
+    "module": "S1 会话隔离——角色×面交叉 403/401 全遍历（自有面不实弹）",
+    "attack": "S1-auditor→admin",
+    "verdict": "pass",
+    "expected": "",
+    "actual": "",
+    "attack_success": false,
+    "defense_ref": "app/accounts/deps.py:require_role"
+   },
+   {
+    "module": "S1 会话隔离——角色×面交叉 403/401 全遍历（自有面不实弹）",
+    "attack": "S1-auditor→revoke",
+    "verdict": "pass",
+    "expected": "",
+    "actual": "",
+    "attack_success": false,
+    "defense_ref": "app/accounts/deps.py:require_role"
+   },
+   {
+    "module": "S1 会话隔离——角色×面交叉 403/401 全遍历（自有面不实弹）",
+    "attack": "S1-auditor→pilot",
+    "verdict": "pass",
+    "expected": "",
+    "actual": "",
+    "attack_success": false,
+    "defense_ref": "app/accounts/deps.py:require_role"
+   },
+   {
+    "module": "S1 会话隔离——角色×面交叉 403/401 全遍历（自有面不实弹）",
+    "attack": "S1-admin→audit",
+    "verdict": "pass",
+    "expected": "",
+    "actual": "",
+    "attack_success": false,
+    "defense_ref": "app/accounts/deps.py:require_role"
+   },
+   {
+    "module": "S1 会话隔离——角色×面交叉 403/401 全遍历（自有面不实弹）",
+    "attack": "S1-admin→pilot",
+    "verdict": "pass",
+    "expected": "",
+    "actual": "",
+    "attack_success": false,
+    "defense_ref": "app/accounts/deps.py:require_role"
+   },
+   {
+    "module": "S1 会话隔离——角色×面交叉 403/401 全遍历（自有面不实弹）",
+    "attack": "S1-anon→audit",
+    "verdict": "pass",
+    "expected": "",
+    "actual": "",
+    "attack_success": false,
+    "defense_ref": "app/accounts/deps.py:require_role"
+   },
+   {
+    "module": "S1 会话隔离——角色×面交叉 403/401 全遍历（自有面不实弹）",
+    "attack": "S1-anon→admin",
+    "verdict": "pass",
+    "expected": "",
+    "actual": "",
+    "attack_success": false,
+    "defense_ref": "app/accounts/deps.py:require_role"
+   },
+   {
+    "module": "S1 会话隔离——角色×面交叉 403/401 全遍历（自有面不实弹）",
+    "attack": "S1-anon→revoke",
+    "verdict": "pass",
+    "expected": "",
+    "actual": "",
+    "attack_success": false,
+    "defense_ref": "app/accounts/deps.py:require_role"
+   },
+   {
+    "module": "S1 会话隔离——角色×面交叉 403/401 全遍历（自有面不实弹）",
+    "attack": "S1-anon→pilot",
+    "verdict": "pass",
+    "expected": "",
+    "actual": "",
+    "attack_success": false,
+    "defense_ref": "app/accounts/deps.py:require_role"
+   },
+   {
+    "module": "S1 会话隔离——角色×面交叉 403/401 全遍历（自有面不实弹）",
+    "attack": "S1-痕迹 越权拒绝全数落 /metrics+X-Request-ID 贯穿（8 面×2 码全增量）",
+    "verdict": "pass",
+    "expected": "",
+    "actual": "",
+    "attack_success": false,
+    "defense_ref": "app/main.py:obs_middleware"
+   },
+   {
+    "module": "S2",
+    "attack": "S2-1 挑战 nonce 重放 → 401 bad_challenge（一次性消费）",
+    "verdict": "pass",
+    "expected": "",
+    "actual": "",
+    "attack_success": false,
+    "defense_ref": "app/accounts/service.py:login"
+   },
+   {
+    "module": "S2",
+    "attack": "S2-1痕迹 重放拒绝落 /metrics(401)",
+    "verdict": "pass",
+    "expected": "",
+    "actual": "",
+    "attack_success": false,
+    "defense_ref": "app/main.py:obs_middleware"
+   },
+   {
+    "module": "S2",
+    "attack": "S2-2 429 限流实弹：10 发 401 后第 11 发触发 429（窗口 300s）",
+    "verdict": "pass",
+    "expected": "",
+    "actual": "",
+    "attack_success": false,
+    "defense_ref": "app/accounts/service.py:AttemptLimiter"
+   },
+   {
+    "module": "S2",
+    "attack": "S2-2痕迹 429 落 /metrics(429)",
+    "verdict": "pass",
+    "expected": "",
+    "actual": "",
+    "attack_success": false,
+    "defense_ref": "app/main.py:obs_middleware"
+   },
+   {
+    "module": "S2",
+    "attack": "S2-3 限速键控隔离：limit 用户 429 中，auditor 挑战 200+新用户登录 200",
+    "verdict": "pass",
+    "expected": "",
+    "actual": "",
+    "attack_success": false,
+    "defense_ref": "app/accounts/router.py:_client_key"
+   },
+   {
+    "module": "S2",
+    "attack": "S2-4 300s 窗口恢复（默认档不真等）",
+    "verdict": "xfail",
+    "expected": "",
+    "actual": "",
+    "attack_success": false,
+    "defense_ref": "app/accounts/service.py:AttemptLimiter"
+   },
+   {
+    "module": "S2",
+    "attack": "S2-5 激活限速实弹",
+    "verdict": "fail",
+    "expected": "恰第 6 发 429",
+    "actual": "trigger_at=None curve=[{'n': 5, 'status': 422, 'code': None}, {'n': 6, 'status': 422, 'code': None}, {'n': 7, 'status': 422, 'code': None}]",
+    "attack_success": true,
+    "defense_ref": "app/accounts/router.py:activate_route"
+   },
+   {
+    "module": "S2",
+    "attack": "S2-5b 激活限速键控隔离：邻桶不受累（独立 username 独立窗）",
+    "verdict": "pass",
+    "expected": "",
+    "actual": "",
+    "attack_success": false,
+    "defense_ref": "app/accounts/service.py:activation_rate_key"
+   },
+   {
+    "module": "X",
+    "attack": "套件未预期异常中止",
+    "verdict": "fail",
+    "expected": "无异常",
+    "actual": "ProgrammingError: Cannot operate on a closed database.",
+    "attack_success": false,
+    "defense_ref": ""
+   }
+  ],
+  "s2_races": [],
+  "s3_rate_limit_429": {
+   "user": "sec_chain_limit_d5593a",
+   "window_s": 300,
+   "max_attempts": 10,
+   "trigger_at": 11,
+   "attempts": [
+    {
+     "n": 1,
+     "status": 401,
+     "code": "auth_failed",
+     "ms": 7.3
+    },
+    {
+     "n": 2,
+     "status": 401,
+     "code": "auth_failed",
+     "ms": 25.4
+    },
+    {
+     "n": 3,
+     "status": 401,
+     "code": "auth_failed",
+     "ms": 28.5
+    },
+    {
+     "n": 4,
+     "status": 401,
+     "code": "auth_failed",
+     "ms": 28.7
+    },
+    {
+     "n": 5,
+     "status": 401,
+     "code": "auth_failed",
+     "ms": 33.5
+    },
+    {
+     "n": 6,
+     "status": 401,
+     "code": "auth_failed",
+     "ms": 8.4
+    },
+    {
+     "n": 7,
+     "status": 401,
+     "code": "auth_failed",
+     "ms": 19.8
+    },
+    {
+     "n": 8,
+     "status": 401,
+     "code": "auth_failed",
+     "ms": 7.7
+    },
+    {
+     "n": 9,
+     "status": 401,
+     "code": "auth_failed",
+     "ms": 12.0
+    },
+    {
+     "n": 10,
+     "status": 401,
+     "code": "auth_failed",
+     "ms": 9.7
+    },
+    {
+     "n": 11,
+     "status": 429,
+     "code": "rate_limited",
+     "ms": 23.7
+    }
+   ],
+   "flood_started": "01:40:37"
+  },
+  "s4_recovery_verdicts": [],
+  "s5_honesty": [
+   "S1 自有面不实弹（POST 自有面=真出函/真吊销，非探测语义）——攻击轴=非自有交叉面 403/401 全遍历 12 格+匿名 401×4。",
+   "清理账：db_err:ProgrammingError; disarm:ok。保留项：令状/协作请求/申请/授权（链上锚定审计痕迹，删除即毁痕）；sec_chain_rev 用户凭证按业务真实吊销（撤销面实弹产物）。",
+   "S10 复原 worker 以 FZ_WORKER_LEASE_S=60 拉起（demo 缺省 1200）——测试预算内接管孤儿任务的租约 knob，仅测试窗使用；此后 worker 按该 env 常驻。",
+   "真弹消耗：真出证×2（AUTH 电路真证明）+真链 recordAuth/burnNonce+真 ARM/DISARM+真 429 限速+真进程击杀+真 systemd 桥停起；无任何测试豁免头/旁路标记。"
+  ]
+ }
+}

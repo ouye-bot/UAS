@@ -116,3 +116,67 @@ def test_seen_set_windowed_near_cursor(monkeypatch):
     assert n2 == 0 and len(s.scalars(select(ChainEventRow)).all()) == 1
     monkeypatch.delenv("FZ_INDEXER_SEEN_BACK_BLOCKS")
     assert _seen_back_blocks() == 10000, "缺省近窗宽=10000 块"
+
+
+def test_scan_bounds_seeds_from_legacy_when_no_cursor_row(monkeypatch):
+    """无持久化游标行时按旧语义种子（事件行 max+1；空表=部署块）。"""
+    from app.telemetry.indexer import scan_bounds
+
+    s = _session()
+    monkeypatch.setattr("app.telemetry.indexer._deploy_block", lambda: 100)
+    assert scan_bounds(s, head=1200, max_blocks=500) == (100, 599), "空库种子=部署块"
+    index_events(
+        s,
+        fetch_block_txs=lambda b: {100: [{"hash": "0xtx1", "to": ANCHOR}]}.get(b, []),
+        decode_tx=_decode,
+        start=100,
+        end=100,
+        anchor_address=ANCHOR,
+    )
+    assert scan_bounds(s, head=1200, max_blocks=500) == (101, 600), "有行种子=max(block)+1"
+
+
+def test_cursor_crosses_eventless_stall():
+    """停摆缺陷回归（2026-10-12 验收批实测）：事件稀疏段>单轮扫描窗时，
+    旧游标（=max(block)+1）永远无法跨越空窗 ⟹ 索引器永久停摆。根修后
+    游标=持久化扫描位——扫描过即推进，第二轮必须够到空窗之后的合约事件。"""
+    from app.telemetry.indexer import advance_cursor, scan_bounds
+
+    s = _session()
+    blocks = {100: [{"hash": "0xtx1", "to": ANCHOR}], 700: [{"hash": "0xtx3", "to": ANCHOR}]}
+    fetch = lambda b: blocks.get(b, [])  # noqa: E731
+    index_events(
+        s, fetch_block_txs=fetch, decode_tx=_decode, start=100, end=100, anchor_address=ANCHOR
+    )
+    # 旧形态：next_cursor 恒=101——扫描窗 500 永远到不了 700 ⟹ 停摆
+    # 新形态：第一轮扫 [101,600]（空窗）后游标推进到 600，第二轮够到 700
+    b1 = scan_bounds(s, head=1200, max_blocks=500)
+    assert b1 == (101, 600)
+    n1 = index_events(
+        s, fetch_block_txs=fetch, decode_tx=_decode, start=b1[0], end=b1[1], anchor_address=ANCHOR
+    )
+    advance_cursor(s, b1[1])
+    assert n1 == 0, "空窗无事件"
+    b2 = scan_bounds(s, head=1200, max_blocks=500)
+    assert b2 == (601, 1100), "游标已跨越空窗（旧形态此处恒=101——停摆定谳）"
+    n2 = index_events(
+        s, fetch_block_txs=fetch, decode_tx=_decode, start=b2[0], end=b2[1], anchor_address=ANCHOR
+    )
+    advance_cursor(s, b2[1])
+    assert n2 == 1, "空窗后事件第二轮必达"
+    rows = s.scalars(select(ChainEventRow)).all()
+    assert sorted(r.block for r in rows) == [100, 700]
+
+
+def test_advance_cursor_monotonic_upsert():
+    """游标单行 upsert 且只前进（乱序调用不回退）。"""
+    from app.telemetry.indexer import advance_cursor, scan_bounds
+
+    s = _session()
+    advance_cursor(s, 500)
+    advance_cursor(s, 400)  # 乱序回拨调用
+    b = scan_bounds(s, head=2000, max_blocks=500)
+    assert b == (501, 1000), "游标单调只前进"
+    from app.telemetry.models import IndexerCursor
+
+    assert len(s.scalars(select(IndexerCursor)).all()) == 1, "单行形态"
