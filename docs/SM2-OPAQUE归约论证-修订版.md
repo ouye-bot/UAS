@@ -10,6 +10,15 @@
 > Protocol』（2025-07，IRTF/CFRG）、RFC 9380『Hashing to Elliptic Curves』、RFC 9497
 > 『Oblivious Pseudorandom Functions (OPRFs) Using Prime-Order Groups』（2023-12，
 > Davidson–Faz-Hernández–Sullivan–Wood）。文内引文与节号为核对后原文。
+>
+> **瑕疵更正记录（2026-10-12，⑫O-1 实施设计批按 GO 附件约束⑩随手更正——复评
+> GO 报告「非阻塞文档瑕疵清单 a~g」，承重论证零变化）**：a=§0.2/§8.1 eavesdroppers
+> 句锚 §10.2→§6（引文文字未动）；b=§2.4.2 定义 2 去多余 G+定义 3 补「DL oracle
+> 不得询问 Q」排除句；c=§2.4.4(iii) 降格为记账附注（不承重——承重路径=单点 Q
+> 构型+GGM 定理直接对 adaptive 实验）；d=§5.4 标题去「原文」+pad 适配名与
+> fake-record 原文形态（定长全零 envelope）注记；e=§2.4.1 TCRSTW21 年份按
+> EUROCRYPT 2022 标注；f=§2.2 Finalize 补 input 省略适配注记；g=§3.2 补
+> |Z|≤12 正负全域 Z=−9 唯一通过实测。
 
 ## 修订对照表（评审发现 10 条 → 修订动作 → 所在章节）
 
@@ -61,8 +70,9 @@ OPAQUE（**RFC 9807**）的结构性消灭原理：口令→随机化口令串�
 > RFC 9807 全义 aPAKE 等级**：因 AKE 层（现役 SM2 挑战-应答）无协议内前向保密，
 > 不满足 RFC 9807 §10.2 明示的 AKE essential 要求（"Another essential requirement
 > from AKE protocols for use in OPAQUE is to provide forward secrecy (against
-> active attackers)"；且无 KE3 型钥确认时 "forward secrecy is only achieved
-> against eavesdroppers, which is insufficient for OPAQUE security"）。该等级的
+> active attackers)"——§10.2；且无 KE3 型钥确认时 "forward secrecy is only achieved
+> against eavesdroppers, which is insufficient for OPAQUE security"——该句在
+> **§6**，引文锚随复评瑕疵 a 更正）。该等级的
 > 达成=§8 方案 A 演进项（义务清单在案，未实施未证明前不宣称）。
 
 v1 病灶对应：v1 §3 D5 行「现状已如此，OPAQUE 不恶化」即为评审所指『结构性消灭宣称
@@ -114,7 +124,11 @@ DDH 假设强度：与 NIST P-256 同级（128-bit 语义）。以上硬事实�
   `β = [k]·α`（k=k_oprf ∈ Z_n*）。
 - **Finalize**（客户端）：`Y = [r⁻¹]·β`；`oprf_output = Extract-SM3("", 
   "FZ-OPAQUE-Finalize|v1"‖Y.x‖Y.y)`（64B 坐标域串+域分离，RFC 9497 Finalize 的
-  「长度前缀+transcript 哈希」语义同构）。
+  「长度前缀+transcript 哈希」语义同构）。**适配注记（随复评瑕疵 f 补）**：
+  RFC 9497 §3.3.1 Finalize 哈希含 input（I2OSP(len(input),2)‖input‖…‖"Finalize"）
+  ——本域串**不含 input**：base mode 自托管单服、无跨引擎互操作与跨服务端回退
+  校验的消费方，input 入哈希的额外绑定在本形态无安全增益；实施批 JS↔PY 对拍按
+  本域串钉死，改链=整体替换+重走评审。
 - **Evaluate**（服务端直算，自持 k 与输入时）：`[k]·H2C(oprf_input)`（同样受 §2.3
   前置条件约束）。
 - 正确性：[r⁻¹][k][r]·H2C = [k]·H2C ✓（标量乘交换律，平凡验证）。
@@ -157,7 +171,9 @@ _kg_blinded 已使位模式与 k 去相关（G6 残余=合法点上的时延泄�
   的 pseudorandomness 与 input secrecy（及 verifiability）「are based on the
   **One-More Gap Computational Diffie-Hellman** assumption」（引 JKK14）；Gap 变体=
   附 DDH oracle（VOPRF 的 DLEQ 验证面所需；base mode 无 DLEQ，不需要 Gap oracle）。
-- Tyagi–Celi–Ristenpart–Sullivan–Tessaro–Wood（2021）：One-More Gap CDH 与 One-More
+- Tyagi–Celi–Ristenpart–Sullivan–Tessaro–Wood（"Revisiting the One-Round OPRF"，
+  ePrint 2021/038；正式发表于 **EUROCRYPT 2022**——RFC 9497 引用键 [TCRSTW21]
+  沿用 21，年份按论文正式发表标注，随复评瑕疵 e 更正）：One-More Gap CDH 与 One-More
   Gap SDHI 在 **AGM（代数群模型）中归约到 q-DL**（RFC 9497 同引）。
 - 本文档采用**非 Gap 的 One-More 计数型假设**（定义 2）陈述+GGM 内无条件计数定理；
   假设陈述为本文自写、依上述命名传统——完整文献级形式化对齐归入 G7。
@@ -167,10 +183,12 @@ _kg_blinded 已使位模式与 k 去相关（G6 残余=合法点上的时延泄�
 - **定义 1（OPRF-UF_q，不可伪造）**：A 自适应询问 Evaluate ≤ q 次、H2C（RO）任意
   次；A 输出 (x*, Y*)，x* 未询问过；A 胜 ⟺ Y*=[k]·H2C(x*)。
 - **定义 2（OMDH_q，One-More Diffie-Hellman，非 Gap 计数型）**：挑战者 k←$ Z_n*，
-  给 A (G, G, Q=[k]G) 与 oracle O_k: X↦[k]X（预算 q 次——O_k 即去哈希的裸
+  给 A (G, Q=[k]G)（生成元与挑战两点——v2 版多写一个 G 的笔误，随复评瑕疵 b 更正）
+  与 oracle O_k: X↦[k]X（预算 q 次——O_k 即去哈希的裸
   Evaluate）；A 胜 ⟺ 输出 (X*, Y*) 使 Y*=[k]X* 且 X* ∉ 已询问集合。
 - **定义 3（OMDL_q，对偶记账）**：给 A (G, Q=[k]G) 与 DL_G oracle（输入 Y 返回
-  y: Y=[y]G，预算 q 次）；A 胜 ⟺ 输出 k。与 OMDH 同为「多解一个」计数族的两种
+  y: Y=[y]G，预算 q 次；**Y=Q 不得询问**——排除句随复评瑕疵 b 补：不排除则一次
+  询问 DL(Q)=k 即胜，实验平凡化）；A 胜 ⟺ 输出 k。与 OMDH 同为「多解一个」计数族的两种
   记账，GGM 内均由计数定理覆盖（Bellare–Neven/JKK 命名传统）。
 - **OPRF-IND_q**：挑战阶段 A 提交未询问 x*，收到 Y←{[k]·H2C(x*), 均匀群元素}，
   猜 b——GGM 内与 UF 同一定理覆盖（§2.4.5）。
@@ -196,8 +214,13 @@ Evaluate 询问 x_i：采样 ρ_i←$ Z_n*，**编程 H2C(x_i):=[ρ_i]G**，应�
 询问都被静态目标 Q 服务；A 输出 q_e+1 个合法对 ⟹ 在代数模型中其中至少一个含
 「未服务」的新鲜项（one-more 计数本体），M 以其全知的 ρ 把该对翻译回 OMDH 胜出。
 (iii) oracle 型与**静态目标集型**（q+1 个静态目标 X_1..X_{q+1}、oracle 至多服务
-q 个、须补出第 q+1 个）优势等价——同一计数实验的两种记账（标准 self-reducibility，
-损失 0）。**本引理即评审清单要求的「adaptive Evaluate 询问到静态挑战集」显式化。**
+q 个、须补出第 q+1 个）优势等价——**记账附注（随复评瑕疵 c 降格）：此为断言**
+（「标准 self-reducibility，损失 0」），本修订不给显式构造、**不承重**：承重路径
+=(i) 直接嵌入+(ii) 经引理 1 完美模拟，GGM 计数定理（§2.4.5）直接对 adaptive 实验
+证明、不悬于 (iii)；(iii) 仅作文献记账注（显式构造归 G7/赛后）。本修订对评审清单
+「adaptive Evaluate 询问到静态挑战集」要求的实际回答=(ii) 的单点 Q 构型（每个
+adaptive 询问 1:1 映射新鲜 [ρ_i]G，无 q+1 目标集配额耦合——复评认定的结构性优点
+即在于此）。
 
 #### 2.4.5 定理（GGM 计数界）与损失账
 
@@ -299,6 +322,9 @@ g(-b/(Z·a)) 非平方」——四准则丢 c2/c3 两条，且把 c4（g(**B/(Z�
   −1（c2）、−2/−4/−5/−8/−9（c3 可约）、−3/−6（c1 平方）、−7（c4 非平方）。
 - **SM2 淘汰轨迹（|Z|≤8 负值域）**：−1（c2）；−2/−3/−5/−6/−7/−8（c3：g(x)−Z 可约
   有根）；−4（c4：g(B/(Z·A)) 非平方）⟹ **钉定 Z=−9**。
+- **全域唯一性（复评实测强化——随复评瑕疵 g 补）**：复评独立判定器对 |Z|≤12
+  **正负全域**实跑——正 Z（+1~+12）全灭，SM2 在该域内 **Z=−9 唯一通过**；
+  『负值优先』搜索约定不存在正 Z 更小通过之隐患（2026-10-12 复评报告在案）。
 - **Z=−9 验证锚点**（全部 256-bit 值逐字可复核，复现脚本=附录 A）：
   - Z=−9 ≡ `0xFFFFFFFEFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF00000000FFFFFFFFFFFFFFF6` (mod p)；
   - c1 ✓：pow(−9,(p−1)/2,p)=p−1（非平方）；
@@ -444,12 +470,18 @@ KEK          = Expand-SM3(rwd, envelope_nonce ‖ "FZ-OPAQUE-EnvelopeKey|v1", 16
 
 ### 5.4 masked_response 防 enumeration 分析（修订第 8 条之一）
 
-**机制（RFC 9807 §6.3.1/§6.3.2.2 原文）**：CredentialResponse =
+**机制（RFC 9807 §6.3.1/§6.3.2.2——FZ 适配处随注，随复评瑕疵 d 更正）**：CredentialResponse =
 evaluated_message ‖ masking_nonce ‖ masked_response；masking_key 由 rwd 派生
 （§5.3 ④）；pad = Expand(masking_key, masking_nonce‖"MaskedResponse", Npk+Nn+Nm)；
 **masked_response = pad ⊕ (server_public_key ‖ envelope)**。未注册用户：服务端
-"fake the existence of the record"（伪造 evaluated_message+随机 envelope 应答，
-§6.3.2.2）。
+"fake the existence of the record"（§6.3.2.2）。
+**适配注记（两处）**：① pad info 串 "MaskedResponse" 为 FZ 适配名——RFC §6.3.2.2
+原文逐字为 "CredentialResponsePad"（Expand(masking_key, concat(masking_nonce,
+"CredentialResponsePad"), Npk+Nn+Nm)），语义同构仅换名；② fake-record 原文形态=
+client_public_key 随机（Npk）+masking_key 随机+**envelope 定长全零**（原文
+"the byte string consisting only of zeros"）——上文「随机 envelope」转述不精确，
+实施批按原文（全零槽+随机 masking_key；线上伪随机性由 pad 保证，分布等价论证
+不受影响）。
 
 **防枚举论证**：攻击者（无口令）对任意 username 观测 CredentialResponse——
 - 已注册用户：rwd 未知（§2.4 归约：离线不可验证）⟹ masking_key 未知 ⟹ pad 伪随机
@@ -543,7 +575,8 @@ aPAKE 的方案——"transforming any AKE protocol (with Key Compromise Imperso
 essential requirement from AKE protocols for use in OPAQUE is to provide forward
 secrecy (against active attackers)"（**essential 措辞原文**）；且无 KE3 型钥确认时
 "forward secrecy is only achieved against eavesdroppers, which is insufficient
-for OPAQUE security"。
+for OPAQUE security"（引文文字逐字准确；句锚=**RFC 9807 §6**，随复评瑕疵 a 更正
+——原挂 §10.2 系锚错）。
 
 ### 8.2 现役 AKE 的精确性质
 
