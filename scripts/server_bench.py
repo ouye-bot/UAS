@@ -631,7 +631,10 @@ def cmd_sm3_cross(args) -> int:
 
 def cmd_full(args) -> int:
     p = repo_paths()
-    if platform.system() != "Linux" and not args.allow_nonlinux:
+    runs = getattr(args, "runs", None) or N_RUNS
+    skip_build = getattr(args, "skip_build", False)
+    build_jobs = getattr(args, "build_jobs", None)
+    if platform.system() != "Linux" and not getattr(args, "allow_nonlinux", False):
         raise SystemExit("[中止] full 模式为服务器窗设计（含 release 构建=重负载）。"
                          "本机（非 Linux）轻量验证请用 self-check / fingerprint / sm3-cross；"
                          "确要本地构建请显式 --allow-nonlinux")
@@ -646,9 +649,9 @@ def cmd_full(args) -> int:
     fp_gate = fingerprint_gate(p["zksvc"])
 
     build = None
-    if not args.skip_build:
+    if not skip_build:
         print("[3/6] 构建（release offline）…")
-        jobs = args.build_jobs or min(os.cpu_count() or 4, 8)
+        jobs = build_jobs or min(os.cpu_count() or 4, 8)
         ensure_cargo_config(p["zksvc"], allow_write=True)
         build = run_build(p["zksvc"], jobs)
     else:
@@ -662,9 +665,9 @@ def cmd_full(args) -> int:
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     results_dir = results_dir / f"server_bench_{stamp}"
 
-    print(f"[4/6] AUTH canonical prove ×{args.runs}（RAYON={RAYON_THREADS}）…")
+    print(f"[4/6] AUTH canonical prove ×{runs}（RAYON={RAYON_THREADS}）…")
     auth_runs = []
-    for i in range(args.runs):
+    for i in range(runs):
         out = results_dir / f"auth_run{i+1}"
         rec = run_prove(p["zksvc"], zkc, AUTH_SPEC_REL, out, f"AUTH#{i+1}")
         rec["_out_dir"] = str(out)
@@ -674,9 +677,9 @@ def cmd_full(args) -> int:
         print(f"  AUTH#{i+1}: prove {rec['prove_s']}s / verify {rec['verify_s']}s / "
               f"total {rec['total_s']}s / proof {rec['proof_bytes']:,}B")
 
-    print(f"[5/6] TRAIL canonical prove ×{args.runs}…")
+    print(f"[5/6] TRAIL canonical prove ×{runs}…")
     trail_runs = []
-    for i in range(args.runs):
+    for i in range(runs):
         out = results_dir / f"trail_run{i+1}"
         rec = run_prove(p["zksvc"], zkc, TRAIL_SPEC_REL, out, f"TRAIL#{i+1}")
         rec["_out_dir"] = str(out)
@@ -722,7 +725,7 @@ def main(argv=None) -> int:
     full.add_argument("--allow-nonlinux", action="store_true", help="非 Linux 宿主强制放行（默认拒绝）")
     args = ap.parse_args(argv)
     if args.cmd is None or args.cmd == "full":
-        args.out = args.out or str(repo_paths()["root"] / "server_bench_results")
+        args.out = getattr(args, "out", None) or str(repo_paths()["root"] / "server_bench_results")
         return cmd_full(args)
     if args.cmd == "self-check":
         return cmd_self_check(args)
