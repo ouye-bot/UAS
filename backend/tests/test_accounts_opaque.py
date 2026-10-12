@@ -27,7 +27,8 @@ from app.accounts.envelope import (
 )
 from app.accounts.models import Account
 from app.accounts.opaque import opaque_enabled
-from app.crypto.oprf import oprf_input_bytes
+from app.crypto.oprf import oprf_input_bytes, point_to_hex
+from app.crypto.sm2 import generate_keypair
 from app.db import get_session
 from app.main import create_app
 from app.ra.models import Base
@@ -623,3 +624,390 @@ def test_pending_activation_real_beta_and_v6_activation(oc):
         gen.close()
     sk_hex, r_login = _opaque_login(oc, "aud_act6", "Seed-Pw-7a", sk)
     assert r_login.status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# ⑫O-4 存量惰性重封迁移（设计 §5——删除事务/CUTOFF/回滚窗/台账）
+# ---------------------------------------------------------------------------
+
+
+def _seed_v4(c: TestClient, username: str, password: str = "V4-Mig-Pw-1"):
+    """v4 存量账户播种（直播行模拟——真实钥对；登录/keystore 全可用）。"""
+    from app.accounts.envelope import seal_envelope_v4 as seal4
+    from app.crypto.sm2 import generate_keypair
+
+    sk, pk = generate_keypair()
+    gen, sess = _sess_of(c)
+    try:
+        sess.add(
+            Account(
+                username=username,
+                role="pilot",
+                status="active",
+                pubkey_hex=pk,
+                sealed_blob=seal4(sk, pk, password, iterations=4096),
+            )
+        )
+        sess.commit()
+    finally:
+        gen.close()
+    return sk, pk
+
+
+def test_migrate_v4_to_v6_full_flow(oc):
+    """v4 登录（现役路径照常）→会话内 evaluate=真实 β（§6.1-c）→同口令注册序
+    →migrate 原子换新（五件落账+台账+钥指纹改绑）→keystore=410/OPAQUE 登录
+    200（删除事务提交=v4 路径永久失效——§5.4）。"""
+    from app.accounts.models import AccountAdminLog
+    from app.crypto.oprf import hash_to_curve, mul_blinded, oprf_input_bytes, unblind
+    from app.kms import oprf_key
+
+    sk, pk = _seed_v4(oc, "pilot_mig", "V4-Mig-Pw-1")
+    # v4 现役登录（keystore 200→解封→挑战-应答）
+    ks = oc.get("/auth/keystore/pilot_mig")
+    assert ks.status_code == 200 and json.loads(ks.json()["data"]["sealed_blob"])["v"] == 4
+    _challenge_login(oc, "pilot_mig", sk)
+    # 会话内 evaluate：真实 β（去盲比对锚——[k]·[r]·P 经去盲=[k]·P）
+    alpha, r_scalar = ref_login_blind("pilot_mig", "V4-Mig-Pw-1")
+    ev = oc.post("/auth/opaque/evaluate", json={"username": "pilot_mig", "alpha_hex": alpha})
+    assert ev.status_code == 200
+    y = unblind(r_scalar, ev.json()["data"]["evaluated_message"])
+    expect_y = mul_blinded(
+        int(oprf_key(), 16),
+        point_to_hex(*hash_to_curve(oprf_input_bytes("pilot_mig", "V4-Mig-Pw-1"))),
+    )
+    assert y == expect_y
+    # 同口令注册序 → migrate 回传
+    body = ref_seal_v6("pilot_mig", "V4-Mig-Pw-1", sk, pk)
+    rm = oc.post(
+        "/auth/opaque/migrate",
+        json={
+            "sealed_blob": body["sealed_blob"],
+            "masking_key_hex": body["masking_key_hex"],
+            "kdf_salt_hex": body["kdf_salt_hex"],
+            "kdf_iter": body["kdf_iter"],
+        },
+    )
+    assert rm.status_code == 200, rm.text
+    gen, sess = _sess_of(oc)
+    try:
+        row = sess.query(Account).filter_by(username="pilot_mig").one()
+        assert json.loads(row.sealed_blob)["v"] == 6
+        assert row.opaque_masking_key_hex == body["masking_key_hex"]
+        assert row.opaque_kdf_salt_hex == body["kdf_salt_hex"] and row.opaque_kdf_iter
+        assert row.opaque_key_id and len(row.opaque_key_id) == 8
+        logs = (
+            sess.query(AccountAdminLog)
+            .filter_by(username="pilot_mig", action="opaque_migrate")
+            .all()
+        )
+        assert len(logs) == 1
+    finally:
+        gen.close()
+    # 删除事务提交后：keystore=410（v4 路径永久失效）+OPAQUE 登录 200
+    assert oc.get("/auth/keystore/pilot_mig").status_code == 410
+    _, r_login = _opaque_login(oc, "pilot_mig", "V4-Mig-Pw-1", sk)
+    assert r_login.status_code == 200
+
+
+def test_migrate_preconditions(oc, monkeypatch):
+    """负例族：未登录 401/已迁移 409（幂等回传人话）/v3 形态 409（不越形态）/
+    错配公钥 400/缺掩码钥 422/gate off 503。"""
+    from app.crypto.sm2 import generate_keypair
+
+    _register_v6(oc, "pilot_mig6")
+    sk3, pk3 = generate_keypair()
+    gen, sess = _sess_of(oc)
+    try:
+        sess.add(
+            Account(
+                username="pilot_mig3",
+                role="pilot",
+                status="active",
+                pubkey_hex=pk3,
+                sealed_blob=json.dumps(
+                    {
+                        "v": 3,
+                        "pk": pk3,
+                        "enc": {
+                            "salt": "00" * 16,
+                            "nonce": "00" * 12,
+                            "ct": "00" * 32,
+                            "tag": "00" * 16,
+                        },
+                    }
+                ),
+            )
+        )
+        sess.commit()
+    finally:
+        gen.close()
+    sk4, pk4 = _seed_v4(oc, "pilot_mig4")
+    _challenge_login(oc, "pilot_mig4", sk4)
+
+    def _mig(body):
+        return oc.post(
+            "/auth/opaque/migrate",
+            json={
+                "sealed_blob": body["sealed_blob"],
+                "masking_key_hex": body.get("masking_key_hex"),
+                "kdf_salt_hex": body["kdf_salt_hex"],
+                "kdf_iter": body["kdf_iter"],
+            },
+        )
+
+    # 未登录=401
+    anon = TestClient(oc.app)
+    body = ref_seal_v6("pilot_mig4", "V4-Mig-Pw-1", sk4, pk4)
+    r_anon = anon.post(
+        "/auth/opaque/migrate",
+        json={
+            "sealed_blob": body["sealed_blob"],
+            "masking_key_hex": body["masking_key_hex"],
+            "kdf_salt_hex": body["kdf_salt_hex"],
+            "kdf_iter": body["kdf_iter"],
+        },
+    )
+    assert r_anon.status_code == 401
+    # 属主正常迁移=200；重复迁移=409（幂等回传人话）
+    rm4 = _mig(body)
+    assert rm4.status_code == 200, rm4.text
+    r_dup = _mig(body)
+    assert r_dup.status_code == 409 and r_dup.json()["code"] == "opaque_migrated"
+    # v3 形态=409（迁移不越形态——先走 v3→v4 惰性升级）
+    _challenge_login(oc, "pilot_mig3", sk3)
+    body3 = ref_seal_v6("pilot_mig3", "Whatever-1a", sk3, pk3)
+    r3 = _mig(body3)
+    assert r3.status_code == 409 and r3.json()["code"] == "bad_state"
+    # 错配公钥=400（blob pk 槽 ≠ 登记公钥）
+    sk_x, pk_x = generate_keypair()
+    body_x = ref_seal_v6("pilot_mig4", "V4-Mig-Pw-1", sk_x, pk_x)
+    r_x = oc.post(
+        "/auth/opaque/migrate",
+        json={
+            "sealed_blob": body_x["sealed_blob"],
+            "masking_key_hex": body_x["masking_key_hex"],
+            "kdf_salt_hex": body_x["kdf_salt_hex"],
+            "kdf_iter": body_x["kdf_iter"],
+        },
+    )
+    # mig4 已迁移=409 先命中——换未迁移账户验证错配 400
+    assert r_x.status_code == 409
+    sk5, pk5 = _seed_v4(oc, "pilot_mig5")
+    _challenge_login(oc, "pilot_mig5", sk5)
+    body_x5 = ref_seal_v6("pilot_mig5", "V4-Mig-Pw-1", sk_x, pk_x)
+    r_x5 = oc.post(
+        "/auth/opaque/migrate",
+        json={
+            "sealed_blob": body_x5["sealed_blob"],
+            "masking_key_hex": body_x5["masking_key_hex"],
+            "kdf_salt_hex": body_x5["kdf_salt_hex"],
+            "kdf_iter": body_x5["kdf_iter"],
+        },
+    )
+    assert r_x5.status_code == 400 and r_x5.json()["code"] == "bad_blob"
+    # 缺掩码钥=422（未迁移账户直达——防旧掩码钥+新 rwd 信封错配）
+    body5 = ref_seal_v6("pilot_mig5", "V4-Mig-Pw-1", sk5, pk5)
+    r_m = oc.post(
+        "/auth/opaque/migrate",
+        json={
+            "sealed_blob": body5["sealed_blob"],
+            "kdf_salt_hex": body5["kdf_salt_hex"],
+            "kdf_iter": body5["kdf_iter"],
+        },
+    )
+    assert r_m.status_code == 422, f"resp={r_m.text}"
+    assert r_m.json()["code"] == "bad_masking_key", f"resp={r_m.text}"
+    # gate off=503
+    monkeypatch.setenv("FZ_OPAQUE_ENABLED", "0")
+    body5b = ref_seal_v6("pilot_mig5", "V4-Mig-Pw-1", sk5, pk5)
+    r_off = oc.post(
+        "/auth/opaque/migrate",
+        json={
+            "sealed_blob": body5b["sealed_blob"],
+            "masking_key_hex": body5b["masking_key_hex"],
+            "kdf_salt_hex": body5b["kdf_salt_hex"],
+            "kdf_iter": body5b["kdf_iter"],
+        },
+    )
+    assert r_off.status_code == 503 and r_off.json()["code"] == "opaque_disabled"
+
+
+def test_migrate_rollback_window_semantics(oc):
+    """回滚窗（§5.4）：换新失败（错配 blob）⟹零部分状态（行原样 v4+四列 NULL）
+    →同会话重试合法件=成功（可重试语义）；成功后回滚不可达（v4 永久失效）。"""
+    sk, pk = _seed_v4(oc, "pilot_rb")
+    _challenge_login(oc, "pilot_rb", sk)
+    sk_x, pk_x = generate_keypair()
+    body_x = ref_seal_v6("pilot_rb", "V4-Mig-Pw-1", sk_x, pk_x)  # 错配=失败件
+    r_bad = oc.post(
+        "/auth/opaque/migrate",
+        json={
+            "sealed_blob": body_x["sealed_blob"],
+            "masking_key_hex": body_x["masking_key_hex"],
+            "kdf_salt_hex": body_x["kdf_salt_hex"],
+            "kdf_iter": body_x["kdf_iter"],
+        },
+    )
+    assert r_bad.status_code == 400
+    gen, sess = _sess_of(oc)
+    try:
+        row = sess.query(Account).filter_by(username="pilot_rb").one()
+        assert json.loads(row.sealed_blob)["v"] == 4  # 零部分状态（仍 v4）
+        assert row.opaque_masking_key_hex is None  # 四列未动（可重试）
+    finally:
+        gen.close()
+    body = ref_seal_v6("pilot_rb", "V4-Mig-Pw-1", sk, pk)
+    r_ok = oc.post(
+        "/auth/opaque/migrate",
+        json={
+            "sealed_blob": body["sealed_blob"],
+            "masking_key_hex": body["masking_key_hex"],
+            "kdf_salt_hex": body["kdf_salt_hex"],
+            "kdf_iter": body["kdf_iter"],
+        },
+    )
+    assert r_ok.status_code == 200  # 重试成功（回滚窗内双轨→收敛）
+
+
+def test_v4_cutoff_403_and_nonce_unburned(oc, monkeypatch):
+    """截止后旧信封拒（403 v4_cutoff——挑战消费前裁决不烧 nonce）；撤截止后
+    同一 nonce 可登；v6 账户同截止期不受影响。"""
+    import time as _t
+
+    from app.crypto.sm2 import sign
+
+    sk4, _pk4 = _seed_v4(oc, "pilot_cut4b")
+    _register_v6(oc, "pilot_cut6")
+    monkeypatch.setenv("FZ_OPAQUE_CUTOFF_TS", str(int(_t.time()) - 10))
+    nonce = oc.post("/auth/challenge/pilot_cut4b").json()["data"]["nonce_hex"]
+    r = oc.post(
+        "/auth/login",
+        json={
+            "username": "pilot_cut4b",
+            "nonce_hex": nonce,
+            "sig_hex": sign(sk4, f"FZ-AUTH-LOGIN|{nonce}".encode()),
+        },
+    )
+    assert r.status_code == 403 and r.json()["code"] == "v4_cutoff"
+    # v6 账户同截止期照常登录（截止只打 v4 形态）
+    _, r6 = _opaque_login(oc, "pilot_cut6", PASS, None)
+    assert r6.status_code == 200
+    # 撤截止→同一 nonce/签名可登（403 发生在消费前——不烧挑战）
+    monkeypatch.delenv("FZ_OPAQUE_CUTOFF_TS", raising=False)
+    r_again = oc.post(
+        "/auth/login",
+        json={
+            "username": "pilot_cut4b",
+            "nonce_hex": nonce,
+            "sig_hex": sign(sk4, f"FZ-AUTH-LOGIN|{nonce}".encode()),
+        },
+    )
+    assert r_again.status_code == 200, r_again.text
+
+
+def test_v4_cutoff_malformed_env_fail_visible(monkeypatch):
+    """FZ_OPAQUE_CUTOFF_TS 非整数/负数=显式抛错（fail-visible——v3 同款）。"""
+    from app.accounts.service import opaque_cutoff_ts
+
+    monkeypatch.setenv("FZ_OPAQUE_CUTOFF_TS", "not-a-number")
+    with pytest.raises(ValueError, match="FZ_OPAQUE_CUTOFF_TS"):
+        opaque_cutoff_ts()
+    monkeypatch.setenv("FZ_OPAQUE_CUTOFF_TS", "-5")
+    with pytest.raises(ValueError, match="FZ_OPAQUE_CUTOFF_TS"):
+        opaque_cutoff_ts()
+    monkeypatch.delenv("FZ_OPAQUE_CUTOFF_TS", raising=False)
+    assert opaque_cutoff_ts() == 0
+
+
+def test_v4_stock_report_production_scan(tmp_path, monkeypatch):
+    """production 扫库告警（§5.2）：存量 v4>0=告警文案（数量+掩码+指引）；
+    存量清零=None；demo 档恒 None。"""
+    from app.accounts.service import scan_v4_envelope_accounts, v4_envelope_stock_report
+
+    eng = create_engine(f"sqlite:///{tmp_path}/v4_scan.db")
+    Base.metadata.create_all(eng)
+    TS = sessionmaker(bind=eng, expire_on_commit=False)
+    monkeypatch.setenv("FZ_DEPLOYMENT", "production")
+    monkeypatch.setenv("FZ_CHAIN_ANCHOR", "real")
+    monkeypatch.setenv("FZ_DB_URL", f"sqlite:///{tmp_path}/v4_scan.db")
+    s = TS()
+    try:
+        assert v4_envelope_stock_report(s) is None  # 零存量=静默
+        sk, pk = generate_keypair()
+        s.add(
+            Account(
+                username="pilot_scan4",
+                role="pilot",
+                status="active",
+                pubkey_hex=pk,
+                sealed_blob=seal_envelope_v4(sk, pk, "Scan-Pw-12"),
+            )
+        )
+        s.commit()
+        rep = v4_envelope_stock_report(s)
+        assert rep and "1 个" in rep and "FZ_OPAQUE_CUTOFF_TS" in rep and "惰性迁移" in rep
+        assert len(scan_v4_envelope_accounts(s)) == 1
+    finally:
+        s.close()
+    # demo 档恒 None
+    monkeypatch.delenv("FZ_DEPLOYMENT", raising=False)
+    s2 = TS()
+    try:
+        assert v4_envelope_stock_report(s2) is None
+    finally:
+        s2.close()
+
+
+def test_seed_accounts_full_flow_live_server(oc):
+    """种子账户（auditor123/admin123 固定演示口令）登录全动线实弹：真 HTTP
+    服务器（uvicorn 线程）+script_auth.script_login——激活→稳态 OPAQUE 登录
+    （v6 keystore 410 分支）→挑战-应答 200；演示档体验零变化（口令/动线不变）。"""
+    import threading
+    import time as _t
+
+    import uvicorn
+
+    from app.accounts.service import seed_institutional_account
+    from scripts.script_auth import script_login
+
+    gen, sess = _sess_of(oc)
+    try:
+        seed_institutional_account(sess, "auditor_e2e", "auditor", "auditor123")
+        seed_institutional_account(sess, "admin_e2e", "admin", "admin123")
+    finally:
+        gen.close()
+    app = oc.app
+    config = uvicorn.Config(app, host="127.0.0.1", port=0, log_level="warning")
+    server = uvicorn.Server(config)
+    th = threading.Thread(target=server.run, daemon=True)
+    th.start()
+    deadline = _t.time() + 15
+    base = None
+    while _t.time() < deadline:
+        if server.started:
+            base = f"http://127.0.0.1:{server.servers[0].sockets[0].getsockname()[1]}"
+            break
+        _t.sleep(0.05)
+    assert base, "uvicorn 未启动"
+    try:
+        # 首登激活动线（种子→核对子激活→挑战登录）——script_login 全自动
+        s_aud = script_login(base, "auditor_e2e", "auditor123")
+        me = s_aud.get(f"{base}/auth/whoami", timeout=10)
+        assert me.status_code == 200 and me.json()["data"]["role"] == "auditor"
+        s_adm = script_login(base, "admin_e2e", "admin123")
+        me2 = s_adm.get(f"{base}/auth/whoami", timeout=10)
+        assert me2.status_code == 200 and me2.json()["data"]["role"] == "admin"
+        # 稳态再登录（v6 账户 keystore=410 → script_auth 走 OPAQUE 掩码通道分支）
+        s_aud2 = script_login(base, "auditor_e2e", "auditor123")
+        me3 = s_aud2.get(f"{base}/auth/whoami", timeout=10)
+        assert me3.status_code == 200
+        # 错口令=诚实失败（稳态分支解掩码 ValueError——script_login 诚实透传）
+        try:
+            script_login(base, "auditor_e2e", "wrong-password-1")
+            raise AssertionError("错口令必须失败")
+        except (RuntimeError, ValueError):
+            pass
+    finally:
+        server.should_exit = True
+        th.join(timeout=5)

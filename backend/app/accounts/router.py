@@ -36,6 +36,7 @@ from app.accounts.service import (
     keep_profile,
     keystore_of,
     login,
+    migrate_to_opaque,
     prelogin,
     register_account,
     submit_profile,
@@ -417,6 +418,53 @@ def me_route(request: Request, session: Session = Depends(get_session)):
     except AccountError as exc:
         return _err(exc)
     return JSONResponse(status_code=200, content={"code": "ok", "message": "", "data": data})
+
+
+class OpaqueMigrateIn(BaseModel):
+    """v4→v6 惰性重封回传体（设计 §5.1-3——**D-11**：迁移体携带与注册同构的
+    D-8 四件套；资料槽可选同请求原子换新）。"""
+
+    sealed_blob: str = Field(min_length=32, max_length=8192)
+    masking_key_hex: str | None = Field(default=None, min_length=64, max_length=64)
+    kdf_salt_hex: str | None = Field(default=None, min_length=32, max_length=32)
+    kdf_iter: int | None = None
+    sealed_profile: str | None = Field(default=None, min_length=32, max_length=16384)
+
+
+@router.post("/opaque/migrate")
+def opaque_migrate_route(
+    body: OpaqueMigrateIn, request: Request, session: Session = Depends(get_session)
+):
+    """⑫O-4 v4→v6 惰性重封通道（设计 §5.1-3/§5.4——**删除事务**本体）：会话
+    属主自迁移（v4 登录成功后客户端同口令走注册序→本端点回传）。原子换新+
+    §5.5-3 keystore 收口运行时断言（O-3 先行红线）+回滚窗（失败零部分状态）+
+    台账逐笔。gate off=503（迁移通道随总开关关闭）。"""
+    p = principal_from(request, session)
+    if p is None:
+        return JSONResponse(
+            status_code=401,
+            content={"code": "unauthorized", "message": "未登录或会话已失效", "data": None},
+        )
+    try:
+        migrate_to_opaque(
+            session,
+            p.username,
+            body.sealed_blob,
+            body.masking_key_hex,
+            body.kdf_salt_hex,
+            body.kdf_iter,
+            sealed_profile=body.sealed_profile,
+        )
+    except AccountError as exc:
+        return _err(exc)
+    return JSONResponse(
+        status_code=200,
+        content={
+            "code": "ok",
+            "message": "已迁移 OPAQUE 封装——后续登录走掩码响应通道",
+            "data": None,
+        },
+    )
 
 
 @router.post("/logout")

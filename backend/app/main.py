@@ -199,6 +199,23 @@ def create_app() -> FastAPI:
     except Exception as _e:  # noqa: BLE001
         _log.getLogger("fz.startup").warning(f"存量 v3 信封扫查跳过（{_e}）")
 
+    # 存量 v4 信封启动扫查（⑫O-4，设计 §5.2——v3 同构）：production 档清点 v4
+    # 信封账户，>0 打印显式告警（处置=登录会话内 /auth/opaque/migrate 惰性迁移
+    # 或 FZ_OPAQUE_CUTOFF_TS 截止+机构重置）。不拒启；demo 档零影响。
+    try:
+        from app.accounts.service import v4_envelope_stock_report
+        from app.db import SessionLocal as _SessionLocal4
+
+        _s4 = _SessionLocal4()
+        try:
+            _v4rep = v4_envelope_stock_report(_s4)
+            if _v4rep:
+                print(_v4rep, flush=True)
+        finally:
+            _s4.close()
+    except Exception as _e:  # noqa: BLE001
+        _log.getLogger("fz.startup").warning(f"存量 v4 信封扫查跳过（{_e}）")
+
     # 撤销纪元根启动守卫（2026-10-01 批）：真链档启动即自检——链上公示根 vs
     # 本地撤销镜像根，漂移即幂等对齐（复用 align_rev_root 推链核心，epoch+1
     # 单调，本地镜像为权威）；链不可达打 WARNING 不阻塞启动（受理面

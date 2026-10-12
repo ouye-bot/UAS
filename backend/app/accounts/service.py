@@ -777,6 +777,20 @@ def login(session: Session, username: str, nonce_hex: str, sig_hex: str) -> tupl
     cutoff = v3_cutoff_ts()
     if cutoff and time.time() >= cutoff and _blob_version(row.sealed_blob or "") == 3:
         raise AccountError("v3_cutoff", "旧版密钥封装已过截止期——请联系机构重置凭证", 403)
+    # ⑫O-4：v4 登录截止（设计 §5.2——FZ_OPAQUE_CUTOFF_TS，同位同语义）：到点后
+    # 存量 v4 信封拒登（403 引导重置）；挑战消费前裁决不烧 nonce；v6/v3 信封
+    # 不受影响（截止只打 v4 形态）。gate off（FZ_OPAQUE_ENABLED=0 双轨回退）时
+    # 不生效（迁移通道关闭=维持 v4 现状）。
+    o_cutoff = opaque_cutoff_ts()
+    if (
+        opaque_enabled()
+        and o_cutoff
+        and time.time() >= o_cutoff
+        and _blob_version(row.sealed_blob or "") == 4
+    ):
+        raise AccountError(
+            "v4_cutoff", "旧版密钥封装已过截止期——请登录后按引导完成升级或联系机构重置凭证", 403
+        )
     ch = session.execute(
         select(AuthChallenge).where(AuthChallenge.nonce_hex == nonce_hex)
     ).scalar_one_or_none()
@@ -878,6 +892,134 @@ def v3_envelope_stock_report(session: Session) -> str | None:
         "处置：请通知其尽快登录触发惰性升级（v3→v4 同口令重封），逾期者由机构"
         "按离线种子脚本重置凭证。（账户级问题——本告警不阻断启动）"
     )
+
+
+# ---- ⑫O-4：v4 存量惰性重封迁移（设计 §5——截止开关/扫库告警/migrate 通道） ----
+
+
+def opaque_cutoff_ts() -> int:
+    """v4 登录截止期（设计 §5.2——FZ_V3_CUTOFF_TS 同构）：env
+    FZ_OPAQUE_CUTOFF_TS=Unix 秒；缺省/0=不启用；>0 且已到点（now>=cutoff）=
+    存量 v4 信封登录拒绝（403 引导重置）。显式非法值（非整数/负数）=抛错
+    ——配置错误必须可见，不许静默当 0（fail-visible）。"""
+    raw = (os.environ.get("FZ_OPAQUE_CUTOFF_TS") or "").strip()
+    if not raw:
+        return 0
+    try:
+        ts = int(raw)
+    except ValueError as e:
+        raise ValueError("FZ_OPAQUE_CUTOFF_TS 须为 Unix 秒整数（0=不启用）") from e
+    if ts < 0:
+        raise ValueError("FZ_OPAQUE_CUTOFF_TS 须 ≥0（0=不启用）")
+    return ts
+
+
+def scan_v4_envelope_accounts(session: Session) -> list[str]:
+    """存量 v4 信封账户清点（设计 §5.3 系统级收口判据）：逐行解析 sealed_blob
+    的 v 槽。空密封件/坏形态不计入（形态责任在入库门 fail-closed——此处只
+    统计"格式合法的 v4 信封"；v3/v6 行不在本清点面）。"""
+    rows = session.execute(
+        select(Account.username, Account.sealed_blob).where(Account.sealed_blob.is_not(None))
+    ).all()
+    return [u for u, blob in rows if _blob_version(blob) == 4]
+
+
+def v4_envelope_stock_report(session: Session) -> str | None:
+    """production 档存量 v4 信封启动告警（设计 §5.2——v3 扫库告警同构）：存量>0
+    返回显式告警文案（数量+账户名掩码+处置指引——登录会话内 OPAQUE 迁移通道
+    /auth/opaque/migrate 或机构重置）；不拒启（账户级问题不阻断服务）。非
+    production 档恒 None（demo 环回零影响）。"""
+    if not is_production():
+        return None
+    names = scan_v4_envelope_accounts(session)
+    if not names:
+        return None
+    masked = ", ".join(mask_username(n) for n in names)
+    return (
+        f"[FZ-STARTUP][WARN] 检测到存量 v4 密封信封账户 {len(names)} 个（{masked}）——"
+        "v4 注册已随 OPAQUE 换代停发；一旦启用登录截止（FZ_OPAQUE_CUTOFF_TS）"
+        "该批账户将无法登录。处置：请通知其尽快登录（会话内自动惰性迁移 v4→v6），"
+        "逾期者由机构按离线种子脚本重置凭证。（账户级问题——本告警不阻断启动）"
+    )
+
+
+def migrate_to_opaque(
+    session: Session,
+    username: str,
+    sealed_blob: str,
+    masking_key_hex: str,
+    kdf_salt_hex: str,
+    kdf_iter: int,
+    sealed_profile: str | None = None,
+) -> None:
+    """v4→v6 惰性重封落账（设计 §5.1-3/§5.4——**删除事务**本体）：
+
+    - 前置：会话属主（路由层 principal 锁定）；gate on；当前 blob=v4 形态
+      （v3 存量先走既有 v3→v4 惰性升级——迁移不越形态）；未迁移过（幂等回传
+      =409 人话）；上传=v6 材料 D-8 四件套（§1.2 定宽校验+canonical 规范化，
+      **D-11**：迁移体携带与注册同构的四件套）。
+    - 原子换新（§5.4）：同一事务写 {sealed_blob=v6, masking_key, salt, iter,
+      key_id=当前钥指纹（§4.3 改绑）}（+可选资料槽 v6）；提交前运行时断言
+      §5.5-3 红线（换新后 keystore 面=410——收口未就位即回滚拒发）。
+    - 回滚窗（§5.4）：提交前任何失败⟹账户仍 v4（可重试，零部分状态）；
+      提交后⟹v4 路径对该账户永久失效（不可逆——故 O-3 keystore 收口必须先
+      于本通道上线，commit 序 6c353f8<本批可证）。
+    - 台账：opaque_migrate 逐笔留痕（operator=self——属主自迁移）。"""
+    if not opaque_enabled():
+        raise AccountError("opaque_disabled", "OPAQUE 通道未启用——迁移通道关闭", 503)
+    row = get_account(session, username)
+    if not row.pubkey_hex or not row.sealed_blob:
+        raise AccountError("not_activated", "账户尚未激活（未生成密钥）", 409)
+    if row.opaque_masking_key_hex:
+        raise AccountError("opaque_migrated", "该账户已是 OPAQUE（v6）形态——无需重复迁移", 409)
+    if _blob_version(row.sealed_blob) != 4:
+        raise AccountError(
+            "bad_state",
+            "迁移通道仅受理 v4 现行形态（v3 存量请先走既有 v3→v4 惰性升级）",
+            409,
+        )
+    mk = _require_masking_key(masking_key_hex)
+    salt = _require_kdf_salt(kdf_salt_hex)
+    it = _require_kdf_iter(kdf_iter)
+    sealed_stored = _normalize_v6_blob(sealed_blob, row.pubkey_hex)
+    if sealed_profile is not None:
+        if row.role != "pilot":
+            raise AccountError(
+                "profile_not_applicable", "该账户无实名资料密封件——仅回传信封即可", 422
+            )
+        sealed_profile = _normalize_profile_slot_v6(sealed_profile)
+    # ——原子换新（§5.4）：同事务写五件——提交前 §5.5-3 红线运行时断言 ——
+    row.sealed_blob = sealed_stored
+    row.opaque_masking_key_hex = mk
+    row.opaque_kdf_salt_hex = salt
+    row.opaque_kdf_iter = it
+    row.opaque_key_id = _opaque_key_id_current()
+    if sealed_profile is not None:
+        row.sealed_profile = sealed_profile
+    try:
+        keystore_of(session, username)
+    except AccountError as exc:
+        if exc.code != "opaque_migrated":
+            raise AccountError(
+                "migrate_precondition",
+                f"keystore 收口断言未命中（红线 §5.5——实际 {exc.code}）——迁移拒发",
+                500,
+            ) from exc
+    else:
+        raise AccountError(
+            "migrate_precondition",
+            "keystore 收口断言未命中（红线 §5.5：换新后须 410）——迁移拒发",
+            500,
+        )
+    session.commit()
+    log_account_action(
+        session,
+        action="opaque_migrate",
+        username=username,
+        operator=username,
+        detail="v4→v6 惰性重封落账（原子换新+keystore 410 断言+钥指纹改绑当前代）",
+    )
+    session.commit()
 
 
 def seed_institutional_account(

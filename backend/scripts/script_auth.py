@@ -20,12 +20,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import requests  # noqa: E402
 
+from app.accounts.client import client_finish_login, client_login_blind, client_seal_v6  # noqa: E402
 from app.accounts.envelope import seal_envelope_v4, unseal_envelope  # noqa: E402
 from app.accounts.kdf import (  # noqa: E402
     KDF_LEGACY_V3_ITERATIONS,
     _legacy_v3,
     derive_activation_verifier,
 )
+from app.accounts.service import opaque_enabled  # noqa: E402
 from app.crypto.sm2 import generate_keypair, sign  # noqa: E402
 
 
@@ -58,11 +60,12 @@ def script_login(
         sk, pk = generate_keypair()
         _remember_sk(sk)
         pk_no04 = pk  # 服务端 sm2 公钥=X‖Y 无 04 前缀
-        r = s.post(
-            f"{api_base}/auth/register",
-            json={"username": username, "pubkey_hex": pk_no04, "sealed_blob": _sealed_blob(pk_no04, sk, password)},
-            timeout=10,
-        )
+        payload = {"username": username, "pubkey_hex": pk_no04}
+        if opaque_enabled():  # ⑫O-3/4 v6 门：注册走 OPAQUE 材料（client 链同钥 shortcut）
+            payload.update(client_seal_v6(username, password, sk, pk_no04))
+        else:
+            payload["sealed_blob"] = _sealed_blob(pk_no04, sk, password)
+        r = s.post(f"{api_base}/auth/register", json=payload, timeout=10)
         r.raise_for_status()
     else:
         pre_r.raise_for_status()
@@ -88,8 +91,11 @@ def script_login(
                 "username": username,
                 "verifier_hex": verifier,
                 "pubkey_hex": pk_no04,
-                "sealed_blob": _sealed_blob(pk_no04, sk, password),
             }
+            if opaque_enabled():  # ⑫O-3/4 v6 门：激活走 OPAQUE 材料
+                act_body.update(client_seal_v6(username, password, sk, pk_no04))
+            else:
+                act_body["sealed_blob"] = _sealed_blob(pk_no04, sk, password)
             if activation_code:
                 act_body["activation_code"] = activation_code
             r = s.post(
@@ -99,11 +105,27 @@ def script_login(
             )
             r.raise_for_status()
         else:
-            # 已激活稳态：取密封件→密码本地解封（与浏览器同一密码学路径——
-            # 解封失败=GCM 认证失败=密码错误，诚实抛出）
-            ks = s.get(f"{api_base}/auth/keystore/{username}", timeout=10).json()["data"]
-            sk = _unseal_blob(ks["sealed_blob"], password)
-            _remember_sk(sk)
+            ks_r = s.get(f"{api_base}/auth/keystore/{username}", timeout=10)
+            if opaque_enabled() and ks_r.status_code == 410:
+                # ⑫O-4 v6 稳态登录（设计 §2.3 两消息协议全步）：blind→evaluate→
+                # unblind→rwd→解掩码→解封（掩码通道取代 keystore 拉取；解掩码
+                # 败=密码错误，诚实抛出）。
+                alpha, r_scalar = client_login_blind(username, password)
+                ev = s.post(
+                    f"{api_base}/auth/opaque/evaluate",
+                    json={"username": username, "alpha_hex": alpha},
+                    timeout=10,
+                )
+                ev.raise_for_status()
+                sk = client_finish_login(r_scalar, ev.json()["data"])
+                _remember_sk(sk)
+            else:
+                # v4/v3 过渡存量：keystore 拉取→本地解封（与浏览器同一密码学
+                # 路径——解封失败=GCM 认证失败=密码错误，诚实抛出）
+                ks_r.raise_for_status()
+                ks = ks_r.json()["data"]
+                sk = _unseal_blob(ks["sealed_blob"], password)
+                _remember_sk(sk)
     # 挑战-应答登录
     nonce = s.post(f"{api_base}/auth/challenge/{username}", timeout=10).json()["data"]["nonce_hex"]
     sk = _last_sk
