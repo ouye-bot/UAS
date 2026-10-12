@@ -56,7 +56,7 @@ CHECKLIST = """
   面板数据验收：verify_panel_chain.py 17 断言（面板=链上事实）。
 【现行全量基线（2026-10-12 修整窗口后）】后端 pytest 567 ｜ 前端 vitest 169 ｜
   浏览器级 UI 回归 40 断言（3 分钟演示动线：docs/演示动线3分钟.md，彩排器
-  scripts/demo_rehearse_3min.py）。口径权威=docs/答辩口径卡.md 与 MEMORY。
+  scripts/demo_rehearse_3min.py）。口径权威=docs/性能档案.md「现行口径总表」（判决行单一事实源，答辩口径卡 A9 同指）。
 ========================================================
 """
 
