@@ -1,0 +1,24 @@
+{
+  "profile": "auth",
+  "reps": 16,
+  "log_rate": 1,
+  "proof_sm3": "3e20aba6da04d37f448c4baa27543076900e33ecdeb9619d2f3c4f2e78125c40",
+  "bytes": 16063712,
+  "verifier_param_sm3": "1a4e13049c8052848d07e77d2e49b35e42da3260bd71ecb7aa2c154aaee131a9",
+  "verifier_param_bytes": 5050225,
+  "setup_s": 0.152193667,
+  "preprocess_s": 1.417802237,
+  "prove_s": 14.614007577,
+  "verify_s": 0.52902347,
+  "total_s": 19.957498617,
+  "verdict": "OK",
+  "issuer_key_source": "witness",
+  "pcs_switches": {
+    "interleave": true,
+    "batch_dedup": false,
+    "verify_stream": false
+  },
+  "mask": "on",
+  "zk_pin_fingerprint": "SM3(4201a82|b05df9d8e2d5f39fb4d92b19d47379c86c0d40159e9fd39a1c9c77455b9b4985)",
+  "created_unix_ts": 1791814296
+}

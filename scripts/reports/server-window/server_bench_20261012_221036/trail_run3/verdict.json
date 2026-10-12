@@ -1,0 +1,24 @@
+{
+  "profile": "trail",
+  "reps": 16,
+  "log_rate": 1,
+  "proof_sm3": "dd07641c55fde7a19a219588e7524bc1757e08ebaf8dadc8d532c3c4812080d7",
+  "bytes": 6157272,
+  "verifier_param_sm3": "6523b1955a5caa1c9aec13b5c5a5cf14cb0a5be20869b9677be9ba7906ae34c6",
+  "verifier_param_bytes": 1343464,
+  "setup_s": 0.225409874,
+  "preprocess_s": 1.340078207,
+  "prove_s": 4.17509999,
+  "verify_s": 0.066354173,
+  "total_s": 7.842909259,
+  "verdict": "OK",
+  "issuer_key_source": "witness",
+  "pcs_switches": {
+    "interleave": true,
+    "batch_dedup": false,
+    "verify_stream": false
+  },
+  "mask": "on",
+  "zk_pin_fingerprint": "SM3(4201a82|b05df9d8e2d5f39fb4d92b19d47379c86c0d40159e9fd39a1c9c77455b9b4985)",
+  "created_unix_ts": 1791814320
+}

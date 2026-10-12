@@ -1,0 +1,219 @@
+{
+  "schema": "fz-server-bench/1",
+  "created": "2026-10-12 22:12:00",
+  "purpose": "⑦代电路服务器窗复测——性能档案现行口径总表「服务器窗 AUTH prove」行与「TRAIL 服务器 prove / verify」行回填数据源",
+  "baseline_4gen": {
+    "gen": "④代",
+    "date": "2026-09-27",
+    "machine": "12C/46G Alibaba Cloud Linux 4",
+    "toolchain": "nightly-2026-05-26",
+    "rayon": 12,
+    "auth": {
+      "prove_s": 25.14,
+      "verify_s": 0.68,
+      "total_s": 32.39,
+      "proof_bytes": 22686512,
+      "setup_s": 0.25,
+      "preprocess_s": 2.85
+    },
+    "trail": {
+      "prove_s": 15.1,
+      "verify_s": 0.21,
+      "total_s": 20.38,
+      "proof_bytes": 16249632,
+      "setup_s": 0.24,
+      "preprocess_s": 2.93
+    }
+  },
+  "machine_profile": {
+    "os": "Alibaba Cloud Linux 4.0.6 (OpenAnolis Edition)",
+    "kernel": "6.6.102-8.alnx4.x86_64",
+    "arch": "x86_64",
+    "cpu_model": "Intel(R) Xeon(R) 6982P-C",
+    "cpu_logical": 12,
+    "mem_total_gb": 46.02,
+    "mem_avail_gb": 45.14,
+    "disk_total_gb": 196.49,
+    "disk_free_gb": 183.12,
+    "python": "3.11.6",
+    "rustup_toolchain_env": "nightly-2026-05-26",
+    "paths": {
+      "rustc": "/root/rust-nightly-0526/bin/rustc",
+      "cargo": "/root/rust-nightly-0526/bin/cargo",
+      "rustup": null
+    },
+    "rustc": "rustc 1.98.0-nightly (31a9463c6 2026-05-25)",
+    "cargo": "cargo 1.98.0-nightly (4d1f98451 2026-05-15)",
+    "rustup": null,
+    "git_head": "8052f50",
+    "git_dirty_entries": 2
+  },
+  "fingerprint_gate": {
+    "pass": true,
+    "expected": "SM3(4201a82|b05df9d8e2d5f39fb4d92b19d47379c86c0d40159e9fd39a1c9c77455b9b4985)",
+    "recomputed": "SM3(4201a82|b05df9d8e2d5f39fb4d92b19d47379c86c0d40159e9fd39a1c9c77455b9b4985)",
+    "pin_commit": "4201a82",
+    "file_count": 148,
+    "aggregate_sm3": "b05df9d8e2d5f39fb4d92b19d47379c86c0d40159e9fd39a1c9c77455b9b4985"
+  },
+  "build": {
+    "cmd": "cargo build --release --offline -j 8",
+    "seconds": 24.7,
+    "jobs": 8,
+    "rc": 0
+  },
+  "rayon": 12,
+  "runs_per_statement": 3,
+  "auth": {
+    "spec": "tests/auth_canonical_spec.json",
+    "runs": [
+      {
+        "label": "AUTH#1",
+        "cmd": "prove --spec tests/auth_canonical_spec.json --out /root/uas-bench/uas/server_bench_results/server_bench_20261012_221036/auth_run1",
+        "rc": 0,
+        "wall_s": 19.93,
+        "stdout_tail": "verifier query phase | zkc prove: OK 16063712B sm3=8b9170f983e56efa89b8042253179ce5a537526ae0027eb887fee3db99bd6b5b fingerprint=SM3(4201a82|b05df9d8e2d5f39fb4d92b19d47379c86c0d40159e9fd39a1c9c77455b9b4985) pcs=il=1/dd=0/st=0",
+        "proof_bytes": 16063712,
+        "proof_sm3": "8b9170f983e56efa89b8042253179ce5a537526ae0027eb887fee3db99bd6b5b",
+        "fingerprint": "SM3(4201a82|b05df9d8e2d5f39fb4d92b19d47379c86c0d40159e9fd39a1c9c77455b9b4985)",
+        "pcs": "il=1/dd=0/st=0",
+        "setup_s": 0.187,
+        "preprocess_s": 1.474,
+        "prove_s": 14.421,
+        "verify_s": 0.533,
+        "total_s": 19.872,
+        "verdict_fingerprint": "SM3(4201a82|b05df9d8e2d5f39fb4d92b19d47379c86c0d40159e9fd39a1c9c77455b9b4985)",
+        "proof_sm3_verdict": "8b9170f983e56efa89b8042253179ce5a537526ae0027eb887fee3db99bd6b5b",
+        "instances_count": 26,
+        "mask": "on"
+      },
+      {
+        "label": "AUTH#2",
+        "cmd": "prove --spec tests/auth_canonical_spec.json --out /root/uas-bench/uas/server_bench_results/server_bench_20261012_221036/auth_run2",
+        "rc": 0,
+        "wall_s": 19.96,
+        "stdout_tail": "verifier query phase | zkc prove: OK 16063712B sm3=64dcaa54a159cef438af8a20d87dd26b0b63c96885d64f071c48b76d91ebf5d9 fingerprint=SM3(4201a82|b05df9d8e2d5f39fb4d92b19d47379c86c0d40159e9fd39a1c9c77455b9b4985) pcs=il=1/dd=0/st=0",
+        "proof_bytes": 16063712,
+        "proof_sm3": "64dcaa54a159cef438af8a20d87dd26b0b63c96885d64f071c48b76d91ebf5d9",
+        "fingerprint": "SM3(4201a82|b05df9d8e2d5f39fb4d92b19d47379c86c0d40159e9fd39a1c9c77455b9b4985)",
+        "pcs": "il=1/dd=0/st=0",
+        "setup_s": 0.174,
+        "preprocess_s": 1.443,
+        "prove_s": 14.514,
+        "verify_s": 0.531,
+        "total_s": 19.904,
+        "verdict_fingerprint": "SM3(4201a82|b05df9d8e2d5f39fb4d92b19d47379c86c0d40159e9fd39a1c9c77455b9b4985)",
+        "proof_sm3_verdict": "64dcaa54a159cef438af8a20d87dd26b0b63c96885d64f071c48b76d91ebf5d9",
+        "instances_count": 26,
+        "mask": "on"
+      },
+      {
+        "label": "AUTH#3",
+        "cmd": "prove --spec tests/auth_canonical_spec.json --out /root/uas-bench/uas/server_bench_results/server_bench_20261012_221036/auth_run3",
+        "rc": 0,
+        "wall_s": 20.01,
+        "stdout_tail": "verifier query phase | zkc prove: OK 16063712B sm3=3e20aba6da04d37f448c4baa27543076900e33ecdeb9619d2f3c4f2e78125c40 fingerprint=SM3(4201a82|b05df9d8e2d5f39fb4d92b19d47379c86c0d40159e9fd39a1c9c77455b9b4985) pcs=il=1/dd=0/st=0",
+        "proof_bytes": 16063712,
+        "proof_sm3": "3e20aba6da04d37f448c4baa27543076900e33ecdeb9619d2f3c4f2e78125c40",
+        "fingerprint": "SM3(4201a82|b05df9d8e2d5f39fb4d92b19d47379c86c0d40159e9fd39a1c9c77455b9b4985)",
+        "pcs": "il=1/dd=0/st=0",
+        "setup_s": 0.152,
+        "preprocess_s": 1.418,
+        "prove_s": 14.614,
+        "verify_s": 0.529,
+        "total_s": 19.957,
+        "verdict_fingerprint": "SM3(4201a82|b05df9d8e2d5f39fb4d92b19d47379c86c0d40159e9fd39a1c9c77455b9b4985)",
+        "proof_sm3_verdict": "3e20aba6da04d37f448c4baa27543076900e33ecdeb9619d2f3c4f2e78125c40",
+        "instances_count": 26,
+        "mask": "on"
+      }
+    ],
+    "median": {
+      "setup_s": 0.174,
+      "preprocess_s": 1.443,
+      "prove_s": 14.514,
+      "verify_s": 0.531,
+      "total_s": 19.904
+    }
+  },
+  "trail": {
+    "spec": "tests/trail_canonical_spec.json",
+    "runs": [
+      {
+        "label": "TRAIL#1",
+        "cmd": "prove --spec tests/trail_canonical_spec.json --out /root/uas-bench/uas/server_bench_results/server_bench_20261012_221036/trail_run1",
+        "rc": 0,
+        "wall_s": 7.84,
+        "stdout_tail": "verifier query phase | zkc prove: OK 6157272B sm3=756acd1dd0f1de9bbef1736f3e279cfa083d490d759b33955c5f60d0102bd85d fingerprint=SM3(4201a82|b05df9d8e2d5f39fb4d92b19d47379c86c0d40159e9fd39a1c9c77455b9b4985) pcs=il=1/dd=0/st=0",
+        "proof_bytes": 6157272,
+        "proof_sm3": "756acd1dd0f1de9bbef1736f3e279cfa083d490d759b33955c5f60d0102bd85d",
+        "fingerprint": "SM3(4201a82|b05df9d8e2d5f39fb4d92b19d47379c86c0d40159e9fd39a1c9c77455b9b4985)",
+        "pcs": "il=1/dd=0/st=0",
+        "setup_s": 0.223,
+        "preprocess_s": 1.339,
+        "prove_s": 4.161,
+        "verify_s": 0.066,
+        "total_s": 7.812,
+        "verdict_fingerprint": "SM3(4201a82|b05df9d8e2d5f39fb4d92b19d47379c86c0d40159e9fd39a1c9c77455b9b4985)",
+        "proof_sm3_verdict": "756acd1dd0f1de9bbef1736f3e279cfa083d490d759b33955c5f60d0102bd85d",
+        "instances_count": 8,
+        "mask": "on"
+      },
+      {
+        "label": "TRAIL#2",
+        "cmd": "prove --spec tests/trail_canonical_spec.json --out /root/uas-bench/uas/server_bench_results/server_bench_20261012_221036/trail_run2",
+        "rc": 0,
+        "wall_s": 7.85,
+        "stdout_tail": "verifier query phase | zkc prove: OK 6157272B sm3=f29bdd52fc96d4de7c5a9ae30c68a5d3923504b309598b1cb0df7f09a683c744 fingerprint=SM3(4201a82|b05df9d8e2d5f39fb4d92b19d47379c86c0d40159e9fd39a1c9c77455b9b4985) pcs=il=1/dd=0/st=0",
+        "proof_bytes": 6157272,
+        "proof_sm3": "f29bdd52fc96d4de7c5a9ae30c68a5d3923504b309598b1cb0df7f09a683c744",
+        "fingerprint": "SM3(4201a82|b05df9d8e2d5f39fb4d92b19d47379c86c0d40159e9fd39a1c9c77455b9b4985)",
+        "pcs": "il=1/dd=0/st=0",
+        "setup_s": 0.225,
+        "preprocess_s": 1.334,
+        "prove_s": 4.176,
+        "verify_s": 0.066,
+        "total_s": 7.82,
+        "verdict_fingerprint": "SM3(4201a82|b05df9d8e2d5f39fb4d92b19d47379c86c0d40159e9fd39a1c9c77455b9b4985)",
+        "proof_sm3_verdict": "f29bdd52fc96d4de7c5a9ae30c68a5d3923504b309598b1cb0df7f09a683c744",
+        "instances_count": 8,
+        "mask": "on"
+      },
+      {
+        "label": "TRAIL#3",
+        "cmd": "prove --spec tests/trail_canonical_spec.json --out /root/uas-bench/uas/server_bench_results/server_bench_20261012_221036/trail_run3",
+        "rc": 0,
+        "wall_s": 7.87,
+        "stdout_tail": "verifier query phase | zkc prove: OK 6157272B sm3=dd07641c55fde7a19a219588e7524bc1757e08ebaf8dadc8d532c3c4812080d7 fingerprint=SM3(4201a82|b05df9d8e2d5f39fb4d92b19d47379c86c0d40159e9fd39a1c9c77455b9b4985) pcs=il=1/dd=0/st=0",
+        "proof_bytes": 6157272,
+        "proof_sm3": "dd07641c55fde7a19a219588e7524bc1757e08ebaf8dadc8d532c3c4812080d7",
+        "fingerprint": "SM3(4201a82|b05df9d8e2d5f39fb4d92b19d47379c86c0d40159e9fd39a1c9c77455b9b4985)",
+        "pcs": "il=1/dd=0/st=0",
+        "setup_s": 0.225,
+        "preprocess_s": 1.34,
+        "prove_s": 4.175,
+        "verify_s": 0.066,
+        "total_s": 7.843,
+        "verdict_fingerprint": "SM3(4201a82|b05df9d8e2d5f39fb4d92b19d47379c86c0d40159e9fd39a1c9c77455b9b4985)",
+        "proof_sm3_verdict": "dd07641c55fde7a19a219588e7524bc1757e08ebaf8dadc8d532c3c4812080d7",
+        "instances_count": 8,
+        "mask": "on"
+      }
+    ],
+    "median": {
+      "setup_s": 0.225,
+      "preprocess_s": 1.339,
+      "prove_s": 4.175,
+      "verify_s": 0.066,
+      "total_s": 7.82
+    }
+  },
+  "gate_60s": {
+    "threshold_s": 60.0,
+    "auth_prove_median_s": 14.514,
+    "pass": true,
+    "margin_x": 4.13,
+    "baseline_margin_x": 2.39
+  },
+  "verdict": "PASS"
+}
