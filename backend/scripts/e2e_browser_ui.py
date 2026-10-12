@@ -482,6 +482,12 @@ def run_tests(tmp: Path) -> None:
         # 文案；真链档=真实名册（互认机构表+在册域数+聚合纪元活数据——链烟
         # ⑨-b/跨域套件登记 org 后本断言实弹；此前无条件断空态文案在真链档
         # 必超时=套件对链状态的过时假设，2026-10-12 验收批根修）。
+        # 双态竞态补丁（⑫O-5 批）：gov 拉取为 onMounted 异步——头部静态渲染
+        # 先于数据到达即断言会误入 else 分支。先等两态之一实际出现（不弱化
+        # 断言——两分支判定体保持原样，只补状态感知等待）。
+        mpage.locator("text=互认注册表随真链提供").or_(
+            mpage.locator(r"text=/聚合纪元 \d+/")
+        ).first.wait_for(timeout=15000)
         if mpage.locator("text=互认注册表随真链提供").count() >= 1:
             expect(mpage.locator("text=互认注册表随真链提供").count() >= 1,
                    "⑨.3 互认机构面板 fake 档诚实空态（FedRegistry 公示随真链提供）")

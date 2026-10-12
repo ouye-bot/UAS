@@ -28,6 +28,13 @@ import {
   unsealProfileSlot,
 } from "./keystore";
 import { clearSessionState, storeIdentityTag, sweepForAccountSwitch, sweepLocalIdentity } from "./material";
+import {
+  opaqueChangeMaterials,
+  opaqueEvaluate,
+  opaqueMigrateMaterials,
+  opaqueRegisterMaterials,
+  opaqueUnlockSk,
+} from "./opaqueClient";
 
 export const SM2_USER_ID = "1234567812345678"; // 全系统统一默认 ID（改动须两端同步）
 
@@ -101,6 +108,7 @@ export interface PendingRegistration {
   password: string;
   sk: string;
   pk: string; // 128 hex（无 04 前缀——全系统口径）
+  v6env?: import("./keystore").KeystoreV6; // ⑫O-5 v6 本地信封（注册材料回执——finish 落盘）
 }
 
 let pending: PendingRegistration | null = null;
@@ -113,17 +121,32 @@ export function dropPendingRegistration(): void {
   pending = null;
 }
 
-/** 第①步：建账户。浏览器生成 SM2 钥对→密码 KEK 密封（v4=PBKDF2-HMAC-SM3）→只上传密封件。 */
+/** 第①步：建账户（⑫O-5 换代——OPAQUE v6 封装）：钥对生成→盲化求值（α→evaluate
+ * ——账户未建=服务端 fake 分支仍返真实 β（§6.1 同构计算））→rwd 单链→v6 密封
+ * →只上传密文材料（零明文口令出浏览器——设计 §2.2）。 */
 export async function registerAccount(username: string, password: string): Promise<PendingRegistration> {
   const kp = sm2.generateKeyPairHex();
   const sk = kp.privateKey;
   const pk = kp.publicKey.replace(/^04/, "");
-  const blob = await sealKeystoreV4(sk, pk, password);
+  const mats = await opaqueRegisterMaterials(username, password, sk, pk);
   await api("/auth/register", {
     method: "POST",
-    body: JSON.stringify({ username, pubkey_hex: pk, sealed_blob: JSON.stringify(blob) }),
+    body: JSON.stringify({
+      username,
+      pubkey_hex: pk,
+      sealed_blob: mats.sealed_blob,
+      masking_key_hex: mats.masking_key_hex,
+      kdf_salt_hex: mats.kdf_salt_hex,
+      kdf_iter: mats.kdf_iter,
+    }),
   });
-  pending = { username, password, sk, pk };
+  pending = {
+    username,
+    password,
+    sk,
+    pk,
+    v6env: JSON.parse(mats.sealed_blob) as import("./keystore").KeystoreV6,
+  };
   return pending;
 }
 
@@ -163,7 +186,13 @@ export async function finishRegistrationLocal(
 ): Promise<void> {
   localStorage.setItem("fzCred", JSON.stringify(cred));
   localStorage.setItem("fzForm", JSON.stringify(form));
-  storeKeystore(await sealKeystoreV4(reg.sk, reg.pk, reg.password));
+  // ⑫O-5：本地缓存=注册材料回执的 v6 信封（与服务器密封件同源——解锁走
+  // OPAQUE 通道）；v6env 缺失（理论不达）时回退 v4 本地重封（旧语义保底）。
+  if (reg.v6env) {
+    storeKeystore(reg.v6env);
+  } else {
+    storeKeystore(await sealKeystoreV4(reg.sk, reg.pk, reg.password));
+  }
   cacheSk(reg.sk);
   clearSessionState();
   storeIdentityTag();
@@ -203,9 +232,9 @@ export async function login(
         403,
       );
     }
-    // 预置机构账户首登激活：初始密码核对子一次性比对→钥对生成+密封上传→焚烧。
-    // 核对子按 prelogin 下发格式分派复算（v1=独立派生域现行 / legacy_v3=旧种子
-    // 兼容读取——与后端 accounts/kdf.py 同域同参）；密封一律 v4 现行口径。
+    // 预置机构账户首登激活：初始密码核对子一次性比对→钥对生成+OPAQUE v6 材料
+    // 上传（待激活账户 evaluate=真实 β——§6.1-b）→焚烧核对子。核对子按 prelogin
+    // 下发格式分派复算（v1=独立派生域现行 / legacy_v3=旧种子兼容读取）。
     const kp = sm2.generateKeyPairHex();
     const sk = kp.privateKey;
     const pk = kp.publicKey.replace(/^04/, "");
@@ -213,22 +242,47 @@ export async function login(
       pre.verifier === "legacy_v3"
         ? deriveKek(password, pre.kdf_salt_hex ?? "", KDF_LEGACY_V3_ITERATIONS)
         : await deriveActivationVerifier(password, pre.kdf_salt_hex ?? "", pre.rounds);
-    const blob = await sealKeystoreV4(sk, pk, password, pre.rounds);
+    const mats = await opaqueRegisterMaterials(username, password, sk, pk, pre.rounds);
     await api("/auth/activate", {
       method: "POST",
       body: JSON.stringify({
         username,
         verifier_hex: verifier,
         pubkey_hex: pk,
-        sealed_blob: JSON.stringify(blob),
+        sealed_blob: mats.sealed_blob,
+        masking_key_hex: mats.masking_key_hex,
+        kdf_salt_hex: mats.kdf_salt_hex,
+        kdf_iter: mats.kdf_iter,
         ...(activationCode ? { activation_code: activationCode } : {}),
       }),
     });
   }
+  // ⑫O-5 稳态登录（设计 §2.3 两消息协议优先）：OPAQUE 掩码通道（v6 账户）→
+  // 失败回落 legacy keystore 通道（v4/v3 过渡存量——鸡-蛋面：解封需先取件；
+  // 失败判词两路同人话——体验零变化）。
+  try {
+    const sk = await opaqueUnlockSk(username, password);
+    const out = await loginWithSk(username, sk, password);
+    return out;
+  } catch (e) {
+    if (e instanceof ApiError && e.code === "rate_limited") throw e; // 限速透传
+    if (e instanceof ApiError && e.code === "user_not_found") throw e;
+    // 其余客户端密码学失败（解掩码/形态/GCM）→回落 legacy 通道复核
+  }
   const ks = await api<{ sealed_blob: string; pubkey_hex: string }>(
     `/auth/keystore/${encodeURIComponent(username)}`,
-  );
+  ).catch((e) => {
+    if (e instanceof ApiError && e.status === 410) {
+      // ⑫O-4 v6 账户（keystore 410——掩码通道取代）：OPAQUE 已失败=密码错
+      throw new ApiError("bad_password", "密码错误（OPAQUE 解封失败）", 401);
+    }
+    throw e;
+  });
   const env = parseKeystoreBlob(ks.sealed_blob);
+  if (env.v === 6) {
+    // v6 账户走本通道（keystore 不再下发——410 语义镜像）：OPAQUE 已失败=密码错
+    throw new ApiError("bad_password", "密码错误（OPAQUE 解封失败）", 401);
+  }
   let sk: string;
   try {
     sk = await openKeystore(env, password);
@@ -248,7 +302,37 @@ export async function login(
   storeKeystore(env);
   const out = await loginWithSk(username, sk, password);
   await upgradeKeystoreIfNeeded(env, password); // v3 存量→v4 惰性重封（同口令，无感）
+  // ⑫O-4 v4→v6 惰性迁移（设计 §5.1-3——v3→v4 同款"解锁成功即升级"语义）：
+  // 登录成功+密码在手→会话内注册序（evaluate 携会话=真实 β §6.1-c）→回传换新。
+  await opaqueMigrateIfNeeded(username, password, sk, env.pk);
   return out;
+}
+
+/** v4→v6 惰性迁移（设计 §5.1-3/§5.4 删除事务）：尽力而为——失败不阻断登录
+ * （下次登录自动重试，v3→v4 惰性升级同款 UX）；成功后 keystore 通道对该账户
+ * 410（掩码通道取代）。本地缓存同步换 v6 信封。 */
+async function opaqueMigrateIfNeeded(
+  username: string,
+  password: string,
+  sk: string,
+  pk: string,
+): Promise<void> {
+  try {
+    const mats = await opaqueMigrateMaterials(username, password, sk, pk);
+    await api("/auth/opaque/migrate", {
+      method: "POST",
+      body: JSON.stringify({
+        sealed_blob: mats.sealed_blob,
+        masking_key_hex: mats.masking_key_hex,
+        kdf_salt_hex: mats.kdf_salt_hex,
+        kdf_iter: mats.kdf_iter,
+      }),
+    });
+    const v6env = JSON.parse(mats.sealed_blob) as import("./keystore").KeystoreV6;
+    storeKeystore(v6env); // 本地缓存换代（后续解锁走 OPAQUE 通道）
+  } catch (e) {
+    console.warn("[opaque] v6 惰性迁移未完成（下次登录自动重试）", e);
+  }
 }
 
 /** v4 惰性升级（批 2-2.1）：存量 v3 密封件解封成功后以同口令 v4 重封并回传
@@ -322,6 +406,12 @@ export async function unlockSk(password: string): Promise<string> {
   const local = loadKeystore();
   if (local && !isLegacyKeystore(local)) {
     const v = (local as { v?: number }).v;
+    if (v === 6) {
+      // ⑫O-5 v6 本地信封：KEK 源=rwd（需 evaluate 回程——服务端无口令材料）
+      const sk = await opaqueUnlockSk(username, password);
+      cacheSk(sk);
+      return sk;
+    }
     if (v === 3 || v === 4) {
       let sk = "";
       try {
@@ -341,7 +431,18 @@ export async function unlockSk(password: string): Promise<string> {
   }
   const ks = await api<{ sealed_blob: string; pubkey_hex: string }>(
     `/auth/keystore/${encodeURIComponent(username)}`,
-  );
+  ).catch((e) => {
+    if (e instanceof ApiError && e.status === 410) {
+      // ⑫O-4 v6 账户（keystore 410——掩码通道取代）：OPAQUE 解封回程
+      return null;
+    }
+    throw e;
+  });
+  if (ks === null) {
+    const sk = await opaqueUnlockSk(username, password);
+    cacheSk(sk);
+    return sk;
+  }
   const env = parseKeystoreBlob(ks.sealed_blob);
   let sk: string;
   try {
@@ -364,14 +465,16 @@ export async function unlockSk(password: string): Promise<string> {
 // 任何密封件）。会话延续（Cookie 会话与密码无涉）；服务端逐笔入台账。
 
 /** 当前密码错=unlockSk 抛 bad_password；新密码规范由调用方以
- * checkPasswordRules（lib/enroll）先行校验（与注册/激活同门槛）。 */
+ * checkPasswordRules（lib/enroll）先行校验（与注册/激活同门槛）。
+ * ⑫O-5 v6 感知：v6 账户（记录在账——改密首试 422 v6_change_required 引导）
+ * =v6' 重封+新掩码钥原子换新（盐/迭代取 evaluate 响应账面值——§5.6 不轮换）；
+ * v4 存量保留 v4 语义。 */
 export async function changePassword(currentPw: string, newPw: string): Promise<void> {
   const username = cachedUsername();
   if (!username) throw new ApiError("not_logged_in", "未登录", 401);
   const sk = await unlockSk(currentPw); // 解封+公钥核对（错密码即拒，不烧服务端）
   const sm2Any = sm2 as unknown as { getPublicKeyFromPrivateKey: (sk: string) => string };
   const pk = sm2Any.getPublicKeyFromPrivateKey(sk).replace(/^04/, "");
-  const fresh = await sealKeystoreV4(sk, pk, newPw);
   // 资料密封件同口径重封（pilot 专属；KEK 同源——当前密码已验，解封必达）
   let sealedProfile: string | undefined;
   try {
@@ -390,6 +493,29 @@ export async function changePassword(currentPw: string, newPw: string): Promise<
       500,
     );
   }
+  // ⑫O-5 v6 感知：本地面板版本检测（v6 信封本地可判——盐必须密封前即真值，
+  // 占位盐若被照单全收=账户永久打不开——红线）。v6=先 evaluate 取账面盐/迭代
+  // →v6' 材料+新掩码钥原子换新；v4 存量=v4 语义零变化（不得携带掩码钥）。
+  const { loadKeystore, isLegacyKeystore } = await import("./keystore");
+  const local = loadKeystore();
+  const isV6 = local !== null && !isLegacyKeystore(local) && (local as { v?: number }).v === 6;
+  if (isV6) {
+    const { response } = await opaqueEvaluate(username, currentPw); // 携会话=真 β+账面盐
+    const fresh6 = await opaqueChangeMaterials(
+      username, newPw, sk, pk, response.kdf_salt_hex, response.kdf_iter,
+    );
+    await api("/auth/password/change", {
+      method: "POST",
+      body: JSON.stringify({
+        sealed_blob: fresh6.sealed_blob,
+        masking_key_hex: fresh6.masking_key_hex,
+        ...(sealedProfile ? { sealed_profile: sealedProfile } : {}),
+      }),
+    });
+    storeKeystore(JSON.parse(fresh6.sealed_blob) as import("./keystore").KeystoreV6);
+    return;
+  }
+  const fresh = await sealKeystoreV4(sk, pk, newPw);
   await api("/auth/password/change", {
     method: "POST",
     body: JSON.stringify({

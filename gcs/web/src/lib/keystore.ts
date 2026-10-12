@@ -14,6 +14,7 @@ import { createSM3, pbkdf2 } from "hash-wasm";
 import { sm3 } from "sm-crypto";
 import { randHex } from "./api";
 import { GcmAuthError, hexToBytes, sm4GcmDecrypt, sm4GcmEncrypt } from "../crypto/sm4gcm";
+import { ENVELOPE_KEY_INFO, hkdfSm3Expand } from "./opaque";
 
 export const KDF_ITERATIONS_V4 = 600_000; // OWASP 2023 PBKDF2 口径（与后端 KDF_ITERATIONS_DEFAULT 同源）
 export const KDF_LEGACY_V3_ITERATIONS = 21_000; // v3 legacy 旧链固定值（兼容面专用）
@@ -307,7 +308,99 @@ export interface KeystoreV4 {
   enc: SealedSlotV4;
 }
 
-export type AccountKeystore = KeystoreV3 | KeystoreV4;
+export type AccountKeystore = KeystoreV3 | KeystoreV4 | KeystoreV6;
+
+// ---- v6（⑫OPAQUE——rwd 派生信封；设计 §1.2 定长不变式——镜像后端
+// app/accounts/envelope.py canonical_v6；JS↔PY 对拍锚=同向量双端钉死） ----
+
+export const KDF_NAME_V6 = "opaque-rwd-v1"; // v6 信封 enc.kdf 标记（与后端同源）
+
+export interface SealedSlotV6 {
+  kdf: typeof KDF_NAME_V6;
+  env_nonce: string; // 24 hex（12B——KEK 派生 info 输入）
+  nonce: string; // 24 hex（12B——SM4-GCM IV）
+  ct: string; // 64 hex（32B sk 定宽）
+  tag: string; // 32 hex（16B GCM tag）
+}
+
+export interface KeystoreV6 {
+  v: 6;
+  pk: string;
+  enc: SealedSlotV6;
+}
+
+/** v6 规范形态（固定键序+compact 分隔符+小写 hex——定长不变式载体，§6.2 Nm 锚）。 */
+export function canonicalV6(
+  pkHex: string,
+  envNonceHex: string,
+  nonceHex: string,
+  ctHex: string,
+  tagHex: string,
+): string {
+  return JSON.stringify({
+    v: 6,
+    pk: pkHex.toLowerCase(),
+    enc: {
+      kdf: KDF_NAME_V6,
+      env_nonce: envNonceHex.toLowerCase(),
+      nonce: nonceHex.toLowerCase(),
+      ct: ctHex.toLowerCase(),
+      tag: tagHex.toLowerCase(),
+    },
+  });
+}
+
+/** 标准 v6 信封字节长（fake-record 零槽长度锚——§6.1）。 */
+export function standardV6EnvelopeLen(): number {
+  return canonicalV6("0".repeat(128), "0".repeat(24), "0".repeat(24), "0".repeat(64), "0".repeat(32))
+    .length;
+}
+
+/** v6 密封（KEK=Expand-SM3(rwd, env_nonce‖"FZ-OPAQUE-EnvelopeKey|v1",16)——
+ * §1.4 ⑤ 唯一单链；AAD=FZ-OPAQUE-ENV-v6|rwd（D-2）。rwd 由 OPAQUE 链派生
+ * （lib/opaque.deriveRwdChain）——口令不经任何直连 KDF。 */
+export async function sealEnvelopeV6(
+  skHex: string,
+  pkHex: string,
+  rwd: Uint8Array,
+  envNonceHex?: string,
+  nonceHex?: string,
+): Promise<KeystoreV6> {
+  if (rwd.length !== 32) throw new KeystoreError("rwd 须 32B");
+  const envNonce = envNonceHex ?? randHex(12);
+  const kek = await hkdfSm3Expand(rwd, concat(hexToBytes(envNonce), ENVELOPE_KEY_INFO), 16);
+  const nonce = nonceHex ?? randHex(12);
+  const { ciphertext, tag } = sm4GcmEncrypt(kek, hexToBytes(nonce), hexToBytes(skHex), new TextEncoder().encode("FZ-OPAQUE-ENV-v6|rwd"));
+  const obj = JSON.parse(
+    canonicalV6(pkHex, envNonce, nonce, Array.from(ciphertext, (b) => b.toString(16).padStart(2, "0")).join(""), Array.from(tag, (b) => b.toString(16).padStart(2, "0")).join("")),
+  ) as unknown as KeystoreV6;
+  return obj;
+}
+
+/** v6 解封（客户端域——rwd 侧；服务器无 rwd 即不可解封=零口令材料红线的正面
+ * 形态）。GCM 认证失败=密码错误（人话判词源——登录 UX 判定依据）。 */
+export async function openEnvelopeV6(env: KeystoreV6, rwd: Uint8Array): Promise<string> {
+  if (!env || env.v !== 6 || !env.enc) throw new KeystoreError("密封件形态不符（v6）");
+  if (env.enc.kdf !== KDF_NAME_V6) throw new KeystoreError("密封件 KDF 标记不符（v6）");
+  try {
+    const kek = await hkdfSm3Expand(
+      rwd,
+      concat(hexToBytes(env.enc.env_nonce), ENVELOPE_KEY_INFO),
+      16,
+    );
+    const pt = sm4GcmDecrypt(
+      kek,
+      hexToBytes(env.enc.nonce),
+      hexToBytes(env.enc.ct),
+      hexToBytes(env.enc.tag),
+      new TextEncoder().encode("FZ-OPAQUE-ENV-v6|rwd"),
+    );
+    return Array.from(pt, (b) => b.toString(16).padStart(2, "0")).join("");
+  } catch (e) {
+    if (e instanceof GcmAuthError) throw new KeystoreError("解封失败（密码错误或密文被篡改）");
+    throw e;
+  }
+}
 
 /** v3 密封（legacy 兼容面——仅惰性重封前构造测试/迁移面使用；新密封走 v4）。 */
 export function sealKeystoreV3(skHex: string, pkHex: string, passphrase: string): KeystoreV3 {
@@ -356,13 +449,19 @@ export async function openKeystoreV4(env: KeystoreV4, passphrase: string): Promi
   return unsealV4(env.enc, passphrase, AAD_PASS_V4, env.enc.iter);
 }
 
-/** 版本分派解封（v3→旧链 / v4→PBKDF2）——存量 v3 密封件仍可解，不删旧链。 */
+/** 版本分派解封（v3→旧链 / v4→PBKDF2）——存量 v3 密封件仍可解，不删旧链。
+ * v6 不走本口令分派（KEK 源=rwd——需 OPAQUE evaluate 回程，lib/auth 稳态分支
+ * 调 openEnvelopeV6；此处显式人话引导）。 */
 export async function openKeystore(env: AccountKeystore, passphrase: string): Promise<string> {
+  if (env?.v === 6) {
+    void passphrase;
+    throw new KeystoreError("v6 密封装走 OPAQUE 登录通道（rwd 派生解封）");
+  }
   if (env?.v === 4) return openKeystoreV4(env, passphrase);
   return openKeystoreV3(env as KeystoreV3, passphrase);
 }
 
-/** 密封件解析（严格形态校验 v3/v4——人话拒绝，不静默兼容）。 */
+/** 密封件解析（严格形态校验 v3/v4/v6——人话拒绝，不静默兼容）。 */
 export function parseKeystoreBlob(text: string): AccountKeystore {
   let obj: unknown;
   try {
@@ -371,8 +470,8 @@ export function parseKeystoreBlob(text: string): AccountKeystore {
     throw new KeystoreError("密封件不是有效 JSON");
   }
   const o = obj as Record<string, unknown>;
-  if ((o?.v !== 3 && o?.v !== 4) || typeof o.pk !== "string" || !o.enc) {
-    throw new KeystoreError("密封件形态不符（v3/v4）");
+  if ((o?.v !== 3 && o?.v !== 4 && o?.v !== 6) || typeof o.pk !== "string" || !o.enc) {
+    throw new KeystoreError("密封件形态不符（v3/v4/v6）");
   }
   return o as unknown as AccountKeystore;
 }

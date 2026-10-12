@@ -151,18 +151,24 @@ def standard_v6_envelope_len() -> int:
 
 
 def seal_envelope_v6(
-    sk_hex: str, pk_hex: str, rwd_hex: str, *, env_nonce_hex: str | None = None
+    sk_hex: str,
+    pk_hex: str,
+    rwd_hex: str,
+    *,
+    env_nonce_hex: str | None = None,
+    nonce_hex: str | None = None,
 ) -> str:
     """v6 密封（参考客户端/测试面——生产客户端=JS，O-5 逐字节对拍锚定）：
     KEK=Expand-SM3(rwd, env_nonce‖"FZ-OPAQUE-EnvelopeKey|v1",16)（§1.4 ⑤ 唯一单链
-    ——改链=整体替换+重走评审）；SM4-GCM AAD 绑定 v6 槽位（D-2）。"""
+    ——改链=整体替换+重走评审）；SM4-GCM AAD 绑定 v6 槽位（D-2）。
+    env_nonce_hex/nonce_hex 可钉定（黄金向量面——双端逐字节对拍）。"""
     if not isinstance(rwd_hex, str) or len(rwd_hex) != 64:
         raise ValueError("rwd 须 32B hex")
     env_nonce = env_nonce_hex or secrets.token_hex(12)
     kek = hkdf_sm3_expand(
         bytes.fromhex(rwd_hex), bytes.fromhex(env_nonce) + ENVELOPE_KEY_INFO_V6, 16
     )
-    nonce = secrets.token_hex(12)
+    nonce = nonce_hex or secrets.token_hex(12)
     ct, tag = SM4GCM(kek).encrypt(bytes.fromhex(nonce), bytes.fromhex(sk_hex), AAD_V6)
     return canonical_v6(pk_hex, env_nonce, nonce, ct.hex(), tag.hex())
 

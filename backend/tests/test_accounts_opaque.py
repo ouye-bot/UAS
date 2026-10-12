@@ -1011,3 +1011,46 @@ def test_seed_accounts_full_flow_live_server(oc):
     finally:
         server.should_exit = True
         th.join(timeout=5)
+
+
+# ---------------------------------------------------------------------------
+# ⑫O-5 客户端链黄金钉（JS↔PY 对拍锚——同向量双端钉死：tests/lib/opaque.test.ts
+# 镜像同一组常量；rwd 单链 D-8/D-10 口径+掩码面 §6.3+v6 信封 §1.2）
+# ---------------------------------------------------------------------------
+
+GOLDEN_CHAIN = {
+    "rwd": "50f44fea224e94bc7c5f1ede0e946078e4300d27310d84c9710b0c2e9f8cd1b8",
+    "masking_key": "c2dc3b71cf96db31e9a0f31b82921ae5efb69e576c8e9e14fb0c34e2d667d341",
+    "kek": "61bb6113cd71bfd30f22f911f16d0921",
+    "masked": (
+        "aa49f8616ea1abebe3cc319d5a1b36d0eaac42c65e0f75fcf6182b8dc12987f557a55890deeefe984aff3659221066e65d3a39f0769e7e18e1315cbf57650a87c6c5defb7c8255f4dc68576b869462e2fb3285d8d1422cde9ba8fb567b36c8d4829411f81c27fa116c53a16e97cfffd696f315763fc1ad923835fc2a5e3fa0ae1214f49170684dd03207bc7025940e9871544a8357c0012db4af2b630588e6e9c5fa8e4c521b2ef08e83b29325cb14ebc887ab1d51c36dc044d76b27e0aa3a2b2560ef3ab03676cf25cb401e01ef88aefd27369a202d4b00e7d3b429851639edf186a0384ed9ee907a031a57a1034e08b7ef7463331bdc3b68b66939f84e99ad23005d3c029e2f2e7639e948aeb049e2623bc7abe2925043df28a8dfbc65798cbdb39762e66fdb759959a8127bd6197753a90161156af1c4092d48bdfecafe36ecbcb39281807b8f74dd9b11d281036b6e643e24176f19513aa48a6c93cae345e60198d23b031f6eb8f1742fbe6d5f69e95c48fcb8bf96c62c14446af4b05e84d9413b6660d59baa492a680301552537cae53fdb9ef55622e2b94aad2a07c2e6a52d6e7c0b90ff05"
+    ),
+    "server_pub": "064bc3ac38298569bffb83e84042ff93389816c2042de5fc1285f3d76e3c458060612430734bff243a00eaa51663e947ed1ed6ee9a0c28007338d99759a7626d",
+    "env": '{"v":6,"pk":"' + "11" * 64 + '","enc":{"kdf":"opaque-rwd-v1","env_nonce":"' + "ab" * 12 + '","nonce":"' + "cd" * 12 + '","ct":"38d4c0b211076ffd88029958d437251bf540c1470ac1d9af4d9073acc9dd7509","tag":"790a853428b159016adb4a834d1e3b5b"}}',
+}
+
+
+def test_golden_client_chain_pins():
+    """rwd 单链（D-8/D-10）+掩码面（§6.3）+v6 信封（§1.2）黄金钉——输入固定：
+    oprf_output=GOLDEN_RT_OUT/盐 4e×16/迭代 600k/env_nonce ab×12/nonce cd×12/
+    掩码 nonce aa×32/pk 11×64/sk ab×32；JS 侧（tests/lib/opaque.test.ts）镜像
+    同常量——漂移双向即红。"""
+    from tests.test_crypto_opaque import GOLDEN_RT_OUT
+
+    from app.accounts.client import derive_rwd_chain, kek_from_rwd
+    from app.accounts.opaque import mask_credential_response
+    from app.accounts.envelope import open_envelope_v6, seal_envelope_v6
+    from app.kms import engine_pub_hex
+
+    oprf_output = bytes.fromhex(GOLDEN_RT_OUT)
+    rwd, mk = derive_rwd_chain(oprf_output, "4e" * 16, 600_000)
+    kek = kek_from_rwd(rwd, "ab" * 12)
+    env = seal_envelope_v6("ab" * 32, "11" * 64, rwd.hex(), env_nonce_hex="ab" * 12, nonce_hex="cd" * 12)
+    masked = mask_credential_response(mk, bytes.fromhex("aa" * 32), env.encode())
+    assert rwd.hex() == GOLDEN_CHAIN["rwd"]
+    assert mk.hex() == GOLDEN_CHAIN["masking_key"]
+    assert kek.hex() == GOLDEN_CHAIN["kek"]
+    assert env == GOLDEN_CHAIN["env"]
+    assert masked.hex() == GOLDEN_CHAIN["masked"]
+    assert engine_pub_hex() == GOLDEN_CHAIN["server_pub"]
+    assert open_envelope_v6(env, rwd.hex()) == "ab" * 32  # 真实 GCM 回环（钉定 nonce）
