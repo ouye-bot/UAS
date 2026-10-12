@@ -55,10 +55,16 @@ def _client(tmp_path, monkeypatch, **env):
 def _login_capture_setcookie(c: TestClient, username: str) -> str:
     """注册→挑战登录，返回登录响应的 set-cookie 原始行。"""
     sk, pk = generate_keypair()
-    r = c.post(
-        "/auth/register",
-        json={"username": username, "pubkey_hex": pk, "sealed_blob": _sealed_blob(pk, sk, PW)},
-    )
+    from app.accounts.service import opaque_enabled
+
+    payload = {"username": username, "pubkey_hex": pk}
+    if opaque_enabled():  # ⑫O-3 v6 门（gate on 只收 v6+OPRF 记录材料）
+        from tests.opaque_client_ref import ref_seal_v6
+
+        payload.update(ref_seal_v6(username, PW, sk, pk))
+    else:
+        payload["sealed_blob"] = _sealed_blob(pk, sk, PW)
+    r = c.post("/auth/register", json=payload)
     assert r.status_code == 201, r.text
     nonce = c.post(f"/auth/challenge/{username}").json()["data"]["nonce_hex"]
     r2 = c.post(

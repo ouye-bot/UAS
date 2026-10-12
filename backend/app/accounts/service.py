@@ -199,6 +199,13 @@ auth_limiter = AttemptLimiter()
 ACTIVATE_MAX_ATTEMPTS = 5
 activate_limiter = AttemptLimiter(max_attempts=ACTIVATE_MAX_ATTEMPTS, window_s=300.0)
 
+# OPAQUE evaluate 限速（⑫O-3，设计 §6.6——Cheon log2(Q)/2 纪律：Q 次合法响应
+# ⟹ 静态 DH 求解加速 log2(Q)/2 位，限流把 Q 压到窗内常量级≈无增益）。10 发/
+# 300s 与 auth_limiter 同族；键=opaque|ip|username（路由层组装）。429+O-1 拒绝
+# 入台账（opaque_rate_limited/opaque_invalid_point）——正常 evaluate 不入台账。
+EVALUATE_MAX_ATTEMPTS = 10
+evaluate_limiter = AttemptLimiter(max_attempts=EVALUATE_MAX_ATTEMPTS, window_s=300.0)
+
 
 def activation_rate_key(username: str) -> str:
     """激活限速键单源（check 与 reset 必须同键——重置清桶依赖此函数）。"""
@@ -215,6 +222,17 @@ def activation_code_required() -> bool:
     if raw:
         return raw in ("1", "true", "yes", "on")
     return is_production()
+
+
+def opaque_enabled() -> bool:
+    """OPAQUE 总开关（⑫O-3，设计 §5.1——缺省 on；=0 为双轨回退：v4 现状注册
+    +evaluate 503 关闭态）。env FZ_OPAQUE_ENABLED 显式覆写（1/true/yes/on=开，
+    0/false/no/off=关）——「显式 env>缺省」同款模式。落位于本模块（register/
+    activate/change 三门共用；app.accounts.opaque 单向引用——零环导）。"""
+    raw = (os.environ.get("FZ_OPAQUE_ENABLED") or "").strip().lower()
+    if raw:
+        return raw in ("1", "true", "yes", "on")
+    return True
 
 
 def issue_activation_code(session: Session, row: Account) -> str:
@@ -246,6 +264,94 @@ def _utcnow() -> dt.datetime:
 _SEALED_BLOB_VERSIONS = (3, 4)
 _KDF_ITER_FLOOR = 1_000  # v4 信封迭代数下限（低于此=形态拒绝——防弱工作因子入库）
 _V3_REGISTER_REJECTED_MSG = "注册须使用当前密钥封装格式（v4）——请刷新页面后重试"
+
+
+# ---- ⑫O-3：v6（OPAQUE）形态门与 OPRF 记录材料校验（设计 §1.2/§1.3） ----
+
+
+def _require_masking_key(masking_key_hex: str | None) -> str:
+    """OPRF 掩码钥形态门（D-6——客户端派生上传；64 hex=32B）。"""
+    if (
+        not isinstance(masking_key_hex, str)
+        or len(masking_key_hex) != 64
+        or any(c not in "0123456789abcdefABCDEF" for c in masking_key_hex)
+    ):
+        raise AccountError("bad_masking_key", "OPAQUE 掩码钥缺失或非法（须 64 hex）", 422)
+    return masking_key_hex.lower()
+
+
+def _require_kdf_salt(kdf_salt_hex: str | None) -> str:
+    """Stretch 盐形态门（D-8——客户端生成上传；32 hex=16B）。"""
+    if (
+        not isinstance(kdf_salt_hex, str)
+        or len(kdf_salt_hex) != 32
+        or any(c not in "0123456789abcdefABCDEF" for c in kdf_salt_hex)
+    ):
+        raise AccountError("bad_kdf_salt", "OPAQUE KDF 盐缺失或非法（须 32 hex）", 422)
+    return kdf_salt_hex.lower()
+
+
+def _require_kdf_iter(kdf_iter: int | None) -> int:
+    """Stretch 迭代数门（D-8——≥_KDF_ITER_FLOOR 与 v4 同底线）。"""
+    if not isinstance(kdf_iter, int) or isinstance(kdf_iter, bool) or kdf_iter < _KDF_ITER_FLOOR:
+        raise AccountError("bad_kdf_iter", f"OPAQUE KDF 迭代数非法（须 ≥{_KDF_ITER_FLOOR}）", 422)
+    return kdf_iter
+
+
+def _normalize_v6_blob(blob_text: str, pubkey_hex: str) -> str:
+    """v6 信封形态校验+规范化存储（§1.2 定宽域逐项+canonical 再序列化=定长锚
+    的入库前提；pk 与登记公钥绑定一致）。非 canonical 入件被规范化收纳——
+    客户端序列化差异不入库。"""
+    from app.accounts.envelope import canonical_v6
+
+    try:
+        obj = json.loads(blob_text)
+    except ValueError as e:
+        raise AccountError("bad_blob", "密封件不是有效 JSON") from e
+    if not isinstance(obj, dict) or obj.get("v") != 6:
+        raise AccountError("bad_blob", "密封件形态不符（须 v6）")
+    if obj.get("pk") != pubkey_hex:
+        raise AccountError("bad_blob", "密封件公钥与登记公钥不一致")
+    enc = obj.get("enc")
+    if not isinstance(enc, dict) or enc.get("kdf") != "opaque-rwd-v1":
+        raise AccountError("bad_blob", "v6 密封槽 KDF 标记非法（须 opaque-rwd-v1）")
+    widths = {"env_nonce": 24, "nonce": 24, "ct": 64, "tag": 32}
+    for f, ln in widths.items():
+        v = enc.get(f)
+        if (
+            not isinstance(v, str)
+            or len(v) != ln
+            or any(c not in "0123456789abcdefABCDEF" for c in v)
+        ):
+            raise AccountError("bad_blob", f"v6 密封槽字段 {f} 非法（定宽 {ln} hex）")
+    return canonical_v6(pubkey_hex, enc["env_nonce"], enc["nonce"], enc["ct"], enc["tag"])
+
+
+def _normalize_profile_slot_v6(blob_text: str) -> str:
+    """资料槽 v6 规范化（slot=profile 标记+同款定宽域——D-4）。"""
+    from app.accounts.envelope import canonical_v6
+
+    try:
+        obj = json.loads(blob_text)
+    except ValueError as e:
+        raise AccountError("bad_profile_slot", "资料密封槽不是有效 JSON") from e
+    if not isinstance(obj, dict) or obj.get("v") != 6 or obj.get("slot") != "profile":
+        raise AccountError("bad_profile_slot", "资料密封槽形态不符（v6 profile）")
+    enc = obj.get("enc")
+    if not isinstance(enc, dict) or enc.get("kdf") != "opaque-rwd-v1":
+        raise AccountError("bad_profile_slot", "资料密封槽 KDF 标记非法")
+    widths = {"env_nonce": 24, "nonce": 24, "ct": 2, "tag": 32}
+    for f, ln in widths.items():
+        v = enc.get(f)
+        if not isinstance(v, str) or len(v) < ln or len(v) % 2:
+            raise AccountError("bad_profile_slot", f"资料密封槽字段 {f} 非法")
+        try:
+            bytes.fromhex(v)
+        except ValueError as e:
+            raise AccountError("bad_profile_slot", f"资料密封槽字段 {f} 非法 hex") from e
+    return canonical_v6(
+        "0" * 128, enc["env_nonce"], enc["nonce"], enc["ct"], enc["tag"], slot="profile"
+    )
 
 
 def _blob_version(blob_text: str) -> int | None:
@@ -312,9 +418,20 @@ def get_account(session: Session, username: str) -> Account:
     return row
 
 
-def register_account(session: Session, username: str, pubkey_hex: str, sealed_blob: str) -> Account:
+def register_account(
+    session: Session,
+    username: str,
+    pubkey_hex: str,
+    sealed_blob: str,
+    *,
+    masking_key_hex: str | None = None,
+    kdf_salt_hex: str | None = None,
+    kdf_iter: int | None = None,
+) -> Account:
     """飞手自助注册：浏览器生成钥对+密码密封→上传密封件。账户=待补资料态，
-    零链副作用（上链发生在资料补全、RA 签发时——账户≠凭证）。"""
+    零链副作用（上链发生在资料补全、RA 签发时——账户≠凭证）。
+    ⑫O-3 双轨门（设计 §5.1）：gate on=只收 v6（OPRF 记录四列随建——零口令
+    派生材料）；gate off=维持 v4 现状。"""
     if not USERNAME_RE.fullmatch(username or ""):
         raise AccountError("bad_username", "用户名仅限字母/数字/._-（2..32）")
     _validate_pubkey(pubkey_hex)
@@ -322,7 +439,25 @@ def register_account(session: Session, username: str, pubkey_hex: str, sealed_bl
     # 刷新；存量 v3 账户不受影响——登录惰性升级与截止策略见 login）。
     if _blob_version(sealed_blob) == 3:
         raise AccountError("v3_register_rejected", _V3_REGISTER_REJECTED_MSG, 422)
-    _validate_sealed_blob(sealed_blob, pubkey_hex)
+    if opaque_enabled():
+        if _blob_version(sealed_blob) != 6:
+            raise AccountError(
+                "v6_register_required",
+                "注册须使用当前 OPAQUE 密钥封装（v6）——请刷新页面后重试",
+                422,
+            )
+        mk = _require_masking_key(masking_key_hex)
+        salt = _require_kdf_salt(kdf_salt_hex)
+        it = _require_kdf_iter(kdf_iter)
+        sealed_stored = _normalize_v6_blob(sealed_blob, pubkey_hex)
+    else:
+        if _blob_version(sealed_blob) == 6:
+            raise AccountError(
+                "opaque_disabled", "OPAQUE 通道未启用——v6 密封件不受支持（v4 现行形态）", 422
+            )
+        _validate_sealed_blob(sealed_blob, pubkey_hex)
+        mk = salt = it = None
+        sealed_stored = sealed_blob
     dup = session.execute(select(Account).where(Account.username == username)).scalar_one_or_none()
     if dup is not None:
         raise AccountError("username_taken", "用户名已被占用", 409)
@@ -331,12 +466,23 @@ def register_account(session: Session, username: str, pubkey_hex: str, sealed_bl
         role="pilot",
         status="pending_profile",
         pubkey_hex=pubkey_hex.lower(),
-        sealed_blob=sealed_blob,
+        sealed_blob=sealed_stored,
+        opaque_masking_key_hex=mk,
+        opaque_kdf_salt_hex=salt,
+        opaque_kdf_iter=it,
+        opaque_key_id=_opaque_key_id_current() if mk else None,
     )
     session.add(row)
     append_pubkey_epoch(session, username, pubkey_hex)  # 纪元 1（append-only 史）
     session.commit()
     return row
+
+
+def _opaque_key_id_current() -> str:
+    """当前 k_oprf 指纹（注册/激活/改密落账键——§4.3 轮换判别）。"""
+    from app.kms import oprf_key, oprf_key_id
+
+    return oprf_key_id(oprf_key())
 
 
 def prelogin(session: Session, username: str) -> dict:
@@ -372,8 +518,18 @@ def prelogin(session: Session, username: str) -> dict:
 
 
 def keystore_of(session: Session, username: str) -> dict:
-    """密封件下发（属主自取——登录必须先拿密封件才能解封签名）。"""
+    """密封件下发（属主自取——登录必须先拿密封件才能解封签名）。
+    ⑫O-3 硬化（设计 §5.5——红线：先于任何迁移删除事务就位）：v6 账户
+    （OPRF 记录在账）=410——密封件经登录掩码响应下发（mode-B），独立 keystore
+    端点面对已迁移账户消灭；v4 过渡存量保留（鸡-蛋：登录解封需先取件），
+    限流由路由层 keystore 桶承载。"""
     row = get_account(session, username)
+    if row.opaque_masking_key_hex:
+        raise AccountError(
+            "opaque_migrated",
+            "该账户已迁移 OPAQUE 通道——密封件经登录掩码响应下发，本端点不再提供",
+            410,
+        )
     if not row.sealed_blob or not row.pubkey_hex:
         raise AccountError("not_activated", "账户尚未激活（未生成密钥）", 409)
     return {"sealed_blob": row.sealed_blob, "pubkey_hex": row.pubkey_hex}
@@ -401,12 +557,77 @@ def issue_challenge(session: Session, username: str) -> str:
 def upgrade_sealed_blob(session: Session, username: str, sealed_blob: str) -> None:
     """惰性重封回传（批 2-2.1）：客户端把存量 v3 密封件解封后以同口令 v4
     重封（keystore 惰性升级），登录/解锁会话内回传换新。校验 v4 形态+公钥
-    绑定一致（不带病入库）；非属主会话不可达（principal 由路由层锁定）。"""
+    绑定一致（不带病入库）；非属主会话不可达（principal 由路由层锁定）。
+    ⑫O-3：v6 形态=显式拒（v6 信封须随 masking_key 原子换新——本端点无此
+    语义，防「新 rwd 信封+旧掩码钥」的永不可解错配）。"""
     row = get_account(session, username)
     if not row.pubkey_hex:
         raise AccountError("not_activated", "账户尚未激活（未生成密钥）", 409)
+    if _blob_version(sealed_blob) == 6:
+        raise AccountError(
+            "opaque_migrated",
+            "v6 密封件不走本端点（v3→v4 惰性升级专用）——OPAQUE 换封随改密/迁移通道",
+            409,
+        )
     _validate_sealed_blob(sealed_blob, row.pubkey_hex)
     row.sealed_blob = sealed_blob
+    session.commit()
+
+
+def change_password(
+    session: Session,
+    username: str,
+    sealed_blob: str,
+    *,
+    masking_key_hex: str | None = None,
+    sealed_profile: str | None = None,
+) -> None:
+    """自助改密落账（⑫O-3 扩展——设计 §5.6：改密码=重封不动钥）：
+    - v6 账户（OPRF 记录在账）：须回传 v6' blob+新 masking_key（原子换新——
+      防「新 rwd 信封+旧掩码钥」错配）；盐/迭代不轮换（rwd 已随口令换根）；
+    - v4 存量（无记录）：v4→v4 现役语义零破坏（masking_key 不得携带）。
+    私钥 sk 不变（登录挑战-应答语义不受影响），仅换人肉防线的 KEK 源。"""
+    row = get_account(session, username)
+    if not row.pubkey_hex:
+        raise AccountError("not_activated", "账户尚未激活（未生成密钥）", 409)
+    has_record = bool(row.opaque_masking_key_hex)
+    if has_record:
+        if _blob_version(sealed_blob) != 6:
+            raise AccountError(
+                "v6_change_required",
+                "该账户为 OPAQUE（v6）形态——改密须回传 v6 重封件+新掩码钥",
+                422,
+            )
+        mk = _require_masking_key(masking_key_hex)
+        sealed_stored = _normalize_v6_blob(sealed_blob, row.pubkey_hex)
+    else:
+        if masking_key_hex is not None:
+            raise AccountError("bad_masking_key", "该账户无 OPAQUE 记录——改密不携带掩码钥", 422)
+        _validate_sealed_blob(sealed_blob, row.pubkey_hex)
+        mk = None
+        sealed_stored = sealed_blob
+    if sealed_profile is not None:
+        if row.role != "pilot":
+            raise AccountError(
+                "profile_not_applicable", "该账户无实名资料密封件——仅回传信封即可", 422
+            )
+        if has_record:
+            sealed_profile = _normalize_profile_slot_v6(sealed_profile)
+        keep_profile(session, row, sealed_profile)
+    row.sealed_blob = sealed_stored
+    if mk is not None:
+        row.opaque_masking_key_hex = mk
+    log_account_action(
+        session,
+        action="password_change",
+        username=username,
+        operator=username,
+        detail=(
+            "自助改密（会话内重封 v6 信封+掩码钥原子换新——私钥不变，rwd 换根盐不轮换）"
+            if has_record
+            else "自助改密（会话内重封 v4 信封——私钥不变，仅换 KEK 源）"
+        ),
+    )
     session.commit()
 
 
@@ -431,11 +652,17 @@ def activate(
     pubkey_hex: str,
     sealed_blob: str,
     activation_code: str | None = None,
+    *,
+    masking_key_hex: str | None = None,
+    kdf_salt_hex: str | None = None,
+    kdf_iter: int | None = None,
 ) -> None:
     """预置机构账户首登激活：初始密码核对子一次性比对（恒时）→写入钥对→
     焚烧核对子——此后进入纯挑战-应答态（密码材料归零）。
     核对子格式按 init_verifier_ver 分派（"v1"=独立域现行；NULL=旧种子
     KEK 等价格式，兼容读取——激活即焚=换代，库内不再留 KEK 等价物）。
+    ⑫O-3 双轨门（设计 §5.1）：gate on=只收 v6 材料（OPRF 记录四列随建——
+    零口令派生材料红线）；gate off=维持 v4 现状。
     门序（2026-10-11 激活面收紧批）：②时效门（72h 过期拒——处置=管理员
     重置重开窗，fail-fast 在昂贵 KDF 核对之前）→③双因子门（档位启用时
     缺码 403 指引出码/错码 401 不焚码——先码后口令：码比对零 KDF 成本，
@@ -481,14 +708,32 @@ def activate(
             session.commit()
             raise AccountError("activation_code_invalid", "激活码不正确或已失效", 401)
     _validate_pubkey(pubkey_hex)
-    _validate_sealed_blob(sealed_blob, pubkey_hex)
+    if opaque_enabled():
+        if _blob_version(sealed_blob) != 6:
+            raise AccountError(
+                "v6_activate_required",
+                "激活须使用当前 OPAQUE 密钥封装（v6）——请刷新页面后重试",
+                422,
+            )
+        mk = _require_masking_key(masking_key_hex)
+        salt_o = _require_kdf_salt(kdf_salt_hex)
+        iter_o = _require_kdf_iter(kdf_iter)
+        sealed_stored = _normalize_v6_blob(sealed_blob, pubkey_hex)
+    else:
+        _validate_sealed_blob(sealed_blob, pubkey_hex)
+        mk = salt_o = iter_o = None
+        sealed_stored = sealed_blob
     want = row.init_verifier_hex or ""
     if not want or not hmac.compare_digest(verifier_hex.lower(), want):
         _audit_activate_failure(session, username, "activation_failed")
         session.commit()
         raise AccountError("activation_failed", "初始密码不正确", 401)
     row.pubkey_hex = pubkey_hex.lower()
-    row.sealed_blob = sealed_blob
+    row.sealed_blob = sealed_stored
+    row.opaque_masking_key_hex = mk
+    row.opaque_kdf_salt_hex = salt_o
+    row.opaque_kdf_iter = iter_o
+    row.opaque_key_id = _opaque_key_id_current() if mk else None
     row.init_verifier_hex = None
     row.init_verifier_ver = None
     row.init_kdf_salt_hex = None

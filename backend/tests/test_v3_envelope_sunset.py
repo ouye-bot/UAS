@@ -135,11 +135,14 @@ def test_register_rejects_v3_envelope_422(client):
         gen.close()
 
 
-def test_register_accepts_v4_envelope(client):
-    """现行 v4 注册路径不受停发影响（201 入库+信封 v4 落库）。"""
-    sk, pk = generate_keypair()
+def test_register_v4_envelope_sunset_ladder(client, monkeypatch):
+    """版本日落阶梯（⑫O-3 延续 v3 停发同款工艺——设计 §5.1 双轨门）：gate on
+    （缺省）v4 注册=422 引导刷新（现行格式换代为 v6）；gate off（双轨回退开关）
+    v4 注册照常 201 入库（v3→v4 惰性升级存量面与回退通道保留）。"""
     from app.accounts.envelope import seal_envelope_v4
+    from app.accounts.service import opaque_enabled
 
+    sk, pk = generate_keypair()
     r = client.post(
         "/auth/register",
         json={
@@ -148,7 +151,20 @@ def test_register_accepts_v4_envelope(client):
             "sealed_blob": seal_envelope_v4(sk, pk, PASS, iterations=4096),
         },
     )
-    assert r.status_code == 201, r.text
+    assert r.status_code == 422, r.text  # gate on：现行格式换代（v6）——v4 停发
+    assert r.json()["code"] == "v6_register_required"
+    # 双轨回退开关：off 态 v4 注册照常（§5.1「未启用档维持 v4」）
+    monkeypatch.setenv("FZ_OPAQUE_ENABLED", "0")
+    assert not opaque_enabled()
+    r2 = client.post(
+        "/auth/register",
+        json={
+            "username": "pilot_v4reg",
+            "pubkey_hex": pk,
+            "sealed_blob": seal_envelope_v4(sk, pk, PASS, iterations=4096),
+        },
+    )
+    assert r2.status_code == 201, r2.text
     gen, sess = _sess_of(client)
     try:
         row = sess.query(Account).filter_by(username="pilot_v4reg").one()
@@ -182,18 +198,25 @@ def test_v3_login_403_after_cutoff_and_nonce_unburned(client, monkeypatch):
     """截止期已到：存量 v3 登录=403（处置指引人话）；拒绝在挑战消费之前
     （同一 nonce 撤截止后仍可登——不烧挑战）；同一截止期下 v4 账户不受影响。"""
     sk_v3, _ = _seed_v3_account(client, "pilot_cut3")
-    sk_v4, pk_v4 = generate_keypair()
+    # v4 对照账户（直播行模拟——gate on 注册面已换代 v6，见
+    # test_register_v4_envelope_sunset_ladder；本用例主体=v3 截止语义不受影响）
     from app.accounts.envelope import seal_envelope_v4
 
-    rv = client.post(
-        "/auth/register",
-        json={
-            "username": "pilot_cut4",
-            "pubkey_hex": pk_v4,
-            "sealed_blob": seal_envelope_v4(sk_v4, pk_v4, PASS, iterations=4096),
-        },
-    )
-    assert rv.status_code == 201, rv.text
+    sk_v4, pk_v4 = generate_keypair()
+    gen, sess = _sess_of(client)
+    try:
+        sess.add(
+            Account(
+                username="pilot_cut4",
+                role="pilot",
+                status="active",
+                pubkey_hex=pk_v4,
+                sealed_blob=seal_envelope_v4(sk_v4, pk_v4, PASS, iterations=4096),
+            )
+        )
+        sess.commit()
+    finally:
+        gen.close()
 
     monkeypatch.setenv("FZ_V3_CUTOFF_TS", str(int(time.time()) - 10))  # 已过截止
     nonce = _issue_nonce(client, "pilot_cut3")

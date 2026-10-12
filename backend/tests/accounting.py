@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from app.accounts.envelope import seal_envelope_v4
 from app.accounts.kdf import derive_activation_verifier
-from app.accounts.service import seed_institutional_account
+from app.accounts.service import opaque_enabled, seed_institutional_account
 from app.crypto.sm2 import generate_keypair, sign
 from app.db import get_session
 
@@ -22,6 +22,14 @@ from app.db import get_session
 def _sealed_blob(pk: str, sk: str, passphrase: str) -> str:
     """v4 信封（PBKDF2-HMAC-SM3 现行口径——与浏览器 sealKeystoreV4 同构）。"""
     return seal_envelope_v4(sk, pk, passphrase)
+
+
+def _opaque_payload(username: str, password: str, sk: str, pk: str) -> dict:
+    """⑫O-3 v6 上传体（gate on——参考客户端链；进程内同钥 shortcut，与线协议
+    盲化回环的等价性由 test_crypto_opaque.test_oprf_roundtrip_correctness 锚定）。"""
+    from tests.opaque_client_ref import ref_seal_v6
+
+    return {"pubkey_hex": pk, **ref_seal_v6(username, password, sk, pk)}
 
 
 def sign_canonical(sk: str, msg: str) -> str:
@@ -82,14 +90,12 @@ def register_and_login(c, username: str, role: str, password: str) -> str:
     （注册后直改库角色列，模拟部署方预置的机构账户已激活形态）。"""
     sk, pk = generate_keypair()
     pk_no04 = pk  # 服务端 sm2 公钥=X‖Y 无 04 前缀——误剥致 ~1/256 注册随机失败
-    r = c.post(
-        "/auth/register",
-        json={
-            "username": username,
-            "pubkey_hex": pk_no04,
-            "sealed_blob": _sealed_blob(pk_no04, sk, password),
-        },
-    )
+    payload = {"username": username, "pubkey_hex": pk_no04}
+    if opaque_enabled():  # ⑫O-3 v6 门（设计 §5.1——gate on 只收 v6+OPRF 记录材料）
+        payload.update(_opaque_payload(username, password, sk, pk_no04))
+    else:
+        payload["sealed_blob"] = _sealed_blob(pk_no04, sk, password)
+    r = c.post("/auth/register", json=payload)
     if r.status_code == 409:  # 已存在（幂等辅助）——仍需登录
         pass
     else:
@@ -129,15 +135,16 @@ def seed_login(c, username: str, role: str, password: str) -> str:
     )
     sk, pk = generate_keypair()
     pk_no04 = pk  # 服务端 sm2 公钥=X‖Y 无 04 前缀——误剥致 ~1/256 注册随机失败
-    r = c.post(
-        "/auth/activate",
-        json={
-            "username": username,
-            "verifier_hex": verifier,
-            "pubkey_hex": pk_no04,
-            "sealed_blob": _sealed_blob(pk_no04, sk, password),
-        },
-    )
+    payload = {
+        "username": username,
+        "verifier_hex": verifier,
+        "pubkey_hex": pk_no04,
+    }
+    if opaque_enabled():  # ⑫O-3 v6 门（gate on 激活只收 v6 材料）
+        payload.update(_opaque_payload(username, password, sk, pk_no04))
+    else:
+        payload["sealed_blob"] = _sealed_blob(pk_no04, sk, password)
+    r = c.post("/auth/activate", json=payload)
     assert r.status_code == 200, r.text
     _login_via_challenge(c, username, sk)
     return sk

@@ -73,6 +73,17 @@ class Account(Base):
     # 机构 demo 种子）——管理/公示面归属标注；受理门控与电路零变化（一期=链面
     # 互认：FedRegistry 机构准入+逐域撤销锚+全局聚合根）。
     org_id: Mapped[str] = mapped_column(String(32), default="org-a", server_default="org-a")
+    # ---- ⑫OPAQUE 记录四列（O-3 批，alembic 0028；NULL=无记录=v4 存量形态） ----
+    # masking_key：客户端按 §1.4 ④派生、注册/激活时上传（D-6）——mode-B 掩码面
+    #   专用（拖库者得之而无 k_oprf 仍在线，归约 §5.5 面等价）；v6 账户 keystore
+    #   端点=410（本列在账即判别键）。
+    opaque_masking_key_hex: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # Stretch 盐/迭代（§1.4 ②）：客户端生成上传（D-8——密封先于账户存在）、登录
+    # 经 evaluate 响应回传账面值。
+    opaque_kdf_salt_hex: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    opaque_kdf_iter: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # k_oprf 钥指纹（§4.3 轮换判别——SM3(该钥公钥)前 8 hex；双钥过渡窗取钥键）。
+    opaque_key_id: Mapped[str | None] = mapped_column(String(16), nullable=True)
     created_ts: Mapped[dt.datetime] = mapped_column(DateTime, default=dt.datetime.utcnow)
     last_login_ts: Mapped[dt.datetime | None] = mapped_column(DateTime, nullable=True)
 

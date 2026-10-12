@@ -120,6 +120,28 @@ def client(tmp_path, monkeypatch):
     # cookie_secure 读取 env——测试内 monkeypatch 的档位随用例自动还原。
 
 
+def _opaque_materials(username: str, password: str, sk: str, pk: str) -> dict:
+    """⥬O-3 v6 上传材料三件（gate on——掩码钥/盐/迭代，D-6/D-8）；off 时空。"""
+    from app.accounts.service import opaque_enabled
+
+    if not opaque_enabled():
+        return {}
+    from tests.opaque_client_ref import ref_seal_v6
+
+    return ref_seal_v6(username, password, sk, pk)
+
+
+def _reg_blob(username: str, password: str, sk: str, pk: str) -> str:
+    """gate 自适配注册信封（on=v6 canonical；off=v4 现行）。"""
+    from app.accounts.service import opaque_enabled
+
+    if opaque_enabled():
+        from tests.opaque_client_ref import ref_seal_v6
+
+        return ref_seal_v6(username, password, sk, pk)["sealed_blob"]
+    return _sealed_blob_js_style(pk, sk, password)
+
+
 def _register_pilot(c: TestClient, username: str = "pilot_a") -> tuple[str, str]:
     sk, pk = generate_keypair()
     pk_no04 = pk  # 服务端 sm2 公钥=X‖Y 无 04 前缀——误剥致 ~1/256 注册随机失败
@@ -128,7 +150,8 @@ def _register_pilot(c: TestClient, username: str = "pilot_a") -> tuple[str, str]
         json={
             "username": username,
             "pubkey_hex": pk_no04,
-            "sealed_blob": _sealed_blob_js_style(pk_no04, sk, PASS),
+            "sealed_blob": _reg_blob(username, PASS, sk, pk_no04),
+            **_opaque_materials(username, PASS, sk, pk_no04),
         },
     )
     assert r.status_code == 201, r.text
@@ -248,17 +271,19 @@ def test_register_duplicate_and_bad_blob(client):
         json={
             "username": "pilot_dup",
             "pubkey_hex": pk_no04,
-            "sealed_blob": _sealed_blob_js_style(pk_no04, sk, PASS),
+            "sealed_blob": _reg_blob("pilot_dup", PASS, sk, pk_no04),
+            **_opaque_materials("pilot_dup", PASS, sk, pk_no04),
         },
     )
     assert r.status_code == 409 and r.json()["code"] == "username_taken"
-    # 坏密封件：pk 与信封不一致
+    # 坏密封件：pk 与信封不一致（v6 世界=信封 pk 槽错配——同码 bad_blob）
     r2 = client.post(
         "/auth/register",
         json={
             "username": "pilot_bad",
             "pubkey_hex": pk_no04,
-            "sealed_blob": _sealed_blob_js_style("ff" * 64, sk, PASS),
+            "sealed_blob": _reg_blob("pilot_bad", PASS, sk, "ff" * 64),
+            **_opaque_materials("pilot_bad", PASS, sk, "ff" * 64),
         },
     )
     assert r2.status_code == 400 and r2.json()["code"] == "bad_blob"
@@ -268,7 +293,8 @@ def test_register_duplicate_and_bad_blob(client):
         json={
             "username": "pilot_badpk",
             "pubkey_hex": "11" * 64,
-            "sealed_blob": _sealed_blob_js_style("11" * 64, sk, PASS),
+            "sealed_blob": _reg_blob("pilot_badpk", PASS, sk, "11" * 64),
+            **_opaque_materials("pilot_badpk", PASS, sk, "11" * 64),
         },
     )
     assert r3.status_code == 400 and r3.json()["code"] == "bad_pubkey"
@@ -300,7 +326,8 @@ def test_seed_activate_and_role_guard(client):
             "username": "auditor_t",
             "verifier_hex": bad_ver,
             "pubkey_hex": pk_no04,
-            "sealed_blob": _sealed_blob_js_style(pk_no04, sk, PASS),
+            "sealed_blob": _reg_blob("auditor_t", PASS, sk, pk_no04),
+            **_opaque_materials("auditor_t", PASS, sk, pk_no04),
         },
     )
     assert r.status_code == 401 and r.json()["code"] == "activation_failed"
@@ -312,7 +339,8 @@ def test_seed_activate_and_role_guard(client):
             "username": "auditor_t",
             "verifier_hex": ver,
             "pubkey_hex": pk_no04,
-            "sealed_blob": _sealed_blob_js_style(pk_no04, sk, PASS),
+            "sealed_blob": _reg_blob("auditor_t", PASS, sk, pk_no04),
+            **_opaque_materials("auditor_t", PASS, sk, pk_no04),
         },
     )
     assert r2.status_code == 200, r2.text
@@ -370,7 +398,8 @@ def _try_activate(
         "username": username,
         "verifier_hex": derive_activation_verifier(password, salt),
         "pubkey_hex": pk,
-        "sealed_blob": _sealed_blob_js_style(pk, sk, PASS),
+        "sealed_blob": _reg_blob(username, PASS, sk, pk),
+        **_opaque_materials(username, PASS, sk, pk),
     }
     if act_code is not None:
         body["activation_code"] = act_code
@@ -511,7 +540,8 @@ def test_activate_expired_after_72h(client):
             "username": "act_exp",
             "verifier_hex": derive_activation_verifier("Re-Pass-2", salt2),
             "pubkey_hex": pk,
-            "sealed_blob": _sealed_blob_js_style(pk, sk, PASS),
+            "sealed_blob": _reg_blob("act_exp", PASS, sk, pk),
+            **_opaque_materials("act_exp", PASS, sk, pk),
         },
     )
     assert r2.status_code == 200, r2.text
@@ -701,7 +731,8 @@ def test_reset_institutional_account(client):
             "username": "adm_reset",
             "verifier_hex": derive_activation_verifier("Old-Pass-1", salt),
             "pubkey_hex": pk_no04,
-            "sealed_blob": _sealed_blob_js_style(pk_no04, sk, "New-Pass-1"),
+            "sealed_blob": _reg_blob("adm_reset", "New-Pass-1", sk, pk_no04),
+            **_opaque_materials("adm_reset", "New-Pass-1", sk, pk_no04),
         },
     )
     assert r.status_code == 200
@@ -735,7 +766,8 @@ def test_reset_institutional_account(client):
             "username": "adm_reset",
             "verifier_hex": derive_activation_verifier("Reset-Pass-2", salt2),
             "pubkey_hex": pk2,
-            "sealed_blob": _sealed_blob_js_style(pk2, sk2, "Reset-Pass-2"),
+            "sealed_blob": _reg_blob("adm_reset", "Reset-Pass-2", sk2, pk2),
+            **_opaque_materials("adm_reset", "Reset-Pass-2", sk2, pk2),
         },
     )
     assert r2.status_code == 200
@@ -796,7 +828,8 @@ def test_reset_writes_admin_log_and_retires_epoch(client):
             "username": "aud_log",
             "verifier_hex": derive_activation_verifier("Init-Pass-1", salt),
             "pubkey_hex": pk,
-            "sealed_blob": _sealed_blob_js_style(pk, sk, "Init-Pass-1"),
+            "sealed_blob": _reg_blob("aud_log", "Init-Pass-1", sk, pk),
+            **_opaque_materials("aud_log", "Init-Pass-1", sk, pk),
         },
     )
     assert r.status_code == 200, r.text
@@ -958,7 +991,8 @@ def test_legacy_seed_format_compat_and_upgrade(client):
             "username": "aud_old_seed",
             "verifier_hex": derive_activation_verifier("Old-Seed-Pw-3", salt),
             "pubkey_hex": pk,
-            "sealed_blob": _sealed_blob_js_style(pk, sk, "Old-Seed-Pw-3"),
+            "sealed_blob": _reg_blob("aud_old_seed", "Old-Seed-Pw-3", sk, pk),
+            **_opaque_materials("aud_old_seed", "Old-Seed-Pw-3", sk, pk),
         },
     )
     assert r.status_code == 401 and r.json()["code"] == "activation_failed"
@@ -969,7 +1003,8 @@ def test_legacy_seed_format_compat_and_upgrade(client):
             "username": "aud_old_seed",
             "verifier_hex": _legacy_v3("Old-Seed-Pw-3", salt, KDF_LEGACY_V3_ITERATIONS),
             "pubkey_hex": pk,
-            "sealed_blob": _sealed_blob_js_style(pk, sk, "Old-Seed-Pw-3"),
+            "sealed_blob": _reg_blob("aud_old_seed", "Old-Seed-Pw-3", sk, pk),
+            **_opaque_materials("aud_old_seed", "Old-Seed-Pw-3", sk, pk),
         },
     )
     assert r2.status_code == 200, r2.text

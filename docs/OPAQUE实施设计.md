@@ -97,8 +97,8 @@ v5 信封」条同义）——accounts 域若再用 v5 号会造成文档/台账
 | 列 | 类型 | 语义 |
 |---|---|---|
 | `opaque_masking_key_hex` | String(64) NULL | 32B masking_key（§1.4 ④ 客户端派生、注册时上传；mode-B 掩码用）——NULL=无 OPAQUE 记录（v4 存量） |
-| `opaque_kdf_salt_hex` | String(32) NULL | 16B Stretch 盐（§1.4 ② salt=accounts.salt 的落点）——注册/激活时服务端生成 |
-| `opaque_kdf_iter` | Integer NULL | Stretch 轮数（缺省 600000，env FZ_KDF_ITERATIONS 档；G4 的 env 可调纪律落点） |
+| `opaque_kdf_salt_hex` | String(32) NULL | 16B Stretch 盐（§1.4 ② salt=accounts.salt 的落点）——客户端生成、注册/激活时上传（**D-8**——密封先于账户存在） |
+| `opaque_kdf_iter` | Integer NULL | Stretch 轮数（缺省 600000，env FZ_KDF_ITERATIONS 档；G4 的 env 可调纪律落点）——客户端上传（**D-8**） |
 | `opaque_key_id` | String(16) NULL | **k_oprf 钥指纹**=SM3(该钥公钥)前 8 hex（§4.3 轮换判别）——NULL=无记录 |
 
 迁移 0028（头=0027 d0e1f2a3 之后）：四列全 NULL 缺省——存量 v4 行零回填、零语义
@@ -139,6 +139,9 @@ KEK          = Expand-SM3(rwd, env_nonce ‖ "FZ-OPAQUE-EnvelopeKey|v1", 16B)   
 | D-5 | salt/iter/env_nonce 均为**公开参数**（不入密） | KDF 盐与 nonce 非 secret——RFC 9807 同口径（masking_nonce 明文传输） |
 | D-6 | masking_key 由**客户端派生、注册时上传**、服务端账面存储 | RFC 9807 §4 credential file 存 masking_key 的对位；§1.4 ④ 归约原文「由 rwd 派生」的双方各自可派（客户端解掩码/服务端掩码） |
 | D-7 | masked_response 的 server_public_key 槽=engine_pub_hex()（公开验签钥） | 方案 B 无 OPAQUE-AKE 服务器钥——槽位取定长公开材料作身份锚；D6「载荷语义替换」授权范围（§6.3） |
+| D-8 | **盐/迭代数客户端生成、注册/激活时上传、服务端账面存储**（O-3 实施期钉定——§1.3 初稿「服务端生成」更正） | 协议时序约束：客户端须在密封（v6 信封签发）前派生 rwd（§1.4 ②），而账户行此时尚不存在——服务端无法预先生成盐；登录时经 evaluate 响应回传账面值（§2.1 五键），D-6 masking_key 同款处理 |
+| D-9 | 改密门细化（§5.6）：**v6 账户（记录在账）须 v6'+新 masking_key 原子换新**（防「新 rwd 信封+旧掩码钥」永不可解错配）；v4 存量（无记录）保留 v4→v4 现役语义（不得携带 masking_key）；盐/迭代不轮换 | §5.1 门在改密场景的精确化——v4→v6 的形态切换属 O-4 迁移通道语义，改密不越通道 |
+| D-10 | Stretch（§1.4 ②）输出宽度=**32B** | 归约 §5.3 未钉长度处；取 SM3 摘要宽（32B）作 ③Extract 的输入域——客户端唯一消费方（服务端零 rwd 派生），JS↔PY 对拍锚钉死 |
 
 ---
 
@@ -170,11 +173,12 @@ Client(浏览器)                                 Server(backend)
   （*注册态忽略——恒形占位）
   Y=[r⁻¹]·β；O-2 校验 Y∈曲线
   oprf_output/rwd/masking_key  （§1.4 ①③④）
-  生成钥对（既有 sm-crypto generateKeyPairHex）+ v6 信封密封（§1.2）
-  ── POST /auth/register {username, pubkey_hex, sealed_blob(v6), masking_key_hex} ──>
+  生成钥对（既有 sm-crypto generateKeyPairHex）+ v6 信封密封（§1.2；盐/迭代客户端
+  生成——D-8）
+  ── POST /auth/register {username, pubkey_hex, sealed_blob(v6), masking_key_hex, kdf_salt_hex, kdf_iter} ──>
                                  形态门（v6+kdf 标记+公钥绑定）
-                                 生成 opaque_kdf_salt_hex/落 opaque_key_id
-                                 存 accounts.sealed_blob(v6)+masking_key（一事务）
+                                 账面落 opaque_key_id（当前钥指纹）+掩码钥/盐/迭代（D-8）
+                                 存 accounts.sealed_blob(v6)（一事务）
   <──── 201 ────
 ```
 

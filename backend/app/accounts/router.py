@@ -16,6 +16,11 @@ from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from app.accounts.deps import principal_from, require_role
+from app.accounts.opaque import (
+    audit_evaluate_failure,
+    build_evaluate_response,
+    opaque_enabled,
+)
 from app.accounts.service import (
     SESSION_COOKIE,
     AccountError,
@@ -23,7 +28,9 @@ from app.accounts.service import (
     activate_limiter,
     activation_rate_key,
     auth_limiter,
+    change_password,
     cookie_secure,
+    evaluate_limiter,
     get_account,
     issue_challenge,
     keep_profile,
@@ -34,6 +41,7 @@ from app.accounts.service import (
     submit_profile,
     upgrade_sealed_blob,
 )
+from app.crypto.oprf import OPRFError
 from app.db import get_session
 
 router = APIRouter(prefix="/auth", tags=["accounts"])
@@ -54,6 +62,10 @@ class RegisterIn(BaseModel):
     username: str = Field(min_length=2, max_length=32)
     pubkey_hex: str = Field(min_length=128, max_length=128)
     sealed_blob: str = Field(min_length=32, max_length=8192)
+    # ⑫O-3（gate on 必填——OPRF 记录材料，设计 §1.3/D-6/D-8）
+    masking_key_hex: str | None = Field(default=None, min_length=64, max_length=64)
+    kdf_salt_hex: str | None = Field(default=None, min_length=32, max_length=32)
+    kdf_iter: int | None = None
 
 
 class ActivateIn(BaseModel):
@@ -65,6 +77,10 @@ class ActivateIn(BaseModel):
     # 一次性激活码（2026-10-11 批③双因子）：仅档位启用（production/显式 env）
     # 时强制；demo 档缺省关，不传即走纯核对子流
     activation_code: str | None = Field(default=None, min_length=1, max_length=64)
+    # ⑫O-3（gate on 必填——OPRF 记录材料，设计 §1.3/D-6/D-8）
+    masking_key_hex: str | None = Field(default=None, min_length=64, max_length=64)
+    kdf_salt_hex: str | None = Field(default=None, min_length=32, max_length=32)
+    kdf_iter: int | None = None
 
 
 class LoginIn(BaseModel):
@@ -90,7 +106,15 @@ class ProfileKeepIn(BaseModel):
 @router.post("/register")
 def register(body: RegisterIn, session: Session = Depends(get_session)):
     try:
-        row = register_account(session, body.username, body.pubkey_hex, body.sealed_blob)
+        row = register_account(
+            session,
+            body.username,
+            body.pubkey_hex,
+            body.sealed_blob,
+            masking_key_hex=body.masking_key_hex,
+            kdf_salt_hex=body.kdf_salt_hex,
+            kdf_iter=body.kdf_iter,
+        )
     except AccountError as exc:
         return _err(exc)
     return JSONResponse(
@@ -114,9 +138,13 @@ def prelogin_route(username: str, request: Request, session: Session = Depends(g
 
 
 @router.get("/keystore/{username}")
-def keystore_route(username: str, session: Session = Depends(get_session)):
-    """密封件下发（属主自取解封——公开网络面拿到密封件只有离线猜测面）。"""
+def keystore_route(username: str, request: Request, session: Session = Depends(get_session)):
+    """密封件下发（属主自取解封——v4 过渡存量面）。
+    ⑫O-3 硬化（设计 §5.5——红线：先于任何迁移删除事务就位）：①限流桶先行
+    （keystore|ip|username——原「无鉴权无限流=离线枚举面本体」缺口收口）；
+    ②v6 账户=410（mode-B 掩码通道取代——服务层 opaque_migrated）。"""
     try:
+        auth_limiter.check(f"keystore|{_client_key(request, username)}", session)
         data = keystore_of(session, username)
     except AccountError as exc:
         return _err(exc)
@@ -148,12 +176,16 @@ def keystore_upgrade_route(
 
 
 class PasswordChangeIn(BaseModel):
-    """自助改密回传体：新密码 KEK 重封的 v4 信封（必填）+ 同口径重封的资料
+    """自助改密回传体：新密码 KEK 重封的信封（必填）+ 同口径重封的资料
     密封件（选填——pilot 有 sealed_profile 时必须同请求原子换新，否则旧密码
-    仍可解资料=改密半吊子）。"""
+    仍可解资料=改密半吊子）。
+    ⑫O-3：v6 账户（OPRF 记录在账）须 v6' blob+新 masking_key（原子换新——
+    防「新 rwd 信封+旧掩码钥」的永不可解错配，设计 §5.6）；v4 存量=v4 语义
+    零破坏（不得携带 masking_key）。"""
 
     sealed_blob: str = Field(min_length=32, max_length=8192)
     sealed_profile: str | None = Field(default=None, min_length=32, max_length=16384)
+    masking_key_hex: str | None = Field(default=None, min_length=64, max_length=64)
 
 
 @router.post("/password/change")
@@ -162,16 +194,13 @@ def password_change_route(
     request: Request,
     session: Session = Depends(get_session),
 ):
-    """自助修改密码（2026-10-12 修整窗口 P1——pm 走查件 Q4-1「最大产品缺口」）。
+    """自助修改密码（2026-10-12 修整窗口 P1——pm 走查件 Q4-1「最大产品缺口」；
+    ⑫O-3 扩展 v6 重封语义——落账校验收口 service.change_password 单源）。
 
     语义（改密码=重封不动钥）：私钥 sk 不变（登录挑战-应答、操作签名语义
-    不受影响），仅换人肉防线的 KEK 源——新密码重封 v4 信封（+资料密封件，
-    同请求原子换新）后回传。会话延续（Cookie 会话与密码无涉）；逐笔记入
-    account_admin_log 台账（operator=self，与离线重置同流可审计）。
-    校验复用惰性升级面（upgrade_sealed_blob：v4 形态+公钥绑定一致——不带病
-    入库）；属主自换（principal 即属主，无跨用户面）。"""
-    from app.accounts.models import AccountAdminLog
-
+    不受影响），仅换人肉防线的 KEK 源/rwd 根。会话延续（Cookie 会话与密码
+    无涉）；逐笔记入 account_admin_log 台账（operator=self，与离线重置同流
+    可审计）。属主自换（principal 即属主，无跨用户面）。"""
     p = principal_from(request, session)
     if p is None:
         return JSONResponse(
@@ -179,23 +208,13 @@ def password_change_route(
             content={"code": "unauthorized", "message": "未登录或会话已失效", "data": None},
         )
     try:
-        row = get_account(session, p.username)
-        upgrade_sealed_blob(session, p.username, body.sealed_blob)
-        if body.sealed_profile:
-            if row.role != "pilot":
-                raise AccountError(
-                    "profile_not_applicable", "该账户无实名资料密封件——仅回传信封即可", 422
-                )
-            keep_profile(session, get_account(session, p.username), body.sealed_profile)
-        session.add(
-            AccountAdminLog(
-                action="password_change",
-                username=p.username,
-                operator=p.username,
-                detail="自助改密（会话内重封 v4 信封——私钥不变，仅换 KEK 源）",
-            )
+        change_password(
+            session,
+            p.username,
+            body.sealed_blob,
+            masking_key_hex=body.masking_key_hex,
+            sealed_profile=body.sealed_profile,
         )
-        session.commit()
     except AccountError as exc:
         return _err(exc)
     return JSONResponse(
@@ -220,6 +239,59 @@ def challenge_route(username: str, request: Request, session: Session = Depends(
     )
 
 
+class OpaqueEvaluateIn(BaseModel):
+    """OPAQUE evaluate 请求（RFC 9807 CredentialRequest/RegistrationRequest 统一
+    对位——设计 §2.1）：username+盲化元素 α（128 hex）。"""
+
+    username: str = Field(min_length=2, max_length=32)
+    alpha_hex: str = Field(min_length=128, max_length=128)
+
+
+@router.post("/opaque/evaluate")
+def opaque_evaluate_route(
+    body: OpaqueEvaluateIn, request: Request, session: Session = Depends(get_session)
+):
+    """⑫O-3 OPAQUE evaluate（设计 §2/§6）：恒五键响应（真实/fake 双态同形同长
+    ——§6.1 fake-record=RFC 9807 §6.3.2.2 定长全零 envelope+随机 masking_key）；
+    线协议第 2 消息。限流桶 10 发/300s（§6.6 Cheon 纪律）+异常事件台账
+    （opaque_rate_limited/opaque_invalid_point——正常 evaluate 不入台账）。"""
+    if not opaque_enabled():
+        return _err(AccountError("opaque_disabled", "OPAQUE 通道未启用", 503))
+    try:
+        evaluate_limiter.check(f"opaque|{_client_key(request, body.username)}", session)
+    except AccountError as exc:
+        audit_evaluate_failure(
+            session,
+            action="opaque_rate_limited",
+            username=body.username,
+            detail="evaluate 配额耗尽（Cheon 纪律——10 发/300s 窗）",
+        )
+        session.commit()
+        return _err(exc)
+    owner = principal_from(request, session)
+    try:
+        data = build_evaluate_response(
+            session,
+            body.username,
+            body.alpha_hex,
+            session_owner=owner.username if owner is not None else None,
+        )
+    except OPRFError as exc:
+        if exc.code == "invalid_point":
+            audit_evaluate_failure(
+                session,
+                action="opaque_invalid_point",
+                username=body.username,
+                detail=f"O-1 前置拒绝：{exc}",
+            )
+            session.commit()
+            return _err(AccountError("opaque_invalid_point", str(exc), 400))
+        return _err(AccountError(exc.code, str(exc), 400))
+    except AccountError as exc:
+        return _err(exc)
+    return JSONResponse(status_code=200, content={"code": "ok", "message": "", "data": data})
+
+
 @router.post("/activate")
 def activate_route(body: ActivateIn, session: Session = Depends(get_session)):
     try:
@@ -235,6 +307,9 @@ def activate_route(body: ActivateIn, session: Session = Depends(get_session)):
             body.pubkey_hex,
             body.sealed_blob,
             activation_code=body.activation_code,
+            masking_key_hex=body.masking_key_hex,
+            kdf_salt_hex=body.kdf_salt_hex,
+            kdf_iter=body.kdf_iter,
         )
     except AccountError as exc:
         return _err(exc)

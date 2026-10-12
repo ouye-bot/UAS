@@ -54,18 +54,39 @@ def pc(tmp_path):
 
 
 def _register_pilot(c, username: str, password: str) -> tuple[str, str]:
+    from app.accounts.service import opaque_enabled
+    from tests.opaque_client_ref import ref_seal_v6
+
     sk, pk = generate_keypair()
-    r = c.post(
-        "/auth/register",
-        json={
-            "username": username,
-            "pubkey_hex": pk,
-            "sealed_blob": seal_envelope_v4(sk, pk, password),
-        },
-    )
+    payload = {"username": username, "pubkey_hex": pk}
+    if opaque_enabled():  # ⑫O-3 v6 门（gate on 只收 v6+OPRF 记录材料）
+        payload.update(ref_seal_v6(username, password, sk, pk))
+    else:
+        payload["sealed_blob"] = seal_envelope_v4(sk, pk, password)
+    r = c.post("/auth/register", json=payload)
     assert r.status_code == 201, r.text
     _login_via_challenge(c, username, sk)
     return sk, pk
+
+
+def _change_v6(c, username: str, sk: str, pk: str, new_password: str):
+    """v6 改密材料组装（§5.6——盐/迭代取账面不轮换；rwd 随新口令换根）。"""
+    gen = c.app.dependency_overrides[get_session]()
+    s = next(gen)
+    try:
+        from app.accounts.models import Account
+
+        row = s.query(Account).filter_by(username=username).one()
+        salt, it = row.opaque_kdf_salt_hex, row.opaque_kdf_iter
+    finally:
+        gen.close()
+    from tests.opaque_client_ref import ref_seal_v6
+
+    body = ref_seal_v6(username, new_password, sk, pk, salt_hex=salt, iterations=it)
+    return c.post(
+        "/auth/password/change",
+        json={"sealed_blob": body["sealed_blob"], "masking_key_hex": body["masking_key_hex"]},
+    )
 
 
 def test_password_change_reseals_and_audits(pc):
@@ -73,13 +94,10 @@ def test_password_change_reseals_and_audits(pc):
     c = pc
     PW_A, PW_B = "Old-Pass-1a", "New-Pass-2b"
     sk, pk = _register_pilot(c, "pilot_pc", PW_A)
-    # 改密：新密码 v4 重封件（同钥同公钥——客户端 unlockSk 已证当前密码）
-    r = c.post(
-        "/auth/password/change",
-        json={"sealed_blob": seal_envelope_v4(sk, pk, PW_B)},
-    )
+    # 改密：新密码 v6' 重封件+新掩码钥（同钥同公钥——客户端 unlockSk 已证当前密码）
+    r = _change_v6(c, "pilot_pc", sk, pk, PW_B)
     assert r.status_code == 200, r.text
-    # 密封件已换新（v4 形态在案——新密码重封件与旧件 nonce 必不同）
+    # 密封件已换新（v6 形态在案——新密码重封件与旧件 nonce 必不同）
     gen = c.app.dependency_overrides[get_session]()
     s = next(gen)
     try:
@@ -87,7 +105,7 @@ def test_password_change_reseals_and_audits(pc):
 
         row = s.query(Account).filter_by(username="pilot_pc").one()
         obj = json.loads(row.sealed_blob)
-        assert obj["v"] == 4 and obj["pk"] == pk
+        assert obj["v"] == 6 and obj["pk"] == pk
         logs = s.scalars(
             select(AccountAdminLog).where(AccountAdminLog.username == "pilot_pc")
         ).all()
@@ -127,12 +145,7 @@ def test_password_change_profile_reseal_atomic(pc):
     assert profile_before, "登记后应有资料密封件"
     # 只换信封不换资料=旧密码仍可解资料（改密半吊子）——服务端单收信封时
     # 不动资料（调用方职责=客户端同请求带双件；此处验证带双件的原子换新）
-    r2 = c.post(
-        "/auth/password/change",
-        json={
-            "sealed_blob": seal_envelope_v4(sk, pk, PW_B),
-        },
-    )
+    r2 = _change_v6(c, "pilot_pc2", sk, pk, PW_B)
     assert r2.status_code == 200, r2.text
     gen = c.app.dependency_overrides[get_session]()
     s = next(gen)
@@ -152,15 +165,18 @@ def test_password_change_guards(pc):
     anon = TestClient(c.app)
     r0 = anon.post("/auth/password/change", json={"sealed_blob": "x" * 64})
     assert r0.status_code == 401, r0.text
-    # ②登录后坏形态
+    # ②登录后坏形态（v6 账户——垃圾 blob=422 v6_change_required 引导正确回传）
     sk, pk = _register_pilot(c, "pilot_pc3", "Pass-1abc")
     r1 = c.post("/auth/password/change", json={"sealed_blob": "x" * 64})
-    assert r1.status_code == 400 and r1.json()["code"] == "bad_blob", r1.text
-    # 公钥不匹配（他钥重封件）=不带病入库
+    assert r1.status_code == 422 and r1.json()["code"] == "v6_change_required", r1.text
+    # 公钥不匹配（他钥 v6 重封件）=不带病入库
     sk2, pk2 = generate_keypair()
+    from tests.opaque_client_ref import ref_seal_v6
+
+    bad6 = ref_seal_v6("pilot_pc3", "Pass-2abc", sk2, pk2)
     r2 = c.post(
         "/auth/password/change",
-        json={"sealed_blob": seal_envelope_v4(sk2, pk2, "Pass-2abc")},
+        json={"sealed_blob": bad6["sealed_blob"], "masking_key_hex": bad6["masking_key_hex"]},
     )
     assert r2.status_code == 400 and r2.json()["code"] == "bad_blob", r2.text
     # ③非 pilot 携资料件
@@ -175,11 +191,31 @@ def test_password_change_guards(pc):
 
     c2 = TestClient(c.app)
     admin_sk = seed_login(c2, "admin_pc", "admin", "Admin-Pass-1")
+    # 用 admin 本人钥重封 v6'（否则信封门先命中，profile 校验不可达）
+    gen = c.app.dependency_overrides[get_session]()
+    s = next(gen)
+    try:
+        from app.accounts.models import Account
+
+        arow = s.query(Account).filter_by(username="admin_pc").one()
+        asalt, ait = arow.opaque_kdf_salt_hex, arow.opaque_kdf_iter
+    finally:
+        gen.close()
+    from tests.opaque_client_ref import ref_seal_v6
+
+    admin6 = ref_seal_v6(
+        "admin_pc",
+        "Pass-3abc",
+        admin_sk,
+        pubkey_from_priv(admin_sk),
+        salt_hex=asalt,
+        iterations=ait,
+    )
     r3 = c2.post(
         "/auth/password/change",
         json={
-            # 用 admin 本人钥重封（否则 bad_blob 先命中，profile 校验不可达）
-            "sealed_blob": seal_envelope_v4(admin_sk, pubkey_from_priv(admin_sk), "Pass-3abc"),
+            "sealed_blob": admin6["sealed_blob"],
+            "masking_key_hex": admin6["masking_key_hex"],
             "sealed_profile": json.dumps({"v": 1, "enc": {"salt": "ab" * 16, "ct": "cd" * 4}}),
         },
     )
