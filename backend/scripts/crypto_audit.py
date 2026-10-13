@@ -77,7 +77,8 @@ VEC_DIR = BACKEND / "app" / "crypto" / "vectors"
 # aggregate b05df9d8…；链上重公示待链恢复补仪式（fisco 节点 SecureInitializer
 # cert 加载 terminate 故障在案）。
 PIN_LOCAL_EXPECTED = "SM3(4201a82|b05df9d8e2d5f39fb4d92b19d47379c86c0d40159e9fd39a1c9c77455b9b4985)"
-PIN_CHAIN_DIGEST_EXPECTED = "01140a45502fc154ac0b3f6024332acb02da11bedaed5ac9eb9d95c3faebc05b"
+# 链上摘要常量修正 2026-10-13：01140a45… 系误推值（四方仲裁=裸串 UTF-8 直接计算/publish_pin 幂等门/链上现值/运行时受理门，四方一致 0d6b812b…），旧值与任何编码形态均不符——初引入时误算，非随代漂移。
+PIN_CHAIN_DIGEST_EXPECTED = "0d6b812bd91c9eb27fa4cc130d0783b6f36a0c7d5b268896bb79e69aee26976b"
 
 
 def _load_json(path: Path):
