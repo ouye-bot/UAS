@@ -175,6 +175,34 @@ describe("AdminView 机队设备管理面板（3.1）", () => {
     w.unmount();
   });
 
+  it("填入示例：两行合规示例回填（登记号恰 18 字符；再点只补空行不覆盖已填值）", async () => {
+    const { w } = await mountAdmin({ devices: [] });
+    const panel = w.find('[data-test="fleet-panel"]');
+    const sampleBtn = () =>
+      panel.findAll("button").find((b) => b.text() === "填入示例")!;
+    expect(sampleBtn()).toBeTruthy();
+    // 浅色注记在位（新增面——不动既有文案）
+    expect(panel.text()).toContain("示例数据仅用于演示");
+    // 首点：空表单 → 恰两行示例（18 字符登记号+SN；资质/机型默认随行）
+    await sampleBtn().trigger("click");
+    const vals = (sel: string) =>
+      panel.findAll(sel).map((i) => (i.element as HTMLInputElement).value);
+    const nos = vals('input[placeholder^="设备登记号"]');
+    expect(nos).toEqual(["TESTDEV00000000001", "TESTDEV00000000002"]);
+    for (const no of nos) expect(no).toHaveLength(18); // isValidDeviceNo 同判
+    expect(vals('input[placeholder^="设备序列号"]')).toEqual([
+      "FZ-SN-TEST-001", "FZ-SN-TEST-002",
+    ]);
+    // 再点：已填行原样保留——示例只追加新行（不覆盖已填值）
+    await panel.findAll('input[placeholder^="设备登记号"]')[0].setValue("FZ-FLT-KEEP-000001");
+    await sampleBtn().trigger("click");
+    expect(vals('input[placeholder^="设备登记号"]')).toEqual([
+      "FZ-FLT-KEEP-000001", "TESTDEV00000000002",
+      "TESTDEV00000000001", "TESTDEV00000000002",
+    ]);
+    w.unmount();
+  });
+
   it("吊销：选中行+理由→FZ-REVOKE|v1 单句柄实签对拍（epoch=公示纪元+1）", async () => {
     const { w } = await mountAdmin({ devices: [LIST_ROW] });
     const panel = w.find('[data-test="fleet-panel"]');
