@@ -590,6 +590,29 @@ function addFleetRow(): void {
 function removeFleetRow(i: number): void {
   fleetRows.value.splice(i, 1);
 }
+// 填入示例（2026-10-14——与 LoginView fillSample 同款模式：演示动线加速器）：
+// 两行合规示例（登记号恰 18 字符=isValidDeviceNo 契约；SN 非空不含竖线）。
+// 只补空行不覆盖已填值：行视为空=登记号与序列号均未敲（半填行不动——用户
+// 已敲的任何值原样保留；资质/机型随空行整体填入示例值）；空行不足两行则
+// 追加新行补齐，绝不回写已占用行。
+const FLEET_SAMPLE_ROWS: FleetDeviceRow[] = [
+  { device_no: "TESTDEV00000000001", sn: "FZ-SN-TEST-001", cert_level: 3, class_id: 1 },
+  { device_no: "TESTDEV00000000002", sn: "FZ-SN-TEST-002", cert_level: 3, class_id: 1 },
+];
+function fillFleetSample(): void {
+  const empties = fleetRows.value.filter((r) => !r.device_no.trim() && !r.sn.trim());
+  for (const s of FLEET_SAMPLE_ROWS) {
+    let row = empties.shift();
+    if (!row) {
+      row = { device_no: "", sn: "", cert_level: 3, class_id: 1 };
+      fleetRows.value.push(row);
+    }
+    row.device_no = s.device_no;
+    row.sn = s.sn;
+    row.cert_level = s.cert_level;
+    row.class_id = s.class_id;
+  }
+}
 const fleetRegs = ref<FleetDeviceMaterial[]>([]); // 登记回执材料（内存——salt 一次性）
 const fleetSealPass = ref("");
 async function doFleetRegister(): Promise<void> {
@@ -1126,6 +1149,10 @@ async function doFleetRevoke(): Promise<void> {
         <div class="panel-head" style="margin-top:18px">
           <h2 style="font-size:15px">批量登记设备（kind=2 机构承诺）</h2>
           <button class="btn sm ghost" @click="addFleetRow">添加设备行</button>
+          <button class="btn sm ghost" data-test="fleet-sample-btn"
+                  title="两行合规示例（登记号恰 18 字符）——只填空行，不覆盖已填值"
+                  @click="fillFleetSample">填入示例</button>
+          <span class="sample-hint">示例数据仅用于演示</span>
         </div>
         <div v-for="(row, i) in fleetRows" :key="i" style="display:flex;gap:8px;margin-top:6px;flex-wrap:wrap">
           <input v-model="row.device_no" class="mono" placeholder="设备登记号（恰 18 字符）" style="width:230px" maxlength="18" />
@@ -1395,4 +1422,7 @@ async function doFleetRevoke(): Promise<void> {
   background: var(--panel-2); display: grid; gap: 6px;
 }
 .fp-label { font-size: 11.5px; color: var(--ink-3); }
+
+/* 填入示例注记（2026-10-14 新增面）：浅色一句——不抢主操作视线 */
+.sample-hint { font-size: 12px; color: var(--ink-3); }
 </style>
