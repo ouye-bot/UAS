@@ -1,11 +1,18 @@
-/** 浏览器内 TRAIL 验证 Worker（2026-09-28 wasm 集成批）。
+/** 浏览器内 TRAIL 验证 Worker（2026-09-28 wasm 集成批；2026-10-14 钥换代根治批）。
  *
  * 架构：zkc.wasm（wasm32-wasip1，与分发站同源）经 @bjorn3/browser_wasi_shim
  * 在 Web Worker 内运行 verify-instances——验证器、证明、参数、期望值全部
- * 在浏览器本地，零服务端参与（第三方复验的浏览器形态）。
+ * 在浏览器本地，零服务端参与验证计算（第三方复验的浏览器形态）。
  *
- * 输入（postMessage）：{ wasmUrl, specUrl, instancesUrl, proofUrl, vpUrl,
- * expectedUrl }——Worker 内自行 fetch（二进制件约 40MB，全程不占主线程）。
+ * 引擎公钥运行时参数（钥换代根治）：验证前必先从后端 /authz/engine/pub 拉
+ * 取现役引擎公钥，经 WASI env FZ_ENGINE_PUB_HEX 注入 zkc.wasm——装配面对
+ * TRAIL 引擎绑定一律以现役钥验签（spec 内嵌的构建时点钥只作 CLI/离线回落
+ * 档，浏览器面不再消费）。后端不可达/响应非法=fail-closed 拒验（不降级、
+ * 绝不回落内嵌旧钥装作验过）。
+ *
+ * 输入（postMessage）：{ wasmUrl, enginePubUrl, specUrl, instancesUrl,
+ * proofUrl, vpUrl, expectedUrl }——Worker 内自行 fetch（二进制件约 40MB，
+ * 全程不占主线程）。
  * 输出：{ type: "log"|"done", ... }——stdout 逐行流回（进度可见），
  * done 携带 { rc, ms, ok }（rc=0 且末行含 "OK" 才判过——双信号，与 CLI 同判据）。
  */
@@ -13,6 +20,7 @@ import { WASI, File, OpenFile, ConsoleStdout, PreopenDirectory } from "@bjorn3/b
 
 export interface WasmVerifyRequest {
   wasmUrl: string;
+  enginePubUrl: string;
   specUrl: string;
   instancesUrl: string;
   proofUrl: string;
@@ -26,11 +34,39 @@ async function fetchBytes(url: string): Promise<ArrayBuffer> {
   return r.arrayBuffer();
 }
 
+/** 现役引擎公钥拉取（fail-closed 拒验前置）：非 200/信封非法/缺字段/非
+ * 128hex——一律抛错（调用方拒绝运行验证器，不降级到 spec 内嵌钥）。 */
+async function fetchEnginePubHex(url: string): Promise<string> {
+  const r = await fetch(url);
+  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  const j = (await r.json()) as { ok?: boolean; data?: { engine_pub_hex?: unknown } };
+  const hex = j?.data?.engine_pub_hex;
+  if (j?.ok !== true || typeof hex !== "string" || !/^[0-9a-fA-F]{128}$/.test(hex)) {
+    throw new Error("响应信封/公钥形态非法（须 ok=true + data.engine_pub_hex 128hex）");
+  }
+  return hex;
+}
+
 self.onmessage = async (ev: MessageEvent<WasmVerifyRequest>) => {
   const req = ev.data;
   const t0 = Date.now();
   const post = (m: unknown) => (self as unknown as Worker).postMessage(m);
   try {
+    // ① 引擎公钥先行（fail-closed 门）：拿不到现役钥=拒绝验证（后端不可达
+    // 时绝不带着构建时点旧钥跑——那正是本根治批要消除的假红/假绿源）。
+    post({ type: "log", line: "拉取现役引擎公钥（/authz/engine/pub）…" });
+    let enginePubHex: string;
+    try {
+      enginePubHex = await fetchEnginePubHex(req.enginePubUrl);
+    } catch (e) {
+      post({
+        type: "done", rc: -1, ms: Date.now() - t0, ok: false,
+        error: `引擎公钥获取失败（${String(e)}）——fail-closed 拒验：后端不可达时不降级，请检查后端后重试`,
+      });
+      return;
+    }
+    post({ type: "log", line: `现役引擎公钥就绪（${enginePubHex.slice(0, 12)}…）——注入验证器` });
+
     post({ type: "log", line: "下载验证器与复验材料（约 40MB，本机回环）…" });
     const [wasmBytes, spec, instances, proof, vp, expected] = await Promise.all([
       fetchBytes(req.wasmUrl), fetchBytes(req.specUrl), fetchBytes(req.instancesUrl),
@@ -54,7 +90,7 @@ self.onmessage = async (ev: MessageEvent<WasmVerifyRequest>) => {
       ["zkc", "verify-instances", "--instances", "/instances.json",
        "--proof", "/proof.bin", "--vp", "/verifier_param.bin", "--expected", "/expected.json"],
       ["FZ_TRAIL_CANONICAL_SPEC=/trail_canonical_spec.json", "FZ_ZK_ALLOW_TRAIL=1",
-       "FZ_ZK_INFO_CACHE=0"],
+       "FZ_ZK_INFO_CACHE=0", `FZ_ENGINE_PUB_HEX=${enginePubHex}`],
       fds,
     );
     const wasm = await WebAssembly.compile(wasmBytes);

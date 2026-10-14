@@ -1,12 +1,14 @@
 /** 浏览器内 TRAIL 验证入口（主线程侧）——Worker 生命周期与结果面。
  * 尖峰实测（Node 同 shim 0.4.2）：正例 OK / 篡改链头拒绝；浏览器 JS 运行时
  * 全程约 1.5~2.5 分钟（wasmtime 档 8s——快 13×+，慢在 V8 数值面，属运行时
- * 开销非验证语义差异；时长在下单按钮旁如实标注）。 */
+ * 开销非验证语义差异；时长在下单按钮旁如实标注）。
+ * enginePubUrl=后端 /authz/engine/pub（现役引擎公钥）——Worker 验证前必拉，
+ * 不可达即 fail-closed 拒验（钥换代根治批：验证基准=运行时现役钥）。 */
 export interface WasmVerifyResult { rc: number; ms: number; ok: boolean; error?: string }
 
 export function runWasmVerify(
-  urls: { wasmUrl: string; specUrl: string; instancesUrl: string; proofUrl: string;
-          vpUrl: string; expectedUrl: string },
+  urls: { wasmUrl: string; enginePubUrl: string; specUrl: string; instancesUrl: string;
+          proofUrl: string; vpUrl: string; expectedUrl: string },
   onLog: (line: string) => void,
 ): Promise<WasmVerifyResult> {
   return new Promise((resolve) => {
