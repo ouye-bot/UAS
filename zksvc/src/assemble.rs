@@ -27,8 +27,8 @@ use plonkish_sm2_probe::sm2_verify_assemble::{verify_replay, Assembled};
 use crate::ctx_tag::fp_from_be32_hex;
 use crate::profile::{
     AssembleError, CheckpointInput, JobSpec, Profile, ProfileInput, ENV_ALLOW_AUTH,
-    ENV_ALLOW_TRAIL, ENV_FORBID_SPEC_KEY, ENV_HOLDER_SK, SUPPORTED_LOG_RATE, SUPPORTED_REPS,
-    TRAIL_N,
+    ENV_ALLOW_TRAIL, ENV_ENGINE_PUB_HEX, ENV_FORBID_SPEC_KEY, ENV_HOLDER_SK, SUPPORTED_LOG_RATE,
+    SUPPORTED_REPS, TRAIL_N,
 };
 
 /// 装配结构五元组（判决件同口径）。
@@ -305,7 +305,20 @@ fn assemble_trail(input: &ProfileInput) -> Result<Assembled, AssembleError> {
     // R4 复验 P0-1 + 二批改动3：引擎绑定签名验签（fold_be_integer 口径，与
     // 检查点验签同族）——引擎钥在证明者域外 ⟹ 高度上限/围栏 4 界不可自报；
     // 第三方经 /authz/engine/pub 复核同一签名。
-    let epk = pk_from_hex_str("binding.engine_pub_hex", &binding.engine_pub_hex)?;
+    //
+    // 验签基准运行时参数化（zkc.wasm 浏览器验证器钥换代根治，零电路改动——
+    // 本钥只进本 fail-closed 验签门，不进电路约束/实例面）：FZ_ENGINE_PUB_HEX
+    // 非空 ⟹ 以运行时注入值为一验基准（浏览器 Worker/服务端验证方调 wasm 前
+    // 从 /authz/engine/pub 拉现役钥注入——验证器二进制与电路参照件不再锁死
+    // 构建时点钥，引擎钥换代后旧验证器照常验新签名）；未注入 ⟹ 回落 spec 内嵌
+    // binding.engine_pub_hex（CLI/离线出示包/既有测试构型兼容不变）。注入值
+    // 非法（非 128hex/不在曲线上）=人话点名 env 的装配拒绝——绝不静默回落
+    // （fail-closed：错钥宁可拒验，不可拿构建时点旧钥装作验过）。
+    let (epk_src_name, epk_hex) = match std::env::var(ENV_ENGINE_PUB_HEX) {
+        Ok(v) if !v.trim().is_empty() => ("FZ_ENGINE_PUB_HEX", v.trim().to_string()),
+        _ => ("binding.engine_pub_hex", binding.engine_pub_hex.clone()),
+    };
+    let epk = pk_from_hex_str(epk_src_name, &epk_hex)?;
     let bind_msg = format!(
         "FZ-TRAIL-BIND2|{}|{}|{}|{}|{}|{}|{}",
         binding.auth_id,
@@ -942,6 +955,113 @@ mod trail_tests {
         let spec = spec_of(&v);
         let r = assemble(&spec);
         assert!(matches!(r, Err(AssembleError::Forbidden { profile: Profile::Trail })), "实得 {:?}", r.err());
+    }
+
+    // ---- 引擎公钥运行时参数（zkc.wasm 验证器钥换代根治批）----
+    // 红绿语义：现行验证器拿「构建时点内嵌钥」验「现役钥新签」必败（分脑/换代
+    // 后 binding 验签假红——浏览器实测病征）；注入 FZ_ENGINE_PUB_HEX=现役钥后
+    // 同一载荷装配通过，且结构五元组与诚实夹具逐值相同（零电路改动实证）。
+
+    /// 测试钥公钥（确定性 sk 固定 hex——pub 经 pk_from_sk 机械导出，128hex x‖y）。
+    fn runtime_pub_hex() -> String {
+        use plonkish_sm2_probe::sm2_z_anchor::fe_be32;
+        let (x, y) = plonkish_sm2_probe::sm2_full_statement_assemble::sm2_sign_host::pk_from_sk(&runtime_sk());
+        format!("{}{}", hex::encode(fe_be32(&x)), hex::encode(fe_be32(&y)))
+    }
+    /// 测试私钥（小端 limbs——`"11"`×32 hex 同值，域内 [1, n−2]）。
+    fn runtime_sk() -> [u64; 4] {
+        plonkish_sm2_probe::sm2_params::hex_to_limbs_le(&"11".repeat(32))
+    }
+
+    /// 红例（病征复现）：binding 签名由「现役钥」重签、spec 仍内嵌「构建时点
+    /// 旧钥」⟹ 不注入运行时参数时装配拒绝（引擎绑定签名未通过验签——浏览器
+    /// 实测同款病征的库面等价形：持旧钥验新签）。
+    #[test]
+    fn trail_binding_stale_embedded_pub_rejects_live_sig() {
+        let _env = TrailEnvGuard::allow();
+        let mut v = fixture();
+        // 只重签（现役钥），内嵌 engine_pub_hex 保持夹具旧钥——单一变量隔离。
+        resign_binding_sig_only(&mut v);
+        // 未注入 FZ_ENGINE_PUB_HEX ⟹ 回落内嵌旧钥 ⟹ 现役新签验不过（红）。
+        std::env::remove_var(ENV_ENGINE_PUB_HEX);
+        let r = assemble(&spec_of(&v));
+        match r {
+            Err(AssembleError::BadBytes { name, .. }) => assert_eq!(name, "binding"),
+            other => panic!("内嵌旧钥验现役新签必须拒——实得 {:?}", other.map(|_| ())),
+        }
+    }
+
+    /// 绿例（根治实证）：同一载荷（现役钥新签），内嵌 pub 同步换代 + 注入
+    /// FZ_ENGINE_PUB_HEX=现役钥 ⟹ 装配通过，结构五元组与诚实夹具逐值相同
+    /// （运行时参数只换验签基准，零电路影响）。
+    #[test]
+    fn trail_binding_runtime_pub_accepts_live_sig() {
+        let _env = TrailEnvGuard::allow();
+        let pub_hex = runtime_pub_hex();
+        let mut v = fixture();
+        resign_binding_sig_only(&mut v); // 现役钥新签
+        v["binding"]["engine_pub_hex"] = serde_json::Value::from(pub_hex.clone());
+        let run = || assemble(&spec_of(&v));
+        std::env::set_var(ENV_ENGINE_PUB_HEX, &pub_hex);
+        let r = run();
+        std::env::remove_var(ENV_ENGINE_PUB_HEX); // 先撤 env 再断言（并行测试零泄漏）
+        let asm = r.expect("运行时注入现役钥后装配必须通过");
+        let st = asm.structure();
+        assert_eq!(st.constraints, 353);
+        assert_eq!(st.advice_cols, 1743);
+        assert_eq!(st.instances, 8);
+        assert_eq!(st.nv, 12);
+    }
+
+    /// fail-closed 负例：注入值非法（长度错/不在曲线上）=人话点名 env 的装配
+    /// 拒绝——绝不静默回落内嵌钥（否则错钥注入被装作「验过」）。
+    #[test]
+    fn trail_binding_runtime_pub_bad_value_fail_closed() {
+        let _env = TrailEnvGuard::allow();
+        let v = fixture();
+        let spec = spec_of(&v);
+        for bad in ["zz", &"ab".repeat(64), &"00".repeat(64)] {
+            let run = || assemble(&spec);
+            std::env::set_var(ENV_ENGINE_PUB_HEX, bad);
+            let r = run();
+            std::env::remove_var(ENV_ENGINE_PUB_HEX);
+            match r {
+                Err(AssembleError::BadFieldElement { name, .. })
+                | Err(AssembleError::BadBytes { name, .. }) => {
+                    assert_eq!(name, "FZ_ENGINE_PUB_HEX", "坏注入值必须点名运行时参数")
+                }
+                other => panic!("注入坏钥 {bad} 必须拒——实得 {:?}", other.map(|_| ())),
+            }
+        }
+    }
+
+    /// 用运行时测试钥对 binding **只重签**（报文字段与装配面逐字同式——只换
+    /// 钥不换报文，隔离「钥基准」单一变量；engine_pub_hex 保持夹具旧钥不动，
+    /// 是否同步换嵌由各用例自决）。
+    fn resign_binding_sig_only(v: &mut serde_json::Value) {
+        let sk = runtime_sk();
+        let b = &v["binding"];
+        let msg = format!(
+            "FZ-TRAIL-BIND2|{}|{}|{}|{}|{}|{}|{}",
+            b["auth_id"].as_u64().unwrap(),
+            b["alt_max_cm"].as_u64().unwrap(),
+            b["chain_head_hex"].as_str().unwrap().to_ascii_lowercase(),
+            b["min_lat"].as_i64().unwrap(),
+            b["max_lat"].as_i64().unwrap(),
+            b["min_lon"].as_i64().unwrap(),
+            b["max_lon"].as_i64().unwrap(),
+        );
+        let dg = plonkish_sm2_probe::sm3_native_ref::hash(msg.as_bytes());
+        let e = plonkish_sm2_probe::trail_host::fold_be_integer(&dg);
+        let (r, s) = plonkish_sm2_probe::sm2_full_statement_assemble::sm2_sign_host::sign(
+            &plonkish_sm2_probe::sm2_params::fr_to_limbs(&e),
+            &sk,
+        );
+        v["binding"]["sig_hex"] = serde_json::Value::from(format!(
+            "{}{}",
+            plonkish_sm2_probe::sm2_params::limbs_to_hex(&r),
+            plonkish_sm2_probe::sm2_params::limbs_to_hex(&s)
+        ));
     }
 
     /// 检查点负例（B6 验收门④）：坏设备签名=BadCheckpoint fail-closed。
