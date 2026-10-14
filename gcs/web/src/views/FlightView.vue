@@ -14,7 +14,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue"
 import FlightGlobe from "../components/FlightGlobe.vue";
 import FlightGauges from "../components/FlightGauges.vue";
 import { bridge, ApiError, randInt, fromHex, toHex } from "../lib/api";
-import { pickupToken, verifyTokenSig, canonicalTokenBody, checkTokenFields, tokenPayloadHex, quotaExhausted as quotaExhaustedFn } from "../lib/token";
+import { pickupToken, verifyTokenSig, checkTokenFields, tokenPayloadHex, quotaExhausted as quotaExhaustedFn } from "../lib/token";
 import { loadPlan } from "../lib/plan";
 import { logbookBackfillAuthId, logbookUpdate } from "../lib/material";
 import { flightStage, stepperState, windowSubline } from "../lib/flight";
@@ -188,7 +188,9 @@ async function pickup(): Promise<void> {
     const ep = await bridge<{ engine_pub_hex: string }>("/engine_pub");
     enginePub.value = ep.engine_pub_hex;
     const p = pickupToken(receipt.token_cipher_hex, sessionSk.value.trim());
-    const sigOk = verifyTokenSig(canonicalTokenBody(p.tok), p.sig, enginePub.value);
+    // 验签对象=原始 body 字节（2026-10-14 规范化单源对齐——桥 P1-6 同纪律：
+    // 重规范化 JSON 在畸形形态下与签发字节面可能分叉；预检与桥同验 p.body）
+    const sigOk = verifyTokenSig(p.body, p.sig, enginePub.value);
     // 字段校验真比较（A-P1-1 根修）：plan_hash 与本机计划仓核对——此前传
     // p.tok.plan_hash 自比恒通过=虚标。仓中无此计划（跨设备/已清）给 warning。
     const localPlan = loadPlan(p.tok.plan_hash);

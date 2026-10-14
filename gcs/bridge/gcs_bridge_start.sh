@@ -17,14 +17,20 @@ UAS_WSL="${FZ_UAS_WSL:-/mnt/c/uas}"
 set -e
 UAS=${UAS_WSL}
 cd "$UAS/backend"
-ENGINE_SK=$(sed 's/SK=//' "${FZ_TMP_WSL:-/mnt/c/Users/Public/AppData/Local/Temp}/fz_engine_sk.txt")
+# 🔴 裁钥纪律（2026-10-14 验签假败回归根修）：桥不读不持 FZ_ENGINE_SK——
+# 验签公钥唯一权威=后端 /authz/engine/pub 代理（FZ_ENGINE_PUB_PROXY=1 恒开，
+# telemetry.engine_pub_hex 代理优先）。此前本脚本从 %TEMP% 文件回读每场随机钥
+# 导入桥进程，与 backend/worker 进程组实际钥分脑时（部分重启/缺 env 回落
+# 确定性派生）=全部合法令牌 bad_signature（2026-10-14 实弹：桥持 14:03 场次
+# 钥、签发侧 14:44 重启回落确定性钥——对拍 D False/B True 定谳）。S1 同款
+# 裁钥先例：scenario_S1_fullchain.py 桥启动无 SK 仅 TOKEN+PROXY。
 TOKEN=$(sed 's/TOKEN=//' "${FZ_TMP_WSL:-/mnt/c/Users/Public/AppData/Local/Temp}/fz_engine_token.txt")
 pkill -f 'uvicorn server:app' 2>/dev/null || true
 sleep 1
 export PYTHONPATH="$UAS/backend:$UAS/gcs/bridge"
 export FZ_API_BASE=http://127.0.0.1:8000 FZ_ENGINE_PUB_PROXY=1
 export FZ_ZKSVC_DIR="$UAS/zksvc" FZ_ZK_CASES_DIR="$UAS/backend/fz-zk-cases"
-export FZ_ENGINE_SK="$ENGINE_SK" FZ_ENGINE_TOKEN="$TOKEN"
+export FZ_ENGINE_TOKEN="$TOKEN"
 export FZ_GCS_LINK=sitl FZ_SITL_CONN=tcp:127.0.0.1:5760
 # systemd 瞬态单元形态：前台执行（exec）——unit 存活期间飞控桥常驻，
 # 不受 wsl 会话清理影响（与 fz-sitl 同款守护形态）。

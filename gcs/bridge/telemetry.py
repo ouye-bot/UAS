@@ -30,21 +30,22 @@ class TokenError(Exception):
 def engine_pub_hex() -> str:
     """令牌验签公钥（仅公钥面——🔴 bridge 职责边界=永不持有政策引擎私钥）。
 
-    钥源优先级（2026-09-26 队长实测验签假败根修）：
-    ① 本进程 FZ_ENGINE_SK（S1/S2 拓扑——桥持钥场景）；
-    ② backend /authz/engine/pub 代理——仅当 FZ_ENGINE_PUB_PROXY=1（demo_up
-      桥裁钥时置位：worker 持每场随机钥，桥端确定性派生会"验错人"）；
+    钥源单源纪律（2026-10-14 验签假败回归根修，优先级换代）：
+    ① backend /authz/engine/pub 代理（FZ_ENGINE_PUB_PROXY=1）——**恒权威**：
+      代理旗标开=验签钥只认授权服务公示面（签名方 worker 与公示方 backend
+      同进程组同 env 同钥——验签钥单源=授权服务）。旧序把本地 FZ_ENGINE_SK
+      置于代理之前=本地陈钥遮蔽权威公示（demo 桥脚本曾回读 %TEMP% 每场钥，
+      部分重启后签发侧回落确定性派生——全部合法令牌 bad_signature，对拍
+      B True/D False 定谳）。backend 不可达=**fail-closed 拒绝**而非静默
+      回落确定性派生钥（2026-09-28 B 席 P1-5：错钥验签=合法令牌全部"验签
+      失败"误导排障；确定性钥与真钥不同人）；
+    ② 本进程 FZ_ENGINE_SK（仅未开代理的持钥测试拓扑——S1/S2 自管桥）；
     ③ 确定性域派生（测试/离线兜底——显式开关隔离，避免误代理活后端）。"""
     import os
 
-    if os.environ.get("FZ_ENGINE_SK"):
-        from app.kms import engine_pub_hex as _pub
+    from app.kms import engine_pub_hex as _pub
 
-        return _pub()
     if os.environ.get("FZ_ENGINE_PUB_PROXY") == "1":
-        # 代理模式（demo 桥裁钥：每场随机钥在 backend 侧）——backend 不可达时
-        # **fail-closed 拒绝**而非静默回落确定性派生钥（2026-09-28 B 席 P1-5：
-        # 错钥验签=合法令牌全部"验签失败"误导排障；确定性钥与真钥不同人）。
         try:
             import json as _json
             import urllib.request as _ur
@@ -61,8 +62,6 @@ def engine_pub_hex() -> str:
                 f"引擎公钥不可得（backend 不可达: {e}）——闸门拒绝验签；"
                 f"请先恢复授权服务再重试"
             ) from e
-    from app.kms import engine_pub_hex as _pub
-
     return _pub()
 
 
