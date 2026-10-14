@@ -51,6 +51,14 @@ pub const ENV_FORBID_SPEC_KEY: &str = "FZ_ZK_FORBID_SPEC_KEY";
 /// 取值——私钥字节不落盘（env 主路径零私钥文件）。
 pub const ENV_HOLDER_SK: &str = "FZ_ZK_HOLDER_SK_HEX";
 
+/// TRAIL 引擎公钥运行时参数（zkc.wasm 浏览器验证器钥换代根治）：置非空值时
+/// 装配面 TRAIL 引擎绑定验签基准改用本值（128hex x‖y），spec 内嵌的
+/// binding.engine_pub_hex 退为未注入时的回落档。验证方（浏览器 Worker/服务
+/// 端）在调 wasm 前从后端 /authz/engine/pub 拉取现役钥注入——验证器二进制
+/// 与电路参照件不再锁死构建时点钥，引擎钥换代后旧验证器照常验新签名；
+/// 值非法（非 128hex/不在曲线上）=装配拒绝 fail-closed，绝不静默回落。
+pub const ENV_ENGINE_PUB_HEX: &str = "FZ_ENGINE_PUB_HEX";
+
 /// TRAIL 档钉定样本数（B6-d1：n=128=64 秒段@2Hz；n=16 为电路测试档不入服务）。
 pub const TRAIL_N: usize = 128;
 
