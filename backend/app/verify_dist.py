@@ -97,10 +97,42 @@ def checks() -> JSONResponse:
 @router.get("/verify/dist/trail_canonical_spec.json")
 def trail_canonical_spec():
     """TRAIL 语句契约（公开规范件——浏览器 wasm 验证与离线复验共用输入；
-    源=zksvc/tests 钉定文件，与出证装配同一事实源）。"""
-    from fastapi.responses import FileResponse
+    源=zksvc/tests 钉定文件，与出证装配同一事实源）。
+
+    引擎绑定现役重签（zkc.wasm 验证器钥换代根治批）：浏览器 wasm 以运行时
+    注入的 /authz/engine/pub 现役钥为 binding 验签基准（FZ_ENGINE_PUB_HEX），
+    分发面据此把规范件 binding 的 engine_pub_hex/sig_hex 按现役引擎钥实时
+    重签后发放——绑定报文七字段（auth_id/alt_max/链头/围栏 4 界）逐字不动，
+    电路约束/实例面零影响（该两字段只进装配面 fail-closed 验签门，不进电
+    路）；引擎钥换代后旧验证器+本端点自动对齐，无需重发布验证器或规范件。
+    钥不可得（kms 异常）=按原件发放如实降级（离线复验以件内嵌钥自验），
+    不构造假签名。"""
+    import json
+
+    from fastapi import Response
 
     p = Path(__file__).resolve().parents[2] / "zksvc" / "tests" / "trail_canonical_spec.json"
     if not p.is_file():
         return JSONResponse(status_code=404, content={"code": "spec_missing"})
-    return FileResponse(p, media_type="application/json")
+    spec = json.loads(p.read_text(encoding="utf-8"))
+    try:
+        b = (spec.get("input") or {}).get("binding")
+        if isinstance(b, dict) and b.get("chain_head_hex"):
+            from app.crypto.sm2 import sign_digest
+            from app.crypto.sm3 import sm3_bytes
+            from app.kms import engine_signing_keypair
+
+            sk, pub_hex = engine_signing_keypair()
+            msg = (
+                f"FZ-TRAIL-BIND2|{b['auth_id']}|{b['alt_max_cm']}|"
+                f"{str(b['chain_head_hex']).lower()}|{b['min_lat']}|{b['max_lat']}|"
+                f"{b['min_lon']}|{b['max_lon']}"
+            )
+            b["engine_pub_hex"] = pub_hex
+            b["sig_hex"] = sign_digest(sk, sm3_bytes(msg.encode()))
+    except Exception:  # noqa: BLE001 —— 重签失败=原件发放（钥不可得不阻断公开规范件）
+        pass
+    return Response(
+        content=json.dumps(spec, ensure_ascii=False, separators=(",", ":")),
+        media_type="application/json",
+    )
