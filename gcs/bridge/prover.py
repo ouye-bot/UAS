@@ -1181,8 +1181,22 @@ def _fetch_trail_binding(auth_id: int, chain_head_hex: str) -> dict:
         f"{_backend_api()}/engine/trail/binding?auth_id={auth_id}&chain_head_hex={chain_head_hex}",
         headers={"X-Engine-Token": token},
     )
-    with opener.open(req, timeout=15) as r:
-        d = _json.loads(r.read().decode())
+    try:
+        with opener.open(req, timeout=15) as r:
+            d = _json.loads(r.read().decode())
+    except _ur.HTTPError as exc:
+        if exc.code == 401:
+            # 人话定性（2026-10-14 队长手测实弹）：401=桥出示的引擎令牌被
+            # backend 拒——典型=混场栈钥源分脑（本桥读 %TEMP% 档值、backend
+            # 由另一启动器（S1/e2e）以随机未落盘令牌拉起）。裸 errno 级
+            # 「HTTP Error 401」对操作者零诊断价值；修复路径唯一=全栈重拉。
+            raise ValueError(
+                "引擎令牌被 backend 拒绝（401）——桥/后端钥源分脑（混场栈："
+                "两启动器各持令牌）。修复：python scripts/demo_down.py 后 "
+                "python scripts/demo_up.py 全栈重拉（出行数据随桥重启重置，"
+                "需重新出证+飞行）"
+            ) from exc
+        raise
     data = d.get("data") or d
     for k in _TRAIL_BINDING_KEYS:
         if k not in data:

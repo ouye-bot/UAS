@@ -400,6 +400,36 @@ def main() -> int:
     ok_api = wait_http("http://127.0.0.1:8000/healthz")
     ok_bridge = wait_http("http://127.0.0.1:8100/engine_pub")
     ok_web = wait_http("http://localhost:5174/")
+    # 钥域同源门（2026-10-14 分脑第二形态的结构性封堵）：桥/后端引擎令牌各源
+    # 一处（桥=%TEMP% 档、后端=启动器 env）——混场栈（S1/e2e 遗留 backend+演示
+    # 桥）健康检查全绿而 TRAIL 绑定 401（binding_unavailable）。判别器=拿
+    # %TEMP% 档值打 backend 引擎面：401=分脑（硬门红，启动期即定性）；404/
+    # 400=令牌对（auth_id=0 无记录，业务层拒绝——钥域一致）。硬门失败提示
+    # 指向 demo_down+demo_up 全栈重拉（不做令牌外科手术——SK 场次混用不可回）。
+    ok_keydomain = False
+    try:
+        import urllib.request as _ur2
+
+        _tok = (Path(_tf.gettempdir()) / "fz_engine_token.txt").read_text().strip()
+        _req = _ur2.Request(
+            "http://127.0.0.1:8000/engine/trail/binding?auth_id=0&chain_head_hex="
+            + "0" * 64,
+            headers={"X-Engine-Token": _tok},
+        )
+        opener2 = _ur2.build_opener(_ur2.ProxyHandler({}))  # 回环禁系统代理
+        try:
+            with opener2.open(_req, timeout=10) as _r:
+                ok_keydomain = _r.status == 200  # 理论不可达（auth_id=0 无记录）
+        except _ur2.HTTPError as _he:
+            # 401=钥域分脑；其余（404/400/422…）=令牌被接受、业务层拒绝=同源
+            ok_keydomain = _he.code != 401
+            if _he.code == 401:
+                print("[keydomain] ⚠ 桥/后端引擎令牌分脑（401）——混场栈。"
+                      "修复：python scripts/demo_down.py 后重跑本脚本（全栈同源重拉）")
+    except Exception as _e:  # noqa: BLE001 —— 档缺失/网络面故障=按不一致处理（fail-closed）
+        print(f"[keydomain] 探测失败（按分脑处理）: {_e}")
+    if not ok_keydomain:
+        print("[keydomain] ⚠ 钥域同源未确认——TRAIL 出证将 401。建议全栈重拉。")
     # MAVLink 健康门（启动验收=HTTP 三服务活 **且** 飞控心跳真通——8100 活而
     # 5760 死的半残态 2026-10-14 实弹：界面可用、解锁即 Connection refused×30）。
     # 判据=桥 /link_status.link_ok（SITLLink.last_hb_ts 心跳新鲜度）；未就绪重试
@@ -424,8 +454,9 @@ def main() -> int:
         print("[mavlink] ⚠ 飞控心跳未通——桥 8100 活但 MAVLink 链路未建立。"
               "排查：wsl -u root systemctl is-active fz-sitl；"
               "curl http://127.0.0.1:8100/link_status")
-    print(f"backend={ok_api} bridge={ok_bridge} web={ok_web} mavlink={ok_mavlink}")
-    if not (ok_api and ok_bridge and ok_web and ok_mavlink):
+    print(f"backend={ok_api} bridge={ok_bridge} web={ok_web} mavlink={ok_mavlink} "
+          f"keydomain={ok_keydomain}")
+    if not (ok_api and ok_bridge and ok_web and ok_mavlink and ok_keydomain):
         print("有服务未就绪——查看各控制台窗口报错；端口被占则先 python scripts/demo_down.py")
         return 1
     print(CHECKLIST)

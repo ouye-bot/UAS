@@ -128,6 +128,21 @@ def up(no_bridge: bool = False) -> int:
     LOGDIR.mkdir(parents=True, exist_ok=True)
     env = os.environ.copy()
     os.environ.setdefault("FZ_ENGINE_TOKEN", __import__("secrets").token_hex(16))  # R3-0.5 同源注入
+    # 七件套落盘（2026-10-14 分脑第二形态根修）：本脚本生成的 FZ_ENGINE_TOKEN
+    # 此前只进子进程 env 不落 %TEMP%——S1/e2e 场次崩溃/收尾后遗留的 backend
+    # 仍在用「无档随机令牌」，而演示桥单元重启按 %TEMP%/fz_engine_token.txt
+    # 载值 ⟹ 桥出示旧值 backend 要新值=TRAIL 绑定 401（binding_unavailable，
+    # 队长手测实弹：supplied=ef2846ce… want=3ec44b…）。落盘纪律与 demo_up
+    # 同款（谁最后拉栈谁持档——桥重启读档恒得现值）。SK 存在才落（桥自
+    # R3-B2 起不持 SK，此文件仅为启动脚本读值兼容）。
+    import tempfile as _tf
+
+    from pathlib import Path as _Path
+
+    _persist = {"FZ_ENGINE_TOKEN": "fz_engine_token.txt", "FZ_ENGINE_SK": "fz_engine_sk.txt"}
+    for _k, _f in _persist.items():
+        if os.environ.get(_k):
+            (_Path(_tf.gettempdir()) / _f).write_text(os.environ[_k])
     # 缺省 fake（CI 形态）；真链验收=FZ_CHAIN_ANCHOR=real 外部注入（阶段一），
     # 注入后先探活链——不可达即失败退出（验收场景不静默降级）。
     if env.get("FZ_CHAIN_ANCHOR", "fake") != "fake":
