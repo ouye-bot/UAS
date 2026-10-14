@@ -286,6 +286,7 @@ async function verifyInBrowser(): Promise<void> {
   const base = apiBase();
   wvResult.value = await runWasmVerify({
     wasmUrl: `${base}/verify/dist/zkc.wasm`,
+    enginePubUrl: `${base}/authz/engine/pub`,
     specUrl: `${base}/verify/dist/trail_canonical_spec.json`,
     instancesUrl: dlUrl("instances.json"),
     proofUrl: dlUrl("proof.bin"),

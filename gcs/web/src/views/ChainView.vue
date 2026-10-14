@@ -228,6 +228,7 @@ async function verifyRow(e: LogbookEntry): Promise<void> {
   const base = apiBase();
   st.result = await runWasmVerify({
     wasmUrl: `${base}/verify/dist/zkc.wasm`,
+    enginePubUrl: `${base}/authz/engine/pub`,
     specUrl: `${base}/verify/dist/trail_canonical_spec.json`,
     instancesUrl: caseFile("instances.json"),
     proofUrl: caseFile("proof.bin"),
