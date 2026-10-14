@@ -23,6 +23,11 @@ hex = "0.4"
 #（prove 峰值窗 13K 列级分配/释放 churn）。离线钉定：registry 不可达 ⟹
 # 上游 mimalloc 0.1.43 / libmimalloc-sys 0.1.39 原样快照于 vendor-deps/
 #（仅依赖指向 path 化，零源码改动）。
+# wasm32 档例外（zkc.wasm 验证器钥换代根治批）：libmimalloc-sys 的 C 构建
+# 在 wasm32-wasip1 需 clang 工具链（分发面第三方可复现性负担），且 verify-only
+# 负载无 prove 峰值窗——wasm 档不接入，回落 std 缺省分配器（分配器选择零
+# 语义面：证明字节由转录链决定），native 档构型逐字节不变。
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 mimalloc = { path = "vendor-deps/mimalloc-0.1.43" }
 
 [[bin]]

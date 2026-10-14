@@ -10,6 +10,11 @@
 // A3（组合 A，2026-10-06）：mimalloc 全局分配器——prove 峰值窗列级分配 churn
 // 压 Windows LFH 碎片残差。分配器换代零语义面：证明字节由转录链决定，与堆
 // 布局无涉（固定种子/盐通道均不读堆地址）。
+// wasm32 档例外（zkc.wasm 验证器钥换代根治批）：libmimalloc-sys 的 C 构建在
+// wasm32-wasip1 需 clang 工具链（分发面第三方可复现性负担），且 verify-only
+// 负载无 prove 峰值窗可言——wasm 档回落 std 缺省分配器（分配器选择零语义面
+// 同上：证明字节由转录链决定），native 档构型逐字节不变。
+#[cfg(not(target_arch = "wasm32"))]
 #[global_allocator]
 static GLOBAL_ALLOC: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
