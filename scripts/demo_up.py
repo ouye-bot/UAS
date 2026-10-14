@@ -4,7 +4,8 @@
   默认 fake 锚模式（无需 WSL 链在线）——前端全部功能可测；
   默认真链模式（需 WSL FISCO 四节点在线——脚本自动探活拉起）；--fake 切无链模式。
 
-拉起三服务（各占独立控制台窗口，Ctrl+C 或关窗即停）：
+拉起三服务（各占独立控制台窗口，Ctrl+C 或关窗即停）+常驻基础设施探活：
+  SITL 飞控（fz-sitl 瞬态单元——未在位自动拉起；MAVLink 心跳启动硬门）。
   backend  http://127.0.0.1:8000  （API/分发页 /verify/；治理台走 web 登录）
   bridge   http://127.0.0.1:8100
   web      http://localhost:5174
@@ -72,6 +73,53 @@ def wait_http(url: str, timeout_s: float = 30) -> bool:
                     return True
         except Exception:
             time.sleep(0.8)
+    return False
+
+
+def _wsl_root_out(cmd: str) -> str:
+    r = subprocess.run(["wsl", "-u", "root", "bash", "-c", cmd], capture_output=True, text=True)
+    return (r.stdout or "") + (r.stderr or "")
+
+
+_SITL_READY_MARK = "SERIAL0 on TCP port"  # journal 就绪判据（S1 wait_units_ready 同源）
+
+
+def _sitl_ready() -> bool:
+    """三判据：fz-sitl 单元 active + journal SERIAL0 就绪行 + 5760 监听在位。"""
+    if _wsl_root_out("systemctl is-active fz-sitl 2>/dev/null").strip() != "active":
+        return False
+    out = _wsl_root_out("journalctl -u fz-sitl --no-pager -n 30 2>/dev/null; ss -ltn 2>/dev/null")
+    return _SITL_READY_MARK in out and ":5760" in out
+
+
+def ensure_sitl(timeout_s: float = 90) -> bool:
+    """SITL 飞控探活拉起（幂等——活的 SITL 不动，保 GPS 锁与在飞会话）。
+
+    宿主重启后 WSL 进程全灭：链节点有本脚本探活拉起，而 SITL（systemd 瞬态
+    单元 fz-sitl——transient 单元不跨重启）此前无人重建=栈残废。2026-10-14
+    实弹定谳：ARM Connection refused×30——桥直连 tcp:5760 无人监听（飞控侧
+    唯一语义），前端解锁 10s+ 无响应。本函数把 MEMORY §八 复活工序并入启动
+    序列（栈单一事实源）：拉起命令与 S1 stage0/sitl_units_up.sh 逐字同源
+    （不自创工序）；生产拓扑=无 relay、桥直连（5760 单客户端槽纪律）——本
+    函数不拉 relay、不做 5760 TCP 探活（防占烧单槽，判据止于端口 LISTEN）。"""
+    if _sitl_ready():
+        print("[sitl] 飞控仿真在位（fz-sitl active + SERIAL0/5760 监听）——不动")
+        return True
+    print("[sitl] 飞控仿真未就绪（宿主重启后瞬态单元消亡？）——拉起中…")
+    _wsl_root_out(
+        "systemctl stop fz-sitl 2>/dev/null; systemctl reset-failed fz-sitl 2>/dev/null; "
+        "pkill -9 -x arducopter 2>/dev/null; true"
+    )
+    _wsl_root_out(
+        "systemd-run --unit=fz-sitl --property=Restart=on-failure --working-directory=/root "
+        "/home/ouye/ardupilot/build/sitl/bin/arducopter --model + --speedup 1 -I0"
+    )
+    t0 = time.time()
+    while time.time() - t0 < timeout_s:
+        if _sitl_ready():
+            print(f"[sitl] 飞控仿真就绪（SERIAL0 on TCP 5760，耗时 {time.time() - t0:.0f}s）")
+            return True
+        time.sleep(3)
     return False
 
 
@@ -179,6 +227,13 @@ def main() -> int:
         else:
             env["FZ_CHAIN_ANCHOR"] = "fake"
             print("[chain] ⚠ 链不可达——本次以无链模式启动（fail-closed 诚实降级）")
+    # SITL 飞控探活拉起（桥恒 sitl 模式——gcs_bridge_start.sh 硬编码
+    # FZ_GCS_LINK=sitl，故 --fake 链档同样需要飞控在线；失败硬门=栈启动
+    # 永不遗留 SITL 未启动——2026-10-14 宿主重启事故的结构性封堵）。
+    if not ensure_sitl():
+        print("[sitl] ⚠ 飞控仿真拉起失败（90s 无 SERIAL0 就绪行）——ARM 必拒。"
+              "人工排查：wsl -u root journalctl -u fz-sitl -n 50")
+        return 1
     env["FZ_ZKSVC_DIR"] = str(UAS / "zksvc")
     # .local_env 注入（2026-10-04 批3.2 根修）：链上交易钥已换 CSPRNG 随机
     # （部署合约的角色=这四把钥）——backend/worker 不加载它们就退回派生
@@ -345,8 +400,32 @@ def main() -> int:
     ok_api = wait_http("http://127.0.0.1:8000/healthz")
     ok_bridge = wait_http("http://127.0.0.1:8100/engine_pub")
     ok_web = wait_http("http://localhost:5174/")
-    print(f"backend={ok_api} bridge={ok_bridge} web={ok_web}")
-    if not (ok_api and ok_bridge and ok_web):
+    # MAVLink 健康门（启动验收=HTTP 三服务活 **且** 飞控心跳真通——8100 活而
+    # 5760 死的半残态 2026-10-14 实弹：界面可用、解锁即 Connection refused×30）。
+    # 判据=桥 /link_status.link_ok（SITLLink.last_hb_ts 心跳新鲜度）；未就绪重试
+    # （桥首连+GPS/心跳建立需数秒；桥侧 connect 重试环最长 ~65s 才定性——
+    # 单次探活容忍 90s）。硬门失败=退出码 1+指向性排查话术（不静默半残）。
+    ok_mavlink = False
+    _t0 = _t.time()
+    while _t.time() - _t0 < 180:
+        try:
+            import urllib.request as _ur
+
+            with _ur.urlopen("http://127.0.0.1:8100/link_status", timeout=90) as _r:
+                _st = json.loads(_r.read().decode())
+            if _st.get("link_ok"):
+                ok_mavlink = True
+                print(f"[mavlink] 飞控链路活体确认（心跳 { _st.get('hb_age_s') }s 前）")
+                break
+        except Exception:
+            pass
+        _t.sleep(3)
+    if not ok_mavlink:
+        print("[mavlink] ⚠ 飞控心跳未通——桥 8100 活但 MAVLink 链路未建立。"
+              "排查：wsl -u root systemctl is-active fz-sitl；"
+              "curl http://127.0.0.1:8100/link_status")
+    print(f"backend={ok_api} bridge={ok_bridge} web={ok_web} mavlink={ok_mavlink}")
+    if not (ok_api and ok_bridge and ok_web and ok_mavlink):
         print("有服务未就绪——查看各控制台窗口报错；端口被占则先 python scripts/demo_down.py")
         return 1
     print(CHECKLIST)

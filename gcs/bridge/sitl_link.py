@@ -1,12 +1,13 @@
 """飞行闸门+围栏接线（B5-T3 立基；S2 真接线 2026-09-22 按 B5 实测配方升级）。
 
-连接层抽象（SITLLink）：真实面=MAVLink（WSL ArduPilot SITL；默认
-udpin:127.0.0.1:14550=scripts/sitl_relay.py 在 WSL 侧独占 SERIAL0 TCP 并双向转发
-UDP——SITL TCP 每进程仅接受一次连接且 nohup 后台不过 wsl 会话界（实测 2026-09-22），
-故由拉起方全程持有 relay；B5 配方不变：PARAM_SET 须等 PARAM_VALUE 确认（3 重试×4s）、
-ARM 须核 COMMAND_ACK、起飞前位置流 request_data_stream(10Hz)、围栏触发=
-STATUSTEXT "Max Alt fence breached"、爬升=RC Override 绕开 SET_MODE 拒绝（B5-d3：
-真实飞手形态））。测试面=FakeLink（指令记录器——闸门逻辑可无飞控单测）。
+连接层抽象（SITLLink）：真实面=MAVLink（WSL ArduPilot SITL；生产拓扑
+2026-10-14 复核=FZ_SITL_CONN=tcp:127.0.0.1:5760 桥直连 SERIAL0（桥=SITL 同侧
+WSL；relay 拓扑与 udpin:14550 面已退役——5760 单客户端槽纪律：relay 与桥直连
+互斥）；scripts/sitl_relay.py 保留件仅存档）。B5 配方不变：PARAM_SET 须等
+PARAM_VALUE 确认（3 重试×4s）、ARM 须核 COMMAND_ACK、起飞前位置流
+request_data_stream(10Hz)、围栏触发=STATUSTEXT "Max Alt fence breached"、
+爬升=RC Override 绕开 SET_MODE 拒绝（B5-d3：真实飞手形态））。测试面=FakeLink
+（指令记录器——闸门逻辑可无飞控单测）。
 
 闸门语义（TCB 第①层声明：用户理论可绕——固件围栏=第②层硬强制）：
   验签过 → 设围栏（FENCE_ENABLE=1/FENCE_ALT_MAX=alt_max/FENCE_TYPE=高度围栏）
@@ -235,6 +236,10 @@ class SITLLink:
         # armed 位——飞控「地面怠速自动上锁」后桥全盲，爬升 override 静默无效）
         self.last_fc_armed: bool | None = None
         self.last_gpos: dict | None = None  # GLOBAL_POSITION_INT 缓存（drain 刷新）
+        # 飞控心跳新鲜度（2026-10-14 链路活体探针）：drain 每见 HEARTBEAT 刷新
+        # ——/link_status 的 link_ok 判定键（demo_up 启动门消费；None=未见过心跳
+        # ——连接从未建立或建立后一帧未收）。只记录不参与控制面（纯观测）。
+        self.last_hb_ts: float | None = None
         # P3 操控架构修正（2026-09-29 实测定谳）：RC override 停止刷新后飞控
         # 回退到模拟 RC——定高模式下表现为恒速下降（1~1.5m/s 直到落地）。
         # 真实 GCS=持续流式刷新 RC。本桥改为 override 状态+10Hz keepalive：
@@ -306,6 +311,16 @@ class SITLLink:
                     last = e
                     # SERIAL0=单连接槽——任何探活/前主断开后需等 SITL 回到监听
                     time.sleep(2)
+            # 人话定性（2026-10-14 实弹：宿主重启后 fz-sitl 瞬态单元无人重建，
+            # 操作者拿到的第一条信息是裸 [Errno 111]×30——诊断价值零）。refused
+            # 的唯一语义=端口无人监听（SITL 没起），与"起了但没应答"（心跳超时
+            # 分支）分开呈现；恢复工序指向 demo_up（已并入 SITL 探活拉起）。
+            if isinstance(last, ConnectionRefusedError):
+                raise LinkError(
+                    f"飞行仿真未就绪：飞控仿真（SITL）未在 {self.conn_str} 监听"
+                    "——宿主重启后 SITL 不会自动恢复，请先运行 python scripts/demo_up.py"
+                    "（自动拉起飞控）或 wsl -u root bash scripts/sitl_units_up.sh"
+                )
             raise LinkError(f"MAVLink 连接失败（重试 30 次）: {last}")
         return self._m
 
@@ -684,6 +699,7 @@ class SITLLink:
                 try:
                     self.last_mode = m.flightmode  # ③GCS 化模式旁路（UI 面）
                     self.last_fc_armed = bool(int(msg.base_mode) & 0x80)
+                    self.last_hb_ts = time.time()  # 心跳新鲜度（/link_status 探针面）
                 except Exception:
                     pass
                 continue

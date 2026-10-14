@@ -4,6 +4,12 @@ _l="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/.local_env"
 UAS_WSL="${FZ_UAS_WSL:-/mnt/c/uas}"
 #!/usr/bin/env bash
 # SITL + 中继 systemd 单元拉起（幂等——先杀净再起）
+# ⚠ 拓扑警示（2026-10-14 复核）：本脚本属【旧 Windows 桥拓扑保留件】——会同时
+# 拉起 fz-relay（独占 SERIAL0 TCP 5760 单客户端槽）。现行生产拓扑=WSL 桥直连
+# 5760（gcs_bridge_start.sh / S1 stage0），**跑演示栈前禁用本脚本**（relay 与桥
+# 互斥——relay 先占槽=桥 Connection refused×30，同 2026-10-14 事故形态）。
+# 生产 SITL 单拉工序：python scripts/demo_up.py（ensure_sitl 探活拉起+MAVLink
+# 健康门），或 S1 stage0 同款 systemd-run fz-sitl 命令。
 set -x
 systemctl stop fz-sitl fz-relay 2>/dev/null
 systemctl reset-failed fz-sitl fz-relay 2>/dev/null

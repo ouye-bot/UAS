@@ -712,6 +712,22 @@ def link_status():
     if mode == "sitl":
         info["breach_seen"] = _link.breach_seen
         info["last_statustext"] = _link.last_statustext
+        # MAVLink 活体探针（2026-10-14 宿主重启事故的结构性封堵：8100 HTTP 活
+        # ≠MAVLink 通——当日 ARM 打到无人监听的 5760=Connection refused×30）。
+        # 判据=飞控心跳新鲜度：SITL 以 1Hz 推 HEARTBEAT，drain 消费即刷新
+        # last_hb_ts。缓存缺失/超龄 2s 时补采一个心跳周期（短窗，端点仍轻）；
+        # 连接失败/心跳超龄 ⟹ link_ok=False（探针面故障不炸端点——fail-safe
+        # 显式未知态）。demo_up 启动门消费本字段（栈重启永不遗留 SITL 未启动）。
+        try:
+            if _link.last_hb_ts is None or time.time() - _link.last_hb_ts > 2.0:
+                _link.drain(1.2)  # 1Hz 心跳一个周期内补采（连不上在 connect 面抛 LinkError）
+            age = (time.time() - _link.last_hb_ts) if _link.last_hb_ts is not None else None
+            info["hb_age_s"] = round(age, 1) if age is not None else None
+            info["link_ok"] = age is not None and age < 5.0
+        except Exception as e:  # noqa: BLE001 —— SITL 未起等 LinkError 族=探活假不通过而非 500
+            info["hb_age_s"] = None
+            info["link_ok"] = False
+            info["link_err"] = str(e)[:160]
     return info
 
 
