@@ -279,6 +279,37 @@ def main() -> int:
     # 共用同一 _cases_dir——缺省 /tmp 会让受理 400 case_incomplete 假败，
     # R2 收口实测踩雷：对账面读 backend/fz-zk-cases 而写面落 /tmp）。
     env["FZ_ZK_CASES_DIR"] = str(BACKEND / "fz-zk-cases")
+    # 真链档链上交易钥注入探测（2026-10-15 安全凭据批——与 backend
+    # [FZ-STARTUP][WARN] 同判 fail-visible，操作者第一手界面可见）：
+    # .local_env 无 FZ_CHAIN_*_TX_SK 时 backend 将回落 SM3(公开常量) 派生钥
+    # （kms FZ-CHAIN-SMOKE 域，读过 repo 者可自推私钥直发链上交易冒充治理/
+    # 审计方）。本机环回演示可接受但必须让人看见；admin 旧名兼容与
+    # kms/__init__.py 取钥顺序同判。
+    if env.get("FZ_CHAIN_ANCHOR") == "real":
+
+        def _chain_injected(name: str) -> bool:
+            if env.get(name):
+                return True
+            return name == "FZ_CHAIN_ADMIN_TX_SK" and bool(env.get("FZ_CHAIN_ADMIN_SK"))
+
+        _chain_missing = [
+            name
+            for name in (
+                "FZ_CHAIN_RA_TX_SK",
+                "FZ_CHAIN_ENGINE_TX_SK",
+                "FZ_CHAIN_AUDITOR_TX_SK",
+                "FZ_CHAIN_ADMIN_TX_SK",
+            )
+            if not _chain_injected(name)
+        ]
+        if _chain_missing:
+            print(
+                f"[chain] ⚠ {len(_chain_missing)} 枚链上交易钥未注入"
+                f"（{'、'.join(_chain_missing)}）——backend 将回落公开可推算的"
+                "SM3 派生演示钥（FZ-CHAIN-SMOKE 域）。本机演示可接受；评审/"
+                "生产部署请在 .local_env 注入 CSPRNG 链钥"
+                "（scripts/rotate_kms_keys.py 可生成）"
+            )
     # 审计令牌分档（2026-09-28 安全深检 B-P2 根修：真链档此前仍是 repo 公开
     # 常量——随机化批次漏网最后一钥）。fake 档保留公开演示值（/audit/demo-token
     # 披露判定 demo:true）；真链档每场随机+%TEMP% 持久（与六钥同纪律——

@@ -206,3 +206,44 @@ def test_production_missing_oprf_key_refuses(_clean_kms_env, monkeypatch):
     with pytest.raises(RuntimeError) as ei:
         create_app()
     assert "FZ_OPRF_SK" in str(ei.value)
+
+
+# ---- 真链档链上交易钥派生回落 fail-visible（2026-10-15 安全凭据批） ----
+
+_CHAIN_TX_KEY_ENVS = (
+    "FZ_CHAIN_RA_TX_SK",
+    "FZ_CHAIN_ENGINE_TX_SK",
+    "FZ_CHAIN_AUDITOR_TX_SK",
+    "FZ_CHAIN_ADMIN_TX_SK",
+)
+
+
+def test_real_chain_anchor_derived_keys_warn(_clean_kms_env, monkeypatch, capsys):
+    """真链档（FZ_CHAIN_ANCHOR=real+环回=demo 档不拒启）下链上交易钥未 env
+    注入 → 启动打 [FZ-STARTUP][WARN] 逐枚点名。派生回落=SM3(公开常量)
+    （kms FZ-CHAIN-SMOKE|* 域）读过 repo 者可自推私钥直发链上交易冒充治理
+    owner/审计方——production 档已拒启（assert_no_demo_keys_in_production），
+    真链演示档保留 SMOKE 自洽部署动线但必须 fail-visible 让人看见。"""
+    monkeypatch.setenv("FZ_CHAIN_ANCHOR", "real")
+    create_app()
+    out = capsys.readouterr().out
+    assert "[FZ-STARTUP][WARN]" in out and "链上交易钥" in out
+    for name in _CHAIN_TX_KEY_ENVS:
+        assert name in out, f"WARN 须点名 {name}"
+
+
+def test_real_chain_anchor_injected_keys_silent(_clean_kms_env, monkeypatch, capsys):
+    """四枚链上交易钥 env 注入 → 无链钥 WARN（不误报）；admin 旧名
+    FZ_CHAIN_ADMIN_SK 单独注入与 kms 取钥顺序（kms/__init__.py 兼容读）同判
+    ——同样视为已注入不告警。"""
+    monkeypatch.setenv("FZ_CHAIN_ANCHOR", "real")
+    for name in _CHAIN_TX_KEY_ENVS:
+        monkeypatch.setenv(name, "ab" * 32)
+    create_app()
+    assert "链上交易钥" not in capsys.readouterr().out
+    # 旧名兼容：仅 admin 换旧名 FZ_CHAIN_ADMIN_SK（其余三枚保持注入）——
+    # 与 kms 取钥顺序（kms/__init__.py 兼容读）同判，同样视为已注入不告警
+    monkeypatch.delenv("FZ_CHAIN_ADMIN_TX_SK", raising=False)
+    monkeypatch.setenv("FZ_CHAIN_ADMIN_SK", "ab" * 32)
+    create_app()
+    assert "链上交易钥" not in capsys.readouterr().out

@@ -61,6 +61,42 @@ def create_app() -> FastAPI:
             flush=True,
         )
 
+    # 真链档链上交易钥派生回落 fail-visible（2026-10-15 安全凭据批）：四枚
+    # 链上治理/审计/签发交易钥任一未 env 注入即回落 SM3(公开常量) 派生
+    # （kms FZ-CHAIN-SMOKE|* 域，kms/__init__.py:101,117,161,173）——读过
+    # repo 者可自推私钥直发链上交易，冒充 governor owner/审计方。production
+    # 档已由 assert_no_demo_keys_in_production 拒启；真链演示档（环回）保留
+    # SMOKE 自洽部署动线（部署钥=运行钥，链写不 revert）故不拒启，但弱钥面
+    # 必须让人看见——与 ENGINE_TOKEN 同款 fail-visible 纪律。
+    if _os.environ.get("FZ_CHAIN_ANCHOR", "fake") == "real":
+        _chain_key_faces = (
+            ("FZ_CHAIN_RA_TX_SK", "RA 链上交易（凭证上链/撤销公示）"),
+            ("FZ_CHAIN_ENGINE_TX_SK", "engine 链上交易（recordAuth/锚定/事件）"),
+            ("FZ_CHAIN_AUDITOR_TX_SK", "审计方链上交易（logWarrant）"),
+            ("FZ_CHAIN_ADMIN_TX_SK", "治理 admin 链上交易（governor owner）"),
+        )
+
+        def _chain_injected(name: str) -> bool:
+            if _os.environ.get(name):
+                return True
+            # admin 旧名兼容（与 kms/__init__.py 取钥顺序同判）
+            return name == "FZ_CHAIN_ADMIN_TX_SK" and bool(_os.environ.get("FZ_CHAIN_ADMIN_SK"))
+
+        _chain_missing = [
+            f"{name}（{desc}）" for name, desc in _chain_key_faces if not _chain_injected(name)
+        ]
+        if _chain_missing:
+            print(
+                "[FZ-STARTUP][WARN] FZ_CHAIN_ANCHOR=real 但 "
+                f"{len(_chain_missing)} 枚链上交易钥未注入（"
+                + "；".join(_chain_missing)
+                + "）——将回落 SM3(公开常量) 派生钥（FZ-CHAIN-SMOKE 域，读过 "
+                "repo 者可自推私钥直发链上交易冒充治理/审计方）。仅限本机环回"
+                "演示可接受；评审/生产部署请在 .local_env 注入 CSPRNG 链钥"
+                "（scripts/rotate_kms_keys.py 可生成）",
+                flush=True,
+            )
+
     # 未处理异常统一转结构化 JSON（2026-09-28 审计台实测：裸 500 非 JSON 响应
     # 让前端只能显示"bad_response: 500"——排障盲飞）。人话+request_id 可追踪；
     # 瞬态类（SQLite 锁/链抖）给出重试指引。
