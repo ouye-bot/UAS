@@ -81,6 +81,23 @@ def _wsl_root_out(cmd: str) -> str:
     return (r.stdout or "") + (r.stderr or "")
 
 
+def _chain_nodes_up() -> None:
+    """拉起 WSL FISCO 四节点——直调 §八复活工序 chain_nodes_up.sh（先拔硬关机
+    残留 RocksDB LOCK→pkill 残余→逐节点启动→探活）。此前经 up.sh 直调
+    start_all.sh：无拔 LOCK/无 pkill/仅 sleep 2 即探活——硬关机（断电/强重启）
+    残留态下四节点 init 即 terminate，探活恒 FAIL 降级 fake 档（2026-10-15
+    实弹定谳+本日复现；手动重跑才偶发成功=时序不可靠）。路径直传中文目录：
+    Windows subprocess→wsl.exe 三形态（bash -c/裸参/bash -n）当日探针实测
+    无损，且不经 MSYS 故无 PATHCONV 参数改写问题（gcs_bridge_start.sh 的
+    ASCII 复制另有 .local_env 同目录功能需求——chain_nodes_up.sh 的 source
+    是可选短路且 UAS_WSL 未被使用，原位执行反而 source 到真 .local_env）。"""
+    _wsl_uas = "/mnt/" + UAS.drive[0].lower() + UAS.as_posix()[2:]
+    subprocess.run(
+        ["wsl", "-u", "root", "bash", f"{_wsl_uas}/scripts/chain_nodes_up.sh"],
+        capture_output=True,
+    )
+
+
 _SITL_READY_MARK = "SERIAL0 on TCP port"  # journal 就绪判据（S1 wait_units_ready 同源）
 
 
@@ -197,6 +214,15 @@ def main() -> int:
         preclean()
 
     assert PY.exists(), f"backend venv 缺失: {PY}"
+    # venv 依赖探针（原 up.sh [2/3] 段内联随迁——demo_up 拉链不再经 up.sh 后，
+    # 依赖缺失若不在此报错，只会在启动末尾呈现为 backend=False 而无从定位）。
+    _dep = subprocess.run([str(PY), "-c", "import gmssl, fastapi"], capture_output=True)
+    assert _dep.returncode == 0, (
+        "backend venv 缺依赖（重装：backend/.venv/Scripts/python.exe "
+        "-m pip install -e 'backend[dev]'）"
+    )
+    # WSLInterop 自愈段（原 up.sh [3/3]）不随迁：wsl.conf [boot] command 已加
+    # binfmt 幂等自愈（MEMORY §八 保活条），启动器无需重复。
     env = os.environ.copy()
     if not args.fake:
         # 真链默认（R1-3）：自动探活/拉起 WSL FISCO 四节点
@@ -217,8 +243,8 @@ def main() -> int:
                 return False
 
         if not _chain_up():
-            print("[chain] WSL 链未起——拉起中…")
-            subprocess.run(["bash", str(UAS / "scripts" / "up.sh")], capture_output=True)
+            print("[chain] WSL 链未起——拉起中…（chain_nodes_up.sh：先拔硬关机残留 LOCK 再启动）")
+            _chain_nodes_up()
         print(f"[chain] 探活: {'OK' if _chain_up() else 'FAIL（将降级无链模式——明确打印）'}")
         if _chain_up():
             # 显式真链档（阶段一：全服务链写面统一真链——authz 门控/worker

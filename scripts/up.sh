@@ -5,7 +5,12 @@ set -uo pipefail
 UAS="$(cd "$(dirname "$0")/.." && pwd)"
 
 echo "== [1/3] FISCO BCOS 国密链（WSL 四节点） =="
-wsl -u root bash -c "cd /home/ouye/fisco-bcos-node/nodes_sm/127.0.0.1 && bash start_all.sh" || echo "  （start_all 非零返回：可能已在跑，以探活为准）"
+# 拉链唯一路径=chain_nodes_up.sh（MEMORY §八复活工序：先拔硬关机残留 RocksDB
+# LOCK→pkill 残余→启动→探活）。此前直调 start_all.sh 无拔 LOCK 段——硬关机
+# 残留态下四节点 init 即 terminate、探活 FAIL 降级 fake（2026-10-15 实弹定谳）。
+# /mnt$UAS：Git Bash cwd 形态 /c/... → /mnt/c/...；MSYS_NO_PATHCONV=1 防 MSYS
+# 把 /mnt 参数改写成本机 Git 安装路径（既有纪律）。
+MSYS_NO_PATHCONV=1 wsl -u root bash "/mnt$UAS/scripts/chain_nodes_up.sh" || echo "  （chain_nodes_up 非零返回：以探活为准）"
 sleep 2
 BLOCK=$(wsl -u root bash -c "curl -s -X POST http://127.0.0.1:8545 -H 'Content-Type: application/json' -d '{\"jsonrpc\":\"2.0\",\"method\":\"getBlockNumber\",\"params\":[1],\"id\":1}'" | grep -o '"result":"0x[0-9a-f]*"' || true)
 if [ -n "$BLOCK" ]; then
