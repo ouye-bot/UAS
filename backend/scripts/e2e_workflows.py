@@ -29,7 +29,6 @@ import json
 import os
 import secrets
 import sys
-import tempfile
 import time
 from pathlib import Path
 
@@ -99,20 +98,6 @@ def p(sess, path: str, body: dict, timeout: float = 90):
 
 def anon() -> requests.Session:
     return requests.Session()
-
-
-def _pw(env_key: str, marker: str) -> str:
-    """口令来源：env > %TEMP%\\fz_accounts_seed.txt（seed 交付面）——禁入代码。"""
-    if os.environ.get(env_key):
-        return os.environ[env_key]
-    seed = Path(tempfile.gettempdir()) / "fz_accounts_seed.txt"
-    if seed.is_file():
-        for line in seed.read_text(encoding="utf-8").splitlines():
-            if marker in line:
-                tail = line.rsplit(" ", 1)[-1].strip()
-                if tail:
-                    return tail
-    raise SystemExit(f"缺 {marker} 口令——env {env_key} 或 seed 文件二选一")
 
 
 # ---------------------------------------------------------------- 密码学助手
@@ -370,14 +355,26 @@ def main() -> int:
     id_number = "11010119900101" + secrets.token_hex(2)  # 18 位逐轮随机（B7 黑名单纪律）
     sk_u, pk_u = gen_keypair()
 
-    from app.accounts.envelope import seal_envelope_v4
+    # 注册面随 OPAQUE gate 自适配（⑫O-3 起 gate on 只收 v6=422 v6_register_required
+    # ——script_auth 510b4a3 同款工艺；本脚本此前滞留 v4 硬编码即 P1 首断言全红的
+    # 根因）。v6 材料=client_seal_v6 四件套（信封+masking_key+盐/迭代——k_hex 缺省
+    # 取进程内 KMS 演示钥 shortcut，与线协议盲化回环等价性由 golden 钉锚定）；
+    # gate off 的 CI 双轨回退 v4 现状。零明文私钥上行断言两档位同语义。
+    from app.accounts.client import client_seal_v6
+    from app.accounts.service import opaque_enabled
 
+    reg_payload = {"username": pilot_user, "pubkey_hex": pk_u}
+    if opaque_enabled():
+        reg_payload.update(client_seal_v6(pilot_user, password, sk_u, pk_u))
+    else:
+        from app.accounts.envelope import seal_envelope_v4
+
+        reg_payload["sealed_blob"] = seal_envelope_v4(sk_u, pk_u, password)
     reg_s = anon()
-    rc, reg = p(reg_s, "/auth/register", {
-        "username": pilot_user, "pubkey_hex": pk_u,
-        "sealed_blob": seal_envelope_v4(sk_u, pk_u, password)})
+    rc, reg = p(reg_s, "/auth/register", reg_payload)
     expect(rc == 201 and reg.get("code") == "ok" and reg["data"]["status"] == "pending_profile",
-           "P1 v4 信封注册（零明文私钥上行）→ pending_profile", f"rc={rc} {str(reg)[:150]}")
+           "P1 信封注册（OPAQUE gate 自适配 v6/v4——零明文私钥上行）→ pending_profile",
+           f"rc={rc} {str(reg)[:150]}")
 
     pil = pilot_session(pilot_user, password, sk_u)
     who = pil.get(API + "/auth/whoami", timeout=15).json()["data"]
@@ -476,8 +473,27 @@ def main() -> int:
     print("== [A] 审计员：收件箱→立案→发函→复验 ==")
     from scripts.script_auth import script_login
 
-    aud = script_login(API, "auditor", _pw("FZ_SEED_AUDITOR_PASSWORD", "auditor"))
-    adm = script_login(API, "admin", _pw("FZ_SEED_ADMIN_PASSWORD", "admin"))
+    def _seeded_role_session(role: str) -> requests.Session:
+        """机构测试会话自备（种子漂移免疫，2026-10-15 定谳）：演示种子账户
+        （auditor/admin）可被人工首登激活换密——active 态下种子口令必败
+        （OPAQUE 解掩码 server_pub 前缀不符，诚实抛错），e2e 对演示账户激活
+        态的隐式依赖就此斩断。随机预置同角色账户（seed_institutional_account=
+        离线种子脚本职责面——机构角色无法自注册，script_auth 同语义）+
+        首登激活；wf- 前缀随机名与 pilot 自注册同粒度可溯源。"""
+        from app.accounts.service import seed_institutional_account
+        from app.db import SessionLocal
+
+        username = f"wf-{role}-" + secrets.token_hex(3)
+        role_pw = secrets.token_urlsafe(12)  # 随机口令——不落代码不落盘
+        s = SessionLocal()
+        seed_institutional_account(s, username, role, role_pw)
+        s.close()
+        sess = script_login(API, username, role_pw)
+        sess._username = username  # 断言锚=本轮真实主体名（closure/台账操作者面）
+        return sess
+
+    aud = _seeded_role_session("auditor")
+    adm = _seeded_role_session("admin")
 
     lead = None
     t0 = time.time()
@@ -589,10 +605,11 @@ def main() -> int:
     _, tr = g(aud, f"/audit/warrants/{wh}/trace")
     clo = (tr.get("data") or {}).get("closure") or {}
     expect(clo.get("conclusion") == "verified" and clo.get("case_archive_fp_hex") == archive_fp
-           and clo.get("auditor_username") == "auditor"
-           and clo.get("admin_username") == "admin"
+           and clo.get("auditor_username") == aud._username
+           and clo.get("admin_username") == adm._username
            and clo.get("fzc2_fingerprint_hex"),
-           "A9 trace.closure 全字段（结论/案卷指纹/双控/函指纹）", str(clo)[:200])
+           "A9 trace.closure 全字段（结论/案卷指纹/双控主体/函指纹——锚定本轮实际操作者）",
+           str(clo)[:200])
 
     # ---- 处置待办 ----
     todo = None
@@ -649,7 +666,7 @@ def main() -> int:
     leaf = next((x for x in snap1["data"]["revoked"]
                  if x["handle_hex"] == cred["master_cred_hash_hex"]), None)
     expect(leaf is not None and leaf.get("reason") == reason
-           and leaf.get("revoked_by") == "admin" and leaf.get("epoch") == rvd["epoch"],
+           and leaf.get("revoked_by") == adm._username and leaf.get("epoch") == rvd["epoch"],
            "M8 公示镜像：撤销理由/执行人/纪元逐字在列（公示理由字段面）", str(leaf)[:200])
     expect(snap1["data"]["root_hex"] != snap0["data"]["root_hex"], "M8b 撤销纪元根更迭")
 
@@ -679,13 +696,13 @@ def main() -> int:
            "N10 恢复单签不执行：公示撤销集不变（pending 挂起）")
     rc, rlist = g(aud, "/ra/restore/requests")
     row = next((x for x in rlist["data"]["items"] if x["id"] == restore_id), None)
-    expect(row is not None and row["requested_by"] == "admin" and row["reason"] == rreason,
+    expect(row is not None and row["requested_by"] == adm._username and row["reason"] == rreason,
            "A10 恢复核验面：待复核列表可见（句柄/理由/发起人）", str(row)[:150])
     rc, cs = p(aud, f"/ra/restore/{restore_id}/countersign", {
         "sig_hex": sign(aud.sk, f"FZ-RESTORE-COUNTERSIGN|v1|{handle.lower()}|{rreason}")})
     expect(rc == 200 and cs["data"]["status"] == "executed"
-           and cs["data"]["countersign_by"] == "auditor",
-           "A11 恢复核签（auditor 第二签）→ executed", f"rc={rc} {str(cs)[:150]}")
+           and cs["data"]["countersign_by"] == aud._username,
+           "A11 恢复核签（auditor 角色第二签）→ executed", f"rc={rc} {str(cs)[:150]}")
     _, snap2 = g(anon(), "/ra/revocation/snapshot")
     expect(not any(x["handle_hex"] == handle for x in snap2["data"]["revoked"]),
            "A11b 恢复生效：句柄摘出公示撤销集（SMT 摘叶）")
