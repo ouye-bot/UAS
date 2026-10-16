@@ -418,7 +418,7 @@ onMounted(() => {
   <section class="wrap" :class="{ 'fz-printing': printKey != null }">
     <h2>链上留痕</h2>
     <p class="sub">
-      授权登记、检查点锚定与令状的链上公示面——记录一经上链不可篡改，可独立核验。本页展示的是**全体脱敏公示**：记录不携带任何身份信息，也无法对应到真人（这正是零知识设计的效果）；与本机合规档案命中的授权，会标注「我的档案」徽章。
+      授权登记、检查点锚定与令状的链上公示面——记录一经上链不可篡改，可独立核验。本页展示的是全体脱敏公示（无一例外）：记录不携带任何身份信息，也无法对应到真人（这正是零知识设计的效果）；与本机合规档案命中的授权，会标注「我的档案」徽章。
     </p>
 
     <!-- 我的合规档案（档案积累批置顶新增——下方四板块冻结面原样不动） -->
@@ -635,7 +635,7 @@ onMounted(() => {
                     <dd>
                       <StatusTag
                         :tone="details[r.auth_id].chain!.status === 0 ? 'ok' : 'bad'"
-                        :label="details[r.auth_id].chain!.status === 0 ? '有效（status=0）' : `已叫停（status=${details[r.auth_id].chain!.status}）`"
+                        :label="details[r.auth_id].chain!.status === 0 ? '有效' : '已叫停'"
                       />
                     </dd>
                   </template>
