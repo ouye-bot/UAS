@@ -490,6 +490,10 @@ pub fn prove_pipeline(spec: &JobSpec, out_dir: &Path) -> Result<ProveReport, Pro
     // packed sumcheck 通道注册（2026-10-11 批量求值批，路线甲）：进程级幂等；
     // 差分位（FZ_ZK_PACKED_SUMCHECK=0）/无 AVX2 = 不注册（backend 全标量路径
     // 零变化）。仅影响 sumcheck 内环怎么算，协议面/转录字节零变化。
+    // wasm32 档不编译（2026-10-15 分发面 wasm 重建批：sumcheck_packed_sm2 模
+    // 块在 wasm 关闭——非 x86_64 档 packed_enabled 恒 false，注册门本就永不触
+    // 发，语义同）。
+    #[cfg(not(target_arch = "wasm32"))]
     plonkish_sm2_probe::sumcheck_packed_sm2::ensure_registered();
     let t_all = Instant::now();
     // 0) 出证准入（信任根收口件4，fail-closed 最前置）：production + MASK_OFF

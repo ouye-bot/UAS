@@ -74,11 +74,16 @@ VEC_DIR = BACKEND / "app" / "crypto" / "vectors"
 # 风暴根修（1.34×）+FpSM2 packed 求值通道基建（缺省关闭，实测 56×反向留档）+
 # FZ_ZK_SALT_PIN 差分位——同见证逐字节锚（proof/vp/instances 三件 cmp 同+
 # 跨二进制 9e9f4435 三方同）+26 实例逐位同；电路本体零换代，MANIFEST 151 文件/
-# aggregate b05df9d8…；链上重公示待链恢复补仪式（fisco 节点 SecureInitializer
-# cert 加载 terminate 故障在案）。
-PIN_LOCAL_EXPECTED = "SM3(4201a82|b05df9d8e2d5f39fb4d92b19d47379c86c0d40159e9fd39a1c9c77455b9b4985)"
+# aggregate b05df9d8…；链上重公示 tx=0xfdc18949…（2026-10-13 补仪式）。
+# 分发面 wasm 重建批重钉 2026-10-15：vendor plonkish_sm2_probe/lib.rs wasm32
+# cfg 门（sumcheck_packed_sm2 模块 wasm 档整体关闭——非 x86_64 档
+# packed_enabled 恒 false 的编过版死代码消除，x86_64 档编译面零变化，电路
+# 本体零换代），MANIFEST 就地重钉 151 文件/aggregate ef590ba9…；重公示
+# tx=0xce091306…（CircuitPinned——受理门控④即刻强制）。
+PIN_LOCAL_EXPECTED = "SM3(4201a82|ef590ba955b150c8358ad7b9aa8fd3b85fcf130358acb6c40fa3a77d0857f189)"
 # 链上摘要常量修正 2026-10-13：01140a45… 系误推值（四方仲裁=裸串 UTF-8 直接计算/publish_pin 幂等门/链上现值/运行时受理门，四方一致 0d6b812b…），旧值与任何编码形态均不符——初引入时误算，非随代漂移。
-PIN_CHAIN_DIGEST_EXPECTED = "0d6b812bd91c9eb27fa4cc130d0783b6f36a0c7d5b268896bb79e69aee26976b"
+# 分发面 wasm 重建批随代 2026-10-15：bd57fb80…=SM3("SM3(4201a82|ef590ba9…)") 裸串 UTF-8 同式。
+PIN_CHAIN_DIGEST_EXPECTED = "bd57fb8039c4e5f8f23df16e4c0d6f5689e9c52e83f7bde884160add2da71387"
 
 
 def _load_json(path: Path):

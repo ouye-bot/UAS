@@ -51,5 +51,5 @@
  ],
  "proof_sm3_hex": "5a494774c111ed5f2ec0153884c45b130de7ba4f3235a3cece274ae56bd474f3",
  "proof_bytes": 16063712,
- "zk_pin_fingerprint": "SM3(4201a82|b05df9d8e2d5f39fb4d92b19d47379c86c0d40159e9fd39a1c9c77455b9b4985)"
+ "zk_pin_fingerprint": "SM3(4201a82|ef590ba955b150c8358ad7b9aa8fd3b85fcf130358acb6c40fa3a77d0857f189)"
 }

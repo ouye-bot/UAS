@@ -5,8 +5,8 @@
  "manifest": "zksvc/vendor/MANIFEST.json",
  "source_repo": "M3_probe/repos/sl_wt (system/uas-auth)",
  "source_branch": "system/uas-auth",
- "extraction": "git -c core.autocrlf=false archive 8bb4a7c plonkish\uff08CRLF \u6559\u8bad\u246a\u7eaa\u5f8b\uff09",
- "aggregate_sm3": "b05df9d8e2d5f39fb4d92b19d47379c86c0d40159e9fd39a1c9c77455b9b4985",
- "file_count": 148,
+ "extraction": "git -c core.autocrlf=false archive 8bb4a7c plonkish（CRLF 教训⑪纪律）",
+ "aggregate_sm3": "ef590ba955b150c8358ad7b9aa8fd3b85fcf130358acb6c40fa3a77d0857f189",
+ "file_count": 151,
  "aggregate": "eba59f5c5f204ee84c57bb5fea8f10a4bdb4c3a5cce40fb3c8308881c06af145"
 }

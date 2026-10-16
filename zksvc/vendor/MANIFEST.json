@@ -1,7 +1,7 @@
 {
  "pin_commit": "4201a82",
  "file_count": 151,
- "aggregate_sm3": "b05df9d8e2d5f39fb4d92b19d47379c86c0d40159e9fd39a1c9c77455b9b4985",
+ "aggregate_sm3": "ef590ba955b150c8358ad7b9aa8fd3b85fcf130358acb6c40fa3a77d0857f189",
  "files": [
   {
    "path": "plonkish/.gitignore",
@@ -525,8 +525,8 @@
   },
   {
    "path": "plonkish/plonkish_sm2_probe/src/lib.rs",
-   "bytes": 12016,
-   "sm3": "8a386aa20ffec2fb4aa2341abf7612655d9b2477cf2d8cd647ff0677abab9e79"
+   "bytes": 12652,
+   "sm3": "e3e735f96b78e61b1310b73bfeec7f1a0451ac76afc05b5bd8e206d64bfc4493"
   },
   {
    "path": "plonkish/plonkish_sm2_probe/src/sm2_a3_stream.rs",

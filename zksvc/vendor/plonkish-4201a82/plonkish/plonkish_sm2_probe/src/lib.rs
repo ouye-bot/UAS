@@ -121,8 +121,15 @@ pub mod smt_weave;
 /// 外层 sumcheck 的 FpSM2 packed（AVX2 u64x4）+ SoA 批量求值通道（2026-10-11
 /// 路线甲：同域向量化——零语句/零语义/零电路；差分位 FZ_ZK_PACKED_SUMCHECK=0
 /// 回退标量）。
+// wasm32 档整体关闭（2026-10-15 分发面 wasm 重建批·vendor 微换代）：本模块
+// 顶层 use core::arch::x86_64 与全部 AVX2 内核在 wasm32 编不过；而非 x86_64
+// 档 packed_enabled() 本就恒 false（AVX2 通道关=标量生产路径，注册门永不触
+// 发）——cfg 门=同语义的编过版死代码消除，x86_64 档编译面逐字节不变。注册
+// 调用点 zksvc/src/prove.rs prove_pipeline 以同款 cfg 门配对（模块关闭则调用
+// 点同关）。sumcheck_packed_tests 只测本模块——随模块同门。
+#[cfg(not(target_arch = "wasm32"))]
 pub mod sumcheck_packed_sm2;
-#[cfg(test)]
+#[cfg(all(test, not(target_arch = "wasm32")))]
 mod sumcheck_packed_tests;
 /// 飞证 B6 · TRAIL 轨迹合规语句（host 单一事实源；与 uas gcs/bridge fence.py 同构）。
 pub mod trail_host;
