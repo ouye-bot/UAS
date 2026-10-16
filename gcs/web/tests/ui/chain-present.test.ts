@@ -14,7 +14,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { flushPromises, mount } from "@vue/test-utils";
 import { createPinia, setActivePinia } from "pinia";
 
-vi.mock("../../src/lib/wasmVerify", () => ({ runWasmVerify: vi.fn() }));
+// gen 面（缓存不可达根修补刀②）在 mock 里给 fail-closed 恒 null 形态——
+// 本文件只钉 URL 契约（无 gen 拼接的裸 URL）；gen 派生/拼接语义由
+// tests/lib/wasm-verify-gen.test.ts 单测钉定。
+vi.mock("../../src/lib/wasmVerify", () => ({
+  runWasmVerify: vi.fn(),
+  fetchDistGen: vi.fn(async () => null),
+  withGen: (u: string) => u,
+}));
 import { runWasmVerify } from "../../src/lib/wasmVerify";
 import ChainView from "../../src/views/ChainView.vue";
 

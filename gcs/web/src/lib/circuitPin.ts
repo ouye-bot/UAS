@@ -4,8 +4,8 @@
  *   指纹串 = "SM3(" + pin_commit + "|" + aggregate_sm3 + ")"   ← zksvc/vendor/MANIFEST.json
  *   链上公示摘要 = sm3(指纹串)
  *
- * 现行值 = TRAIL 空域围栏换代二批的发布仪式产物（tx=0xb05331dc，2026-10-03/04
- * 主会话执行、幂等复核一致——docs/三大测试汇总报告 三·补3）。
+ * 现行值 = 分发面 wasm 重建批的发布仪式产物（tx=0xce091306…，2026-10-15
+ * 执行、publish_pin --check 幂等复核一致——vendor 微换代 ef590ba9 重钉随代）。
  *
  * 为什么是常量而不是接口取值：现有 HTTP 面没有暴露链上 pin 的端点——
  * /verify/api/checks 只含分发产物 sha256（非电路指纹，不得冒名展示）；
@@ -15,6 +15,6 @@
  * 同式，任何漂移在「链上原文核验」面会被独立发现。
  */
 export const FZ_CIRCUIT_PIN_STR =
-  "SM3(4201a82|5981d449a2cf42a7d77775c62390421361770bfe478c9394cc5ae0edeca9e842)";
+  "SM3(4201a82|ef590ba955b150c8358ad7b9aa8fd3b85fcf130358acb6c40fa3a77d0857f189)";
 export const FZ_CIRCUIT_PIN_DIGEST =
-  "632071fa1bb53fe8c4a754918798b31d14ababaa37431a832ce311ce6155e288";
+  "bd57fb8039c4e5f8f23df16e4c0d6f5689e9c52e83f7bde884160add2da71387";

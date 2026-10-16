@@ -8,7 +8,7 @@ import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 import { useRouter } from "vue-router";
 import { bridge, bridgeBase, apiBase, ApiError } from "../lib/api";
 import { logbookFindByAuthId, logbookUpdate } from "../lib/material";
-import { runWasmVerify, type WasmVerifyResult } from "../lib/wasmVerify";
+import { fetchDistGen, runWasmVerify, withGen, type WasmVerifyResult } from "../lib/wasmVerify";
 import HashText from "../components/HashText.vue";
 import DenyBox from "../components/DenyBox.vue";
 import StatusTag from "../components/StatusTag.vue";
@@ -284,10 +284,17 @@ async function verifyInBrowser(): Promise<void> {
   if (!caseId.value) return;
   wvBusy.value = true; wvLogs.value = []; wvResult.value = null;
   const base = apiBase();
+  // 现役代查询参（缓存不可达根修补刀②）：URL 随代变 ⟹ 缓存键必换代；
+  // checks 拉取失败=fail-closed 退回无参 URL（服务端 no-cache 单兜底，不冒充）。
+  const gen = await fetchDistGen(`${base}/verify/api/checks`);
+  wvLogs.value.push(gen
+    ? `现役代指纹 ${gen.slice(4)}（checks 对拍）——缓存键随代`
+    : "代指纹不可得（checks 不可达）——退回无参 URL（服务端 no-cache 兜底）");
+  wvLogs.value = wvLogs.value.slice(-6);
   wvResult.value = await runWasmVerify({
-    wasmUrl: `${base}/verify/dist/zkc.wasm`,
+    wasmUrl: withGen(`${base}/verify/dist/zkc.wasm`, gen),
     enginePubUrl: `${base}/authz/engine/pub`,
-    specUrl: `${base}/verify/dist/trail_canonical_spec.json`,
+    specUrl: withGen(`${base}/verify/dist/trail_canonical_spec.json`, gen),
     instancesUrl: dlUrl("instances.json"),
     proofUrl: dlUrl("proof.bin"),
     vpUrl: dlUrl("verifier_param.bin"),
