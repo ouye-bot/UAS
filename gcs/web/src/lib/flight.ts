@@ -47,3 +47,25 @@ export function windowSubline(sampleCount: number, breachedInWindow: boolean): s
   const remainS = Math.ceil(((128 - sampleCount) * 0.5));
   return `约还需 ${remainS} 秒（每 0.5 秒记录一点）`;
 }
+
+/** 令牌防篡改自检（D1 负例演示）判词——纯函数单源（2026-10-15 根修批）。
+ * 语义：自检=提交被篡改的令牌（alt_max+1），**闸门拒绝=自检通过**（防篡改
+ * 机制在位），**闸门接受=自检失败**（最重失败，必须显红）；拒绝但原因非
+ * 签名核验=自检结论不成立（如实显红，不冒充通过）。此前该负例复用真实
+ * 解锁的呈现面——拒绝按真实失败显红（与钥分脑等真故障不可辨）且覆盖解锁
+ * 态（横幅 ARMED→DISARMED 翻转）——队长手测实弹报障后分离。 */
+export function tamperSelfCheckVerdict(r: { ok?: boolean; code?: string; message?: string }): {
+  pass: boolean;
+  text: string;
+} {
+  if (r.ok) {
+    return { pass: false, text: "防篡改自检失败：被篡改的令牌被闸门接受——闸门防线失效，请立即停用并上报" };
+  }
+  if (r.code === "bad_signature") {
+    return { pass: true, text: "防篡改自检通过：闸门拒绝了被篡改的令牌（签名核验 bad_signature）——防篡改机制在位" };
+  }
+  return {
+    pass: false,
+    text: `防篡改自检未完成：闸门以 ${r.code ?? "未知原因"} 拒绝（${r.message ?? "无详情"}）——拒绝原因非签名核验，自检结论不成立`,
+  };
+}

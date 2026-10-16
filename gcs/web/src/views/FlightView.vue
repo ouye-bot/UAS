@@ -17,7 +17,7 @@ import { bridge, ApiError, randInt, fromHex, toHex } from "../lib/api";
 import { pickupToken, verifyTokenSig, checkTokenFields, tokenPayloadHex, quotaExhausted as quotaExhaustedFn } from "../lib/token";
 import { loadPlan } from "../lib/plan";
 import { logbookBackfillAuthId, logbookUpdate } from "../lib/material";
-import { flightStage, stepperState, windowSubline } from "../lib/flight";
+import { flightStage, stepperState, windowSubline, tamperSelfCheckVerdict } from "../lib/flight";
 import HashText from "../components/HashText.vue";
 import DenyBox from "../components/DenyBox.vue";
 import StatusTag from "../components/StatusTag.vue";
@@ -37,6 +37,9 @@ const denyArm = ref<{ code: string; message: string } | null>(null);
 const denyLog = ref<{ code: string; message: string } | null>(null);
 const info = ref<null | { ok: boolean; tok: any; warnings: string[] }>(null);
 const armResult = ref<any>(null);
+// 防篡改自检（D1 负例）独立判词面（2026-10-15 根修——与真实解锁 armResult 分离，
+// 判词派生单源 lib/flight.tamperSelfCheckVerdict：拒绝=通过/接受=失败/他因=不成立）
+const selfCheck = ref<null | { pass: boolean; text: string }>(null);
 const chain = ref<any>(null);
 // 样本行类型化（2026-09-27 队长实测一根因：any 数组让 FlightGlobe 期望的
 // lat_1e7/lon_1e7 与此处推入的 lat/lon 键名错位静默通过 tsc——undefined→NaN
@@ -216,7 +219,13 @@ async function pickup(): Promise<void> {
 }
 
 async function arm(tamper = false): Promise<void> {
-  busy.value = true; denyArm.value = null; armResult.value = null;
+  busy.value = true; denyArm.value = null;
+  // 防篡改自检（D1 负例）与真实解锁状态面分离（2026-10-15 根修）：此前共用
+  // armResult——负例拒绝按真实失败呈现（红字 bad_signature 与钥分脑等真故障
+  // 不可辨）且覆盖真实解锁态（横幅 ARMED→DISARMED 翻转，飞控实际仍在解锁态）。
+  // 自检结果走独立 selfCheck 判词（纯函数 lib/flight.tamperSelfCheckVerdict）。
+  if (!tamper) armResult.value = null;
+  selfCheck.value = null;
   try {
     // payload = token_body|sig；篡改=body 中 alt_max +1（bridge 五查签名必拒）
     const text = new TextDecoder().decode(fromHex(tokenPayload.value));
@@ -231,21 +240,30 @@ async function arm(tamper = false): Promise<void> {
     // 计划高度联动（阶段二）：本机计划仓按承诺取回作业高度→围栏取 min
     const planEntry = loadPlan(planHash);
     planAlt.value = planEntry ? planEntry.plan.alt_m : null;
-    armResult.value = await bridge("/arm", {
+    const res = await bridge("/arm", {
       method: "POST",
       body: JSON.stringify({
         token_payload_hex: toHex(payloadBytes), plan_hash_hex: planHash,
         plan_altitude_m: planAlt.value,
       }),
     });
-    if (armResult.value?.ok) {
-      pushEvent("arm", armResult.value.rearmed
-        ? "飞控重新解锁（同一授权延续——授权门未重新消费）"
-        : "解锁起飞（围栏参数已随令牌冻结；剩余架次见令牌区）");
-      if (armResult.value.rearmed) fcArmed.value = true;
+    if (tamper) {
+      selfCheck.value = tamperSelfCheckVerdict(res);
+    } else {
+      armResult.value = res;
+      if (armResult.value?.ok) {
+        pushEvent("arm", armResult.value.rearmed
+          ? "飞控重新解锁（同一授权延续——授权门未重新消费）"
+          : "解锁起飞（围栏参数已随令牌冻结；剩余架次见令牌区）");
+        if (armResult.value.rearmed) fcArmed.value = true;
+      }
     }
   } catch (e: any) {
-    denyArm.value = { code: e?.code ?? "arm_failed", message: e?.message ?? String(e) };
+    if (tamper) {
+      selfCheck.value = tamperSelfCheckVerdict({ code: e?.code, message: e?.message ?? String(e) });
+    } else {
+      denyArm.value = { code: e?.code ?? "arm_failed", message: e?.message ?? String(e) };
+    }
   } finally {
     busy.value = false;
     void refreshArmStatus(); // 解锁成败后即拉消费状态（按钮真值）
@@ -837,6 +855,12 @@ onBeforeUnmount(() => {
         <dd v-else style="color: var(--bad, #c0392b); font-weight: 700">{{ armRejectText || "拒绝（令牌核验未通过）" }}</dd>
         <dt v-if="armResult.auth_id !== undefined">authId</dt><dd v-if="armResult.auth_id !== undefined">{{ armResult.auth_id }}</dd>
         <dt v-if="armResult.fence_state_hex">围栏态（签名绑定）</dt><dd v-if="armResult.fence_state_hex"><span class="mono">{{ armResult.fence_state_hex }}</span></dd>
+      </div>
+      <!-- 防篡改自检判词（2026-10-15 根修）：负例拒绝=正向「自检通过」；闸门
+           放行篡改令牌=红字「自检失败」。独立状态面——不覆盖真实解锁横幅。 -->
+      <div v-if="selfCheck" data-test="tamper-selfcheck" class="kv fz-enter" style="margin-top:12px">
+        <dt>防篡改自检</dt>
+        <dd :style="{ color: selfCheck.pass ? 'var(--ok, #1e8e5a)' : 'var(--bad, #c0392b)', fontWeight: 700 }">{{ selfCheck.text }}</dd>
       </div>
       <DenyBox v-if="denyArm" :code="denyArm.code" :message="denyArm.message" />
     </div>
