@@ -24,6 +24,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import secrets
@@ -537,6 +538,31 @@ def main() -> int:
     # （2026-10-15 队长手测实弹：dist 停 9/28 旧代、binding 验签恒败）从此
     # 在本 e2e 即红，不再靠手测抓。node=前端门禁既有前提（vitest 同源）。
     expect(shutil.which("node") is not None, "5.4b-0 node 在位（分发面 wasm 实弹门前置）")
+    # 5.4b-1/5.4b-2 分发面缓存语义+清单-实物对拍（2026-10-15 缓存不可达根修补刀）：
+    # 病根=StaticFiles 缺省无 Cache-Control，浏览器启发式缓存（(now-Last-Modified)
+    # ×10% 新鲜期）让 9/28 旧代 wasm 在存量浏览器长期新鲜——重分发对存量浏览器
+    # 不可达（队长手测实弹：页面照旧下载旧件 2.7MB、新件 3.0MB 不可见，报错逐字
+    # 复现）。根治=分发面整域 Cache-Control: no-cache（协商档：允许缓存但必回源
+    # ETag 验证——40MB 大件 304 协商零重传）+前端 gen=代指纹查询参（缓存键随代
+    # 变，双兜底）。此处两断言钉死：①served 响应头必含 no-cache；②checks 清单
+    # sha256 必须==dist 实物（活数据清单与实物永不失真的对拍验证）。
+    _head = urllib.request.Request(f"{API}/verify/dist/zkc.wasm", method="HEAD")
+    with opener().open(_head, timeout=30) as _resp:
+        _cc = _resp.headers.get("Cache-Control", "")
+    expect("no-cache" in _cc.lower(),
+           "5.4b-1 分发件响应头 Cache-Control: no-cache（存量浏览器缓存不可达根治①）",
+           f"Cache-Control={_cc!r}（缺头=启发式缓存让旧代件长期新鲜）")
+    _dist_wasm = UAS / "backend" / "dist" / "zkc.wasm"
+    expect(_dist_wasm.is_file(), "5.4b-2a dist 实物在位（分发面存在前提）")
+    with opener().open(f"{API}/verify/api/checks", timeout=30) as _resp:
+        _checks = json.loads(_resp.read())
+    _served_sha = next(
+        (a.get("sha256") for a in _checks["data"]["artifacts"] if a.get("name") == "zkc.wasm"),
+        None)
+    _actual_sha = hashlib.sha256(_dist_wasm.read_bytes()).hexdigest()
+    expect(_served_sha == _actual_sha,
+           "5.4b-2 checks 清单 zkc.wasm sha256==dist 实物（清单-实物对拍）",
+           f"served={_served_sha} actual={_actual_sha}")
     dist_tmp = Path(tempfile.mkdtemp(prefix="fz_dist_wasm_"))
     served = (("zkc.wasm", f"{API}/verify/dist/zkc.wasm"),
               ("trail_canonical_spec.json", f"{API}/verify/dist/trail_canonical_spec.json"))

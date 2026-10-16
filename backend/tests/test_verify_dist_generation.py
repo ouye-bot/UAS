@@ -115,3 +115,58 @@ def test_dist_artifact_generation_markers():
             f"分发面 {artifact.name} 含旧代 binding 模板 {stale_domain.decode()!r}——"
             "现役签名必验败；该产物必须立即重建"
         )
+
+
+def test_dist_served_no_cache_header():
+    """④分发面 served 响应头 Cache-Control: no-cache（2026-10-15 缓存不可达
+    根修补刀）：StaticFiles 缺省无 Cache-Control ⟹ 浏览器启发式缓存
+    （(now-Last-Modified)×10% 新鲜期）让旧代分发件在存量浏览器长期新鲜——
+    重建+重分发对存量浏览器不可达（队长手测实弹：页面照旧下载 9/28 旧件
+    2.7MB、新件 3.0MB 不可见）。协商档 no-cache=允许缓存但必回源 ETag
+    验证（40MB 大件 304 协商零重传）。/verify 前缀整域四类端点逐一钉
+    （dist 静态件/动态重签规范件/checks 清单 API/分发页）——TestClient
+    进程内 app（代码面门禁，不依赖活栈重启时点；活栈运行进程由
+    e2e_frontend_api §5.4b-1 对真实服务复核）。"""
+    from fastapi.testclient import TestClient
+
+    from app.main import create_app
+
+    client = TestClient(create_app())
+    for url in (
+        "/verify/dist/zkc.wasm",
+        "/verify/dist/trail_canonical_spec.json",
+        "/verify/api/checks",
+        "/verify/",
+    ):
+        r = client.head(url) if url.endswith("zkc.wasm") else client.get(url)
+        assert r.status_code == 200, f"{url} -> {r.status_code}"
+        cc = r.headers.get("Cache-Control", "")
+        assert "no-cache" in cc.lower(), (
+            f"{url} 缺 Cache-Control: no-cache（现得 {cc!r}）——启发式缓存让旧代"
+            "分发件在存量浏览器长期新鲜（重分发不可达）"
+        )
+
+
+def test_checks_manifest_matches_dist_artifacts():
+    """⑤checks 清单-实物对拍：/verify/api/checks 的 sha256 必须==dist 实物
+    （活数据清单与实物永不失真的对拍钉——漂移=分发页公示假值）。dist 从未
+    生成=checks 如实标 None（与实物缺席一致，同样过门——不存在性如实呈现
+    非放松；分发件在位的活栈面由 e2e_frontend_api §5.4b-2 对运行服务复核）。"""
+    import hashlib as _hl
+
+    from fastapi.testclient import TestClient
+
+    from app.main import create_app
+
+    client = TestClient(create_app())
+    r = client.get("/verify/api/checks")
+    assert r.status_code == 200
+    items = {a["name"]: a for a in r.json()["data"]["artifacts"]}
+    for name in ("zkc-linux-amd64", "zkc.wasm", "zksvc-build-manifest.json"):
+        p = BACKEND / "dist" / name
+        served = items[name].get("sha256")
+        if not p.is_file():
+            assert served is None, f"{name} 实物缺席但清单给值 {served}——清单造假"
+            continue
+        actual = _hl.sha256(p.read_bytes()).hexdigest()
+        assert served == actual, f"{name} 清单 {served} != 实物 {actual}——清单与实物漂移"

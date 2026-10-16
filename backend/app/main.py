@@ -276,12 +276,6 @@ def create_app() -> FastAPI:
 
     from fastapi.staticfiles import StaticFiles
 
-    class _NoCacheStaticFiles(StaticFiles):
-        def file_response(self, *args, **kwargs):  # noqa: ANN002, ANN003
-            resp = super().file_response(*args, **kwargs)
-            resp.headers["Cache-Control"] = "no-cache"
-            return resp
-
     from app.verify_dist import router as verify_dist_router
 
     app.include_router(verify_dist_router)
@@ -292,11 +286,27 @@ def create_app() -> FastAPI:
     )
     app.mount(
         "/verify",
-        _NoCacheStaticFiles(
+        StaticFiles(
             directory=str(Path(__file__).parent / "verify_static"), html=True, check_dir=True
         ),
         name="verify-page",
     )
+
+    # 分发面整域 Cache-Control: no-cache（2026-10-15 缓存不可达根修补刀）：
+    # 病根=StaticFiles 缺省无 Cache-Control，浏览器启发式缓存（(now-Last-Modified)
+    # ×10% 新鲜期）让旧代 wasm 在存量浏览器长期新鲜——重建+重分发对存量浏览器
+    # 不可达（队长手测实弹：页面照旧下载 9/28 旧件 2.7MB、新件 3.0MB 不可见，
+    # 旧错逐字复现）。语义=协商档 no-cache：允许缓存但必回源 ETag/Last-Modified
+    # 验证（40MB 大件 304 协商零重传，无性能损失）；前缀 /verify 整域单源加头——
+    # 盖 dist 静态件+动态重签规范件 trail_canonical_spec.json+checks 清单 API+
+    # 分发页四类端点，其余路由零波及（此前 _NoCacheStaticFiles 只盖页面挂载，
+    # dist/动态件/API 三面漏网=本刀根因，收编为中间件单源）。
+    @app.middleware("http")
+    async def verify_no_cache_middleware(request: Request, call_next):
+        response = await call_next(request)
+        if request.url.path.startswith("/verify"):
+            response.headers["Cache-Control"] = "no-cache"
+        return response
 
     @app.get("/healthz")
     def healthz() -> dict:
