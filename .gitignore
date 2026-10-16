@@ -64,3 +64,21 @@ fz_zksvc.tgz
 # —— 门限根目录（④站：密封份额=可重组门限根钥材料，密封钥确定性派生——零钥入库红线；
 # 缺失时 initialize_if_absent 现场自举，demo_reset 不清此目录=跨重置连续）——
 backend/threshold_root/
+
+# —— 运行产物残留治理（2026-10-15 批③：队长裁决六类 + 计划外两类；已跟踪文件不受影响）——
+# 密码审计运行报告（crypto-report-*.json——每次跑批落一份，证据以已跟踪档为准）
+backend/reports/
+# 性能跑批报告（perf-report-*.json/md、perf-prove-sidecar-*.json）
+backend/scripts/reports/
+# 门限根净化前整目录备份（threshold_root_bak_日期/）
+backend/threshold_root_bak_*/
+# 根级 e2e 跑批转储（exit 码/失败现场文本）
+/e2e_*.txt
+# zksvc 探针基线产物
+zksvc/probe_baseline/
+# 数据库迁移前备份
+backend/feizheng.db.bak-*
+# 根级运行转储（served 规范件对拍单次运行输出）
+logs_rootfix_served_spec.json
+# ZCode 工具会话状态（workflow 草稿/运行记录——工具本地产物）
+.zcode/
