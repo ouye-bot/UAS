@@ -492,7 +492,7 @@ def run_tests(tmp: Path) -> None:
             expect(mpage.locator("text=互认注册表随真链提供").count() >= 1,
                    "⑨.3 互认机构面板 fake 档诚实空态（FedRegistry 公示随真链提供）")
         else:
-            mpage.wait_for_selector("text=互认机构（FedRegistry 名册）", timeout=20000)
+            mpage.wait_for_selector("text=互认机构名册", timeout=20000)
             expect(mpage.locator("text=/聚合纪元 \\d+/").count() >= 1,
                    "⑨.3 互认机构面板真链档公示（聚合纪元活数据回填）")
             if mpage.locator(".tbl-wrap table").count() >= 1:

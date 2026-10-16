@@ -86,7 +86,7 @@ function shortRoot(hex: string): string {
     <!-- k-of-n 公示大屏（自机构台整体迁入——面板文本原样保留） -->
     <div class="panel" v-if="govAvailable && gov">
       <div style="display:flex;align-items:center;gap:10px;margin-bottom:4px;flex-wrap:wrap">
-        <h2 style="margin:0">链上治理（AdminGovernor k-of-n）</h2>
+        <h2 style="margin:0">链上治理（多签协同 k-of-n）</h2>
         <template v-if="gov.chain">
           <span class="fz-pill teal">{{ gov.chain.required }}/{{ gov.chain.owner_count }} 多签</span>
           <span class="fz-pill" :class="govDelayTag(gov.chain.delay_s).tone">
@@ -151,7 +151,7 @@ function shortRoot(hex: string): string {
       </template>
     </div>
     <div class="panel" v-else-if="govLoaded && !govAvailable">
-      <h2>链上治理（AdminGovernor k-of-n）</h2>
+      <h2>链上治理（多签协同 k-of-n）</h2>
       <FzEmpty text="治理公示面暂不可达（恢复后自动填充）。" icon="doc" />
     </div>
 
@@ -160,7 +160,7 @@ function shortRoot(hex: string): string {
         （修整窗口拍板：机构登记准入动线砍——准入=部署/种子面事务）。 -->
     <div class="panel" v-if="govAvailable && gov">
       <div style="display:flex;align-items:center;gap:10px;margin-bottom:4px;flex-wrap:wrap">
-        <h2 style="margin:0">互认机构（FedRegistry 名册）</h2>
+        <h2 style="margin:0">互认机构名册</h2>
         <template v-if="gov.federation">
           <span class="fz-pill teal">在册 {{ gov.federation.org_active }} 域</span>
           <span class="fz-pill gray">聚合纪元 {{ gov.federation.global_rev_epoch }}</span>

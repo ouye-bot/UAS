@@ -88,7 +88,7 @@ describe("治理页：份额域失同步红牌（1.3 件②——锚迁移自 go
 describe("治理页：k-of-n 公示大屏（自 AdminView 整体迁入）", () => {
   it("提案表+多签 KPI 活数据", async () => {
     const { w } = await mountGov({});
-    expect(w.text()).toContain("AdminGovernor k-of-n");
+    expect(w.text()).toContain("链上治理（多签协同 k-of-n）");
     expect(w.text()).toContain("2/3 多签");
     expect(w.text()).toContain("threshold-reshare:epoch-2");
     expect(w.text()).toContain("时间锁中");
@@ -115,7 +115,7 @@ describe("治理页：互认机构面板（B1 审计件根修——federation �
 
   it("双域名册：逐域锚纪元/锚根/准入状态+聚合根", async () => {
     const { w } = await mountGov({ federation: FED });
-    expect(w.text()).toContain("互认机构（FedRegistry 名册）");
+    expect(w.text()).toContain("互认机构名册");
     expect(w.text()).toContain("org-a");
     expect(w.text()).toContain("org-b");
     expect(w.text()).toContain("在册 2 域");
