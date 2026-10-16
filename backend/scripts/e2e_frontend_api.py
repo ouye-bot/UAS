@@ -9,7 +9,10 @@
   [③令牌与飞行] 引擎公钥 / 取件 ECIES / 令牌验签 / ARM（真令牌）/ 篡改 alt_max
                拒 / 错 plan_hash 拒 / 遥测起链 / 采样+检查点 / 真链锚定
   [④留痕与TRAIL] 采样 256 / 双窗口出证（行程证书包）/ 判决件下载 / 双窗第三方
-               复验 / 窗口越界拒 / 行程索引 JSON
+               复验（native+wasm 双载体）/ 窗口越界拒 / 行程索引 JSON
+               （5.4b/5.4c=分发面 wasm 实弹门：served zkc.wasm+现役引擎钥+
+               当窗案卷经浏览器同款 WASI 路径正例 OK+篡改拒——分发面与现役
+               引擎代差在本 e2e 即红，2026-10-15 根治批结构性防复发）
   [⑤回执查询] 跨屏同码 ready / 随机码 404
   [⑥链上留痕] 面板=真链模式+本屏授权记录在案
   [审计台] 坏令牌 401 / 令状上链 / 列表 / 无令状解锁拒 / 解锁实名 / 追溯闭环
@@ -24,8 +27,10 @@ from __future__ import annotations
 import json
 import os
 import secrets
+import shutil
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.error
 import urllib.request
@@ -522,6 +527,48 @@ def main() -> int:
          "--expected", str(exp)], capture_output=True, text=True, env=env)
     expect(proc.returncode == 2, "5.5 篡改链头 → 复验拒绝 exit 2")
     exp.write_text(json.dumps(exp_full), encoding="utf-8")
+
+    # 5.4b/5.4c 分发面 wasm 实弹门（2026-10-15 分发面代差根治批——结构性防
+    # 复发）：浏览器「在本浏览器运行验证器」=后端 /verify/dist/zkc.wasm +
+    # 现役引擎钥（/authz/engine/pub）注入 + 案卷材料，经 WASI shim 全本机
+    # 运行（TrailView/wasmVerifyWorker）。此处以 node 跑同一 shim、同一预开
+    # 文件布局、同一 env 注入（gcs/web/scripts/wasm-dist-verify.mjs——与
+    # Worker 1:1 同路径），用本窗新鲜案卷实弹：分发面与现役引擎的代差
+    # （2026-10-15 队长手测实弹：dist 停 9/28 旧代、binding 验签恒败）从此
+    # 在本 e2e 即红，不再靠手测抓。node=前端门禁既有前提（vitest 同源）。
+    expect(shutil.which("node") is not None, "5.4b-0 node 在位（分发面 wasm 实弹门前置）")
+    dist_tmp = Path(tempfile.mkdtemp(prefix="fz_dist_wasm_"))
+    served = (("zkc.wasm", f"{API}/verify/dist/zkc.wasm"),
+              ("trail_canonical_spec.json", f"{API}/verify/dist/trail_canonical_spec.json"))
+    for _name, _url in served:
+        with opener().open(_url, timeout=120) as resp:
+            (dist_tmp / _name).write_bytes(resp.read())
+    with opener().open(f"{API}/authz/engine/pub", timeout=30) as resp:
+        _engine_pub = json.loads(resp.read())["data"]["engine_pub_hex"]
+
+    def run_dist_wasm(exp_path: Path) -> subprocess.CompletedProcess:
+        """分发面 wasm 实弹（浏览器同款路径）：served 验证器+served 重签
+        规范件+现役引擎钥+当窗案卷四件。"""
+        return subprocess.run(
+            [shutil.which("node"), str(UAS / "gcs" / "web" / "scripts" / "wasm-dist-verify.mjs"),
+             "--wasm", str(dist_tmp / "zkc.wasm"),
+             "--spec", str(dist_tmp / "trail_canonical_spec.json"),
+             "--pub", _engine_pub,
+             "--instances", str(out_dir / "instances.json"),
+             "--proof", str(out_dir / "proof.bin"),
+             "--vp", str(out_dir / "verifier_param.bin"),
+             "--expected", str(exp_path)],
+            capture_output=True, text=True, timeout=600)
+
+    proc = run_dist_wasm(exp)
+    expect(proc.returncode == 0 and "OK" in (proc.stdout + proc.stderr)[-200:],
+           "5.4b 分发面 wasm 实弹复验 OK（served 验证器+现役引擎钥+当窗案卷——浏览器同路径）",
+           (proc.stdout + proc.stderr)[-200:])
+    (dist_tmp / "expected_tampered.json").write_text(
+        json.dumps({**exp_full, "chain_head_hex": "ab" * 32}), encoding="utf-8")
+    proc = run_dist_wasm(dist_tmp / "expected_tampered.json")
+    expect(proc.returncode == 2, "5.4c 分发面 wasm 篡改链头拒绝（fail-closed 实弹）",
+           (proc.stdout + proc.stderr)[-200:])
 
     # 窗口 1（samples[128:256] 切片——独立窗口头，与窗口 0 链头互异）
     trail_case1, head1, out_dir1, verdict1 = trail_prove_window(1)
