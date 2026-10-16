@@ -339,7 +339,7 @@ async function doRevoke(): Promise<void> {
       body: JSON.stringify({ username, reason, sig_hex, epoch: preview.epoch }),
     });
     revokeResult.value = out;
-    flash.value = `✓ 已吊销 ${username} 的 ${out.revoked_handles_hex?.length ?? 0} 项有效凭证——纪元推进至 ${out.epoch}，根已推链公示`;
+    flash.value = `✓ 已吊销 ${username} 的 ${out.revoked_handles_hex?.length ?? 0} 项有效凭证——纪元推进至 ${out.epoch}，撤销名单根已公示上链`;
     revokeUser.value = "";
     revokeReason.value = "";
     await refresh();
@@ -469,7 +469,7 @@ async function issueCollabCode(w: PendingWarrantRow): Promise<void> {
       body: JSON.stringify({ warrant_hash_hex: w.warrant_hash_hex }),
     });
     pwIssued.value = { ...pwIssued.value, [w.warrant_hash_hex]: { fingerprint: out.fingerprint } };
-    flash.value = `✓ 协作函已出具（FZC2 指纹 ${out.fingerprint}）——审计台凭函解锁（函-令状-凭证三方绑定）`;
+    flash.value = `✓ 协作函已出具（函封指纹 ${out.fingerprint}）——审计台凭函解锁（函-令状-凭证三方绑定）`;
   } catch (e) {
     const err = e as ApiError;
     deny.value = { code: err.code ?? "collab_code_failed", message: err.message ?? String(e) };
@@ -726,7 +726,7 @@ async function doFleetRevoke(): Promise<void> {
       method: "POST",
       body: JSON.stringify({ master_cred_hash_hex: t.master_cred_hash_hex, reason, sig_hex, epoch }),
     });
-    flash.value = `✓ 设备 ${t.device_no} 已签名吊销——org 署名推根即时生效（未消费子凭证同步并入撤销集）`;
+    flash.value = `✓ 设备 ${t.device_no} 已签名吊销——机构署名后撤销名单根即时上链生效（未消费子凭证同步并入撤销集）`;
     fleetRevokeTarget.value = null;
     fleetRevokeReason.value = "";
     await Promise.all([refreshFleet(), refreshRevocation()]);
@@ -895,8 +895,8 @@ async function doFleetRevoke(): Promise<void> {
           <span class="fz-pill gray" v-if="pwLoaded">逐案核对后出函</span>
         </div>
         <p class="desc">
-          审计立案后尚未解锁的令状在此汇列——核对依据后出具随案协作函（FZC2：
-          函-令状-凭证三方绑定，审计台凭函解锁）。未指定目标授权编号的令状
+          审计立案后尚未解锁的令状在此汇列——核对依据后出具随案协作函（函封格式代号
+          FZC2——函、令状、凭证三方绑定，审计台凭函解锁）。未指定目标授权编号的令状
           （匿名立案位）自动执行不可达，需审计台补充带凭证的重新立案——如实
           标注，不提供手输凭证哈希的路径（登记权威永不手输哈希）。
         </p>
@@ -921,10 +921,10 @@ async function doFleetRevoke(): Promise<void> {
               <button
                 class="btn sm"
                 :disabled="pwBusy === w.warrant_hash_hex || w.target_auth_id == null"
-                :title="w.target_auth_id == null ? '未指定目标授权——自动出函不可达（审计台补充带凭证重新立案）' : '出具 FZC2 协作函（函-令状-凭证三方绑定）'"
+                :title="w.target_auth_id == null ? '未指定目标授权——自动出函不可达（审计台补充带凭证重新立案）' : '出具随案协作函（函-令状-凭证三方绑定）'"
                 @click="issueCollabCode(w)"
               >
-                {{ pwBusy === w.warrant_hash_hex ? "出函中…" : "出具协作函（显示 FZC2 指纹）" }}
+                {{ pwBusy === w.warrant_hash_hex ? "出函中…" : "出具协作函（显示函封指纹）" }}
               </button>
               <span v-if="pwIssued[w.warrant_hash_hex]" class="req-meta mono">
                 函指纹 {{ pwIssued[w.warrant_hash_hex]!.fingerprint }}
@@ -941,7 +941,7 @@ async function doFleetRevoke(): Promise<void> {
       <div class="panel" id="revoke-panel">
         <h2>凭证吊销</h2>
         <p class="desc">
-          按人级联吊销：该用户全部有效凭证一次撤销（同纪元同根一次推链，即时生效）。
+          按人级联吊销：该用户全部有效凭证一次撤销（同一纪元内合并为一次名单更新上链，即时生效）。
           吊销须理由（≥4 字，公示面必填）+您的密钥签名——签名覆盖该用户全部有效凭证
           句柄串与目标纪元（服务端权威预览给出），两步式：先预览句柄，确认后签名提交。
         </p>
@@ -952,15 +952,15 @@ async function doFleetRevoke(): Promise<void> {
         <textarea v-model="revokeReason" rows="2" placeholder="例：审计结案结论属实——围栏违规成立，依规吊销"></textarea>
         <div style="display:flex;gap:10px;margin-top:10px;align-items:center">
           <button class="btn" style="border-color:#d98484;color:var(--tone-red-fg)" :disabled="busy" @click="doRevoke">
-            {{ revokeConfirm ? "确认吊销（签名并推链）" : "吊销" }}
+            {{ revokeConfirm ? "确认吊销（签名并公示上链）" : "吊销" }}
           </button>
-          <span v-if="revokePreview" class="note">已取预览：签名将绑定纪元 <b class="mono">{{ revokePreview.epoch }}</b>（服务端权威——DB 镜像不作签绑依据）</span>
+          <span v-if="revokePreview" class="note">已取预览：签名将绑定纪元 <b class="mono">{{ revokePreview.epoch }}</b>（服务端权威——页面显示值不作签名绑定依据）</span>
           <span v-else class="note">目标纪元在预览时由服务端权威给出（不取镜像自算）</span>
         </div>
         <div v-if="revokeConfirm && revokePreview" class="deny fz-enter">
           <span class="code">二次确认</span>
           将吊销 <b class="mono">{{ revokeUser.trim() }}</b> 的全部有效凭证（{{ revokePreview.handles.length }} 项——含授权轴联动与证件黑名单）
-          ——签名绑定纪元 <b class="mono">{{ revokePreview.epoch }}</b>，纪元根即时推链、不可撤销。确认执行？
+          ——签名绑定纪元 <b class="mono">{{ revokePreview.epoch }}</b>，撤销名单根即时公示上链、不可撤销。确认执行？
           <button class="btn" style="margin-left:10px" :disabled="busy" @click="doRevoke">确认吊销</button>
           <button class="btn ghost" style="margin-left:8px" @click="revokeConfirm = false">取消</button>
         </div>
@@ -1030,7 +1030,7 @@ async function doFleetRevoke(): Promise<void> {
           <div class="gate fz-enter" style="margin-top:10px">
             <div class="gate-title">发起恢复：<span class="mono">{{ restoreTarget.handle_hex.slice(0, 24) }}…</span></div>
             <p class="desc" style="margin-bottom:6px">
-              单签不执行——您签 FZ-RESTORE 域后请求落 pending，审计台复核第二签（FZ-RESTORE-COUNTERSIGN 域）才摘叶推链。
+              单签不执行——您签 FZ-RESTORE 域后请求转入待复核，审计台复核第二签（FZ-RESTORE-COUNTERSIGN 域）通过后，才将已恢复凭证移出撤销名单并公示上链。
             </p>
             <label>恢复理由（必填 ≥4 字）</label>
             <textarea v-model="restoreReason" rows="2" placeholder="例：误吊销——经复核凭证与设备均无异常"></textarea>
@@ -1071,14 +1071,14 @@ async function doFleetRevoke(): Promise<void> {
     <div v-show="tab === 'fleet'">
       <!-- ③-b 机队设备管理（3.1——credKind=2 机构承诺主凭证）：机构管理员以
           org 身份批量登记设备（kind=2 链上承诺）+机队子凭证批量签发（机构共享
-          池）+列表/吊销（org 署名推根即时生效）。设备档案（salt 原像）口令密封
+          池）+列表/吊销（机构署名后撤销名单根即时上链生效）。设备档案（salt 原像）口令密封
           本机存储；出示钥每张全新生成（跨申请不可链接）。 -->
       <div class="panel" data-test="fleet-panel">
         <h2>机队设备管理（机构承诺 credKind=2）</h2>
         <p class="desc">
           机构以自身登记权威为设备出具合规承诺（链上 kind=2 主凭证）并为设备批量签发飞行子凭证
           （配额=机构级共享池{{ fleetPoolQuota != null ? `，上限 ${fleetPoolQuota} 张` : "" }}）。
-          设备序列号与地面站桥读数同源校验（SN 绑定——换机不可用）；吊销走 org 署名推根，即时生效。
+          设备序列号与地面站桥读数同源校验（SN 绑定——换机不可用）；设备吊销由机构署名后撤销名单根即时上链生效。
         </p>
         <div class="panel-head">
           <h2 style="font-size:15px">本机构机队设备</h2>
@@ -1132,7 +1132,7 @@ async function doFleetRevoke(): Promise<void> {
           <div class="gate fz-enter" style="margin-top:10px">
             <div class="gate-title">吊销设备：<span class="mono">{{ fleetRevokeTarget.device_no }}</span>（SN {{ fleetRevokeTarget.sn }}）</div>
             <p class="desc" style="margin-bottom:6px">
-              FZ-REVOKE 域签名按句柄吊销（设备无用户名——不走按人预览）——共享树纪元根+<b>{{ myOrg ?? "本机构域" }}</b> 署名锚同步推链，
+              FZ-REVOKE 域签名按句柄吊销（设备无用户名——不走按人预览）——共享纪元撤销名单根+<b>{{ myOrg ?? "本机构域" }}</b> 机构署名锚同步公示上链，
               未消费子凭证的出示钥并入撤销集（即时生效）。
             </p>
             <label>吊销理由（必填 ≥4 字）</label>
@@ -1265,7 +1265,7 @@ async function doFleetRevoke(): Promise<void> {
       <!-- ③ 出函台账（FZC2）——mega-panel 拆分（视觉 S 批 S7）：原③一块大面板
           拆为四个 .panel，全部文本原样保留 -->
       <div class="panel">
-        <h2>出函台账（FZC2）</h2>
+        <h2>出函台账（随案协作函）</h2>
         <div class="tbl-wrap" v-if="overview?.collab_ledger?.length">
           <table class="tbl">
             <thead><tr><th>令状哈希</th><th>函指纹</th><th>出具时间</th></tr></thead>
