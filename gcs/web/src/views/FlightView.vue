@@ -376,7 +376,7 @@ function recordSample(r: any): void {
     revokeAlert.value = r.revoke_alert;
     pushEvent(
       "revoke",
-      `飞行中检出授权已被吊销（rev_epoch=${r.revoke_alert.rev_epoch ?? "—"}）——地面站无法收回控制权，请立即手动降落`,
+      `飞行中检出授权已被吊销（撤销纪元 ${r.revoke_alert.rev_epoch ?? "—"}）——地面站无法收回控制权，请立即手动降落`,
       true,
     );
   }
@@ -867,7 +867,7 @@ onBeforeUnmount(() => {
 
     <div class="panel fz-enter">
       <h2>飞行记录</h2>
-      <p class="desc">解锁后：①「开始记录」开启遥测链与自动采样 → ②「自动飞到目标高度」或「手动爬升」进入合规高度带（低于围栏即为合规）→ ③ 采满样本后到「留痕与 TRAIL」生成合规证书 → ④「结束飞行并封链」收尾。飞行控制三种来源互斥——手动爬升、定高悬停、自动飞行，任一操作即接管；悬停与自动飞行在定高模式下执行。</p>
+      <p class="desc">解锁后：①「开始记录」开启遥测链与自动采样 → ②「自动飞到目标高度」或「手动爬升」进入合规高度带（低于围栏即为合规）→ ③ 采满样本后到「留痕与合规证明」生成合规证书 → ④「结束飞行并封链」收尾。飞行控制三种来源互斥——手动爬升、定高悬停、自动飞行，任一操作即接管；悬停与自动飞行在定高模式下执行。</p>
 
       <!-- 分区（视觉 S 批 S6：大面板拆 记录/机动/收尾 三组——全部文本与按钮
            title 原样保留，仅容器重排；组标题为最小新增装饰文本） -->
@@ -900,7 +900,7 @@ onBeforeUnmount(() => {
              复用 deny 红条；UI 细化由前端批接手） -->
         <div v-if="revokeAlert" class="deny fz-enter" style="margin-bottom:10px">
           <span class="code">🔴 授权已吊销（{{ new Date(revokeAlert.detected_at * 1000).toLocaleTimeString() }} 检出）</span>
-          本架次授权在链上已被撤销（rev_epoch={{ revokeAlert.rev_epoch ?? "—" }}，auth_id={{ revokeAlert.auth_id }}）。
+          本架次授权在链上已被撤销（撤销纪元 {{ revokeAlert.rev_epoch ?? "—" }}，授权编号 {{ revokeAlert.auth_id }}）。
           地面站无法收回已授权飞行——请立即手动降落；落地后本授权不可再次解锁，原因与救济见「我的记录」自查。
         </div>
         <div
@@ -1033,7 +1033,7 @@ onBeforeUnmount(() => {
         </div>
         <div v-if="anchorResult" class="note fz-enter" style="margin-top:8px">
           <template v-if="anchorResult.ok">
-            ✓ 封链完成：已锚定 {{ anchorResult.anchored }} 个检查点（anchored_seq={{ anchorResult.anchored_seq }}）——第三方可经链上 verifyHead 复验。
+            ✓ 封链完成：已锚定 {{ anchorResult.anchored }} 个检查点——第三方可在链上独立复验（锚定序号 {{ anchorResult.anchored_seq }}）。
           </template>
           <template v-else>
             封链失败：{{ anchorResult.code }}——检查点未锚定（fail-closed，可重试续锚）。
