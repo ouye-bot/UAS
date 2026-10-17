@@ -421,20 +421,34 @@ async function endFlight(): Promise<void> {
   sealConfirm.value = false;
   sealing.value = true; denyLog.value = null;
   try {
-    stopAuto(); // B-P2-7：封链时必须退出自动飞行（disarm 后 climb 仍发的自相矛盾态）
+    // B-P2-7：封链时必须退出自动飞行（disarm 后 climb 仍发的自相矛盾态）
+    stopAuto();
     if (sampleTimer) { clearInterval(sampleTimer); sampleTimer = null; }
     anchorResult.value = await bridge("/telemetry/anchor", { method: "POST" });
     if (anchorResult.value?.ok) {
+      // 缺陷 A2 根修（2026-10-17）：停桨只属于成功封链——anchor 失败时
+      // 无条件 /sitl/disarm+清采样 =「已停桨但链未封」僵尸态（链 active 永真、
+      // 重试封链 0 新样本、下方「可重试」承诺实为假）。失败路径改为飞行保持
+      // 活体（不 disarm+恢复采样续证），重试封链真实可达。
       sealed.value = true;
       sessionStorage.setItem("fzFlightSealed", "1"); // 切页回来仍是"已封链"（会话域）
       archiveFlightStats(); // 档案积累批：封链成功即入档（newFlight 清空前已就位）
+      await bridge("/sitl/disarm", { method: "POST" });
+      // C-P2-2：停桨后横幅回 DISARMED（否则 ARMED 横幅与已停桨事实自相矛盾）
+      armResult.value = null;
+      const dur = chainStartT.value ? Math.floor(Date.now() / 1000) - chainStartT.value : 0;
+      sealDurText.value = `${Math.floor(dur / 60)} 分 ${dur % 60} 秒`;
+      pushEvent("seal", `结束飞行并封链——检查点锚定成功（${samples.value.length} 样本）`);
+    } else {
+      // 锚定失败：飞行保持活体——恢复采样续证（已产检查点仍在待锚队列，
+      // 重试封链一次覆盖旧+新），停桨决策留给成功后的下一次封链。
+      if (sitlReady.value && armed.value && chain.value) startAutoSample();
+      pushEvent(
+        "seal",
+        `检查点锚定失败（${anchorResult.value?.code ?? "未知原因"}）——飞行保持中，可重试封链`,
+        true,
+      );
     }
-    await bridge("/sitl/disarm", { method: "POST" });
-    // C-P2-2：停桨后横幅回 DISARMED（否则 ARMED 横幅与已停桨事实自相矛盾）
-    armResult.value = null;
-    const dur = chainStartT.value ? Math.floor(Date.now() / 1000) - chainStartT.value : 0;
-    sealDurText.value = `${Math.floor(dur / 60)} 分 ${dur % 60} 秒`;
-    pushEvent("seal", `结束飞行并封链——检查点锚定${anchorResult.value?.ok ? "成功" : "失败"}（${samples.value.length} 样本）`);
   } catch (e: any) {
     denyLog.value = { code: e?.code ?? "seal_failed", message: e?.message ?? String(e) };
   } finally { sealing.value = false; }
@@ -1036,7 +1050,7 @@ onBeforeUnmount(() => {
             ✓ 封链完成：已锚定 {{ anchorResult.anchored }} 个检查点——第三方可在链上独立复验（锚定序号 {{ anchorResult.anchored_seq }}）。
           </template>
           <template v-else>
-            封链失败：{{ anchorResult.code }}——检查点未锚定（fail-closed，可重试续锚）。
+            封链未完成：{{ anchorResult.code }}——检查点未锚定（fail-closed）。飞行仍在进行，可重试封链（已产检查点与新样本一并补锚）。
           </template>
         </div>
         <DenyBox v-if="denyLog" :code="denyLog.code" :message="denyLog.message" />
