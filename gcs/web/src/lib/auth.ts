@@ -376,16 +376,29 @@ export async function loginWithSk(username: string, sk: string, password?: strin
   return out;
 }
 
-/** 跨设备恢复：本机无 fzCred 而服务器有密封资料→解封落盘（换设备登录即达）。 */
+/** 跨设备恢复：本机无 fzCred 而服务器有密封资料→解封落盘（换设备登录即达）。
+ * 槽形态分派（缺陷 B 二层配套）：v6 槽（rwd 密封——v6 改密后的产物）以当前
+ * 口令 rwd 解（opaqueRwdMaterials 同序回程）；v4/v3 槽=口令 KEK 原路径。解封
+ * 失败不阻断登录——下游页面按「未登记」引导补资料（catch 兜底不变）。 */
 async function restoreProfileIfMissing(password: string): Promise<void> {
   if (localStorage.getItem("fzCred")) return;
+  const username = cachedUsername();
   const info = await me();
   if (!info?.sealed_profile) return;
   try {
-    const meta = await unsealProfileSlot<{ cred: unknown; form: unknown }>(
-      JSON.parse(info.sealed_profile),
-      password,
-    );
+    const slotObj = JSON.parse(info.sealed_profile) as { v?: number };
+    const { openProfileSlotV6 } = await import("./keystore");
+    const meta = await (async (): Promise<{ cred: unknown; form: unknown }> => {
+      if (slotObj?.v === 6 && username) {
+        const { opaqueRwdMaterials } = await import("./opaqueClient");
+        const { rwd } = await opaqueRwdMaterials(username, password);
+        return openProfileSlotV6<{ cred: unknown; form: unknown }>(info.sealed_profile!, rwd);
+      }
+      return unsealProfileSlot<{ cred: unknown; form: unknown }>(
+        slotObj as never,
+        password,
+      );
+    })();
     if (meta?.cred && meta?.form) {
       localStorage.setItem("fzCred", JSON.stringify(meta.cred));
       localStorage.setItem("fzForm", JSON.stringify(meta.form));
