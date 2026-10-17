@@ -183,7 +183,7 @@ function shortRoot(hex: string): string {
         <div class="tbl-wrap" v-if="gov.federation.orgs.length">
           <table class="tbl">
             <thead>
-              <tr><th>机构域</th><th>准入状态</th><th>锚纪元</th><th>锚根（SM3）</th><th>登记/最近推根</th></tr>
+              <tr><th>机构域</th><th>准入状态</th><th>锚纪元</th><th>锚根（SM3）</th><th>登记/最近根公示</th></tr>
             </thead>
             <tbody>
               <tr v-for="o in gov.federation.orgs" :key="o.org_id">

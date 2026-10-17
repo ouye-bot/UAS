@@ -280,7 +280,7 @@ async function deleteOrphan(username: string): Promise<void> {
 // ——两步式：先 GET 预览端点取该用户有效凭证句柄与目标纪元，本地拼消息签名
 // 后正式提交。成功展示联动撤销授权清单（linked_auth_ids）+台账回执。
 // D2（2026-10-12）：提示纪元改绑**预览返回值**（服务端 _base_epoch()+1 权威
-// ——DB snapshot 镜像漂移不作签绑依据），预览挪到确认拍：确认句里亮权威纪元。
+// ——页面显示值不作签名绑定依据），预览挪到确认拍：确认句里亮权威纪元。
 const revokeUser = ref("");
 const revokeReason = ref("");
 const revokeConfirm = ref(false);
@@ -351,7 +351,7 @@ async function doRevoke(): Promise<void> {
 
 // ---- 恢复双控·发起（B6·admin 第一签）：公示撤销清单逐叶「发起恢复」——
 // FZ-RESTORE|v1|{handle}|{reason} 签名→pending 请求落库（单签不执行，
-// 审计台复核第二签后才摘叶推链）----
+// 审计台复核第二签后才移出撤销名单并公示上链）----
 const revokedLeaves = ref<SnapshotLeaf[]>([]);
 const snapshotEpoch = ref<number | null>(null);
 const snapAvailable = ref(true);
@@ -548,7 +548,7 @@ async function checkSigs(r: ReqView): Promise<void> {
 
 // ---- 3.1 机队设备管理（credKind=2 机构承诺主凭证——机构管理员 org 域动线）----
 // 登记（kind=2 链上承诺）→子凭证批量签发（机构共享池）→列表/吊销（org 署名
-// 推根）。设备档案（salt 原像=承诺原像机密材料）口令 KEK 密封 localStorage
+// 名单根上链生效）。设备档案（salt 原像=承诺原像机密材料）口令 KEK 密封 localStorage
 // （lib/fleet 薄委托 keystore v4 原语）；出示钥每张子凭证当场全新生成
 // （一次性出示钥纪律——出示公钥层跨申请不可链接）。
 import { sm2 } from "sm-crypto";
@@ -1045,10 +1045,11 @@ async function doFleetRevoke(): Promise<void> {
 
         <div class="panel-head" style="margin-top:20px">
           <h2 style="font-size:15px">恢复请求台账</h2>
-          <span class="fz-pill gray" v-if="restoresAvailable">pending 待复核 / executed 已恢复</span>
+          <span class="fz-pill gray" v-if="restoresAvailable">历史台账（非当前状态——发起成功的新请求置顶显示「待复核」）</span>
         </div>
         <div v-if="!restoresAvailable" class="note">恢复台账不可达（后端未就绪时本区自动隐藏）。</div>
         <FzEmpty v-else-if="!restores.length" text="尚无恢复请求。" icon="doc" />
+        <div v-else-if="!restores.some((r) => r.status === 'pending')" class="note">当前无待复核请求——下列均为历史记录。</div>
         <div v-else class="req-list">
           <div v-for="row in restores" :key="row.id" class="req-row" :class="row.status === 'pending' ? 'amber' : 'gold'">
             <div class="req-main">

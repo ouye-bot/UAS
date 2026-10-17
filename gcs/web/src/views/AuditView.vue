@@ -366,7 +366,7 @@ async function countersign(row: RestoreRequestRow): Promise<void> {
   try {
     const sig = signMsg(sk.value, restoreCountersignMsg(row.handle_hex, row.reason));
     await api(`/ra/restore/${row.id}/countersign`, { method: "POST", body: JSON.stringify({ sig_hex: sig }) });
-    flash.value = "✓ 复核签名生效——凭证已恢复并推链（新纪元根公示可查）";
+    flash.value = "✓ 复核签名生效——凭证已恢复并公示上链（新纪元撤销名单根公示可查）";
     await refreshRestores();
   } catch (e) {
     const err = e as ApiError;
@@ -521,7 +521,7 @@ const stepIndex = computed<0 | 1 | 2 | 3>(() => step.value);
         </div>
         <p class="desc">
           机构管理员可对已吊销凭证发起恢复（单签不执行）；复核以您的密钥签
-          FZ-RESTORE-COUNTERSIGN 域——发起人不得自行复核，双签齐即时摘叶推链。
+          FZ-RESTORE-COUNTERSIGN 域——发起人不得自行复核，双签齐即将该凭证移出撤销名单并公示上链。
         </p>
         <template v-if="!unlockedOnce">
           <label>解锁审计员密钥（密码——仅在解锁瞬间使用）</label>
@@ -534,6 +534,7 @@ const stepIndex = computed<0 | 1 | 2 | 3>(() => step.value);
           <div class="fz-skel" style="width:60%"></div>
         </div>
         <FzEmpty v-else-if="!restores.length" text="暂无待复核的恢复请求。" icon="inbox" />
+        <div v-else-if="!restores.some((r) => r.status === 'pending')" class="note">当前无待复核请求——下列均为历史已恢复项。</div>
         <div v-else class="req-list">
           <div v-for="row in restores" :key="row.id" class="req-row"
                :class="row.status === 'pending' ? 'amber' : 'gold'">
