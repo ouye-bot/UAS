@@ -104,8 +104,31 @@ def _req(url: str, body: dict | None = None, headers: dict | None = None, method
 
 
 # ---- 账户会话（2026-09-29 账户批：X-Audit/X-RA-Token 退役）----
+def _self_provisioned_role_session(role: str):
+    """机构测试会话自备（种子漂移免疫——e2e_workflows 7206947 同工艺）：
+    演示种子账户（auditor/admin）可被人工首登激活换密——active 态下种子
+    口令必败（OPAQUE 解掩码 server_pub 前缀不符，诚实抛错）。随机预置同
+    角色账户（seed_institutional_account=离线种子脚本职责面——机构角色无
+    法自注册，script_auth 同语义）+首登激活；fe- 前缀随机名与 wf- 同粒度
+    可溯源。会话=真实 OPAQUE 挑战-应答，与种子账户同强度。"""
+    from app.accounts.service import seed_institutional_account
+    from app.db import SessionLocal
+    from scripts.script_auth import script_login
+
+    username = f"fe-{role}-" + secrets.token_hex(3)
+    role_pw = secrets.token_urlsafe(12)  # 随机口令——不落代码不落盘
+    s = SessionLocal()
+    seed_institutional_account(s, username, role, role_pw)
+    s.close()
+    sess = script_login(API, username, role_pw)
+    sess._username = username
+    return sess
+
+
 def _account_sessions():
-    """按需登录审计员/管理员（env 初始口令；未激活态激活、已注册则跳过）。"""
+    """按需登录审计员/管理员（env 初始口令优先；激活换密漂移=自备随机预置
+    同角色账户——2026-10-15 ⑥门禁批运维口径：演示种子账户激活态不可依赖，
+    种子口令仅首登激活期有效）。"""
     import os as _os
     from scripts.script_auth import script_login
 
@@ -117,7 +140,13 @@ def _account_sessions():
             "预置账户初始口令——未激活态）。请先运行 scripts/seed_accounts.py 并以"
             "env 注入口令。"
         )
-    return script_login(API, "auditor", aud_pw), script_login(API, "admin", adm_pw)
+    try:
+        return (script_login(API, "auditor", aud_pw),
+                script_login(API, "admin", adm_pw))
+    except Exception as e:  # OPAQUE 解掩码失败=演示账户已被首登激活换密（诚实漂移，非凭证伪造）
+        print(f"  [..] 种子口令登录未过（{str(e)[:70]}）——按 7206947 运维口径自备随机预置机构会话")
+        return (_self_provisioned_role_session("auditor"),
+                _self_provisioned_role_session("admin"))
 
 
 _AUD_SESS = None
@@ -433,6 +462,22 @@ def main() -> int:
         rc_s, s = bridge(f"/telemetry/sitl_sample?t_epoch={int(time.time())}")
         return s
 
+    def sitl_sample_resilient(max_stall_s: float = 20.0) -> dict:
+        """瞬断容忍的真采样（2026-10-15 补跑根修）：首版填充循环单次 not-ok
+        即弃跑且 FAIL 只报「当前 None」（原因不显示——诊断盲区，本轮实锤：
+        速灌 96 样本后单次瞬断全批弃）；真前端动线=2Hz 轮询、瞬断「采样暂停」
+        继续轮询。此处对齐前端：not-ok 后 1s 重试至 max_stall_s，链路真死
+        （连败超窗）才带原始载荷返回——128/256 计数断言零放宽，样本一个
+        不少地真采。"""
+        last: dict = {}
+        t0 = time.time()
+        while time.time() - t0 < max_stall_s:
+            last = sitl_sample()
+            if last.get("ok") and last.get("n") is not None:
+                return last
+            time.sleep(1.0)
+        return last
+
     smp = sitl_sample()
     expect(smp.get("ok") is True and smp.get("checkpoint"), "4.9 真采样+检查点（SITL 真遥测+设备签+围栏态绑定）")
     rc, anch = bridge("/telemetry/anchor", {}, timeout=120)
@@ -444,10 +489,12 @@ def main() -> int:
     # 静止数据两窗行字节一致⟹链头一致，无法证明切片正确性；爬升后高度分
     # 布不同⟹两窗独立窗口头，行程证书包语义（多窗互异证书）可判）
     while smp.get("n", 0) < 128:
-        smp = sitl_sample()
+        smp = sitl_sample_resilient()
         if not smp.get("ok"):
             break
-    expect(smp.get("n", 0) >= 128, f"5.1a 窗口 0 采样满 128（当前 {smp.get('n')}）")
+        time.sleep(0.2)
+    expect(smp.get("n", 0) >= 128, f"5.1a 窗口 0 采样满 128（当前 {smp.get('n')}）",
+           f"last={str(smp)[:150]}")
     rc, climb = bridge("/sitl/climb?pwm=1750&hold_s=2.5", {}, timeout=120)
     expect(climb.get("ok") is True, "5.1b 窗口间真实爬升受理（SITL 升空——窗口 1 数据非退化）", str(climb)[:120])
     win1_alt_max = 0
@@ -460,12 +507,14 @@ def main() -> int:
             break
         time.sleep(0.5)
     while smp.get("n", 0) < N_WINDOW * 2:  # 窗口 1 满=256（原误写 128——爬升后 168 即停，窗口 1 永不完整）
-        smp = sitl_sample()
+        smp = sitl_sample_resilient()
         if not smp.get("ok"):
             break
         win1_alt_max = max(win1_alt_max, smp.get("alt_cm", 0) or 0)
+        time.sleep(0.2)
     expect(win1_alt_max > 0, "5.1c 窗口 1 含升空样本（高度>0——两窗数据非同型）", f"max_alt={win1_alt_max}")
-    expect(smp.get("n", 0) >= N_WINDOW * 2, f"5.1 采样满 {N_WINDOW * 2}（当前 {smp.get('n')}）")
+    expect(smp.get("n", 0) >= N_WINDOW * 2, f"5.1 采样满 {N_WINDOW * 2}（当前 {smp.get('n')}）",
+           f"last={str(smp)[:150]}")
     alt_max_cm = tok["alt_max"] * 100
 
     def trail_prove_window(w: int):
@@ -555,9 +604,9 @@ def main() -> int:
     _dist_wasm = UAS / "backend" / "dist" / "zkc.wasm"
     expect(_dist_wasm.is_file(), "5.4b-2a dist 实物在位（分发面存在前提）")
     with opener().open(f"{API}/verify/api/checks", timeout=30) as _resp:
-        _checks = json.loads(_resp.read())
+        _checks_doc = json.loads(_resp.read())  # 勿名 _checks——模块级断言计数器同名遮蔽曾让收官行打整包清单 JSON（2026-10-17 补跑实锤，改名根治）
     _served_sha = next(
-        (a.get("sha256") for a in _checks["data"]["artifacts"] if a.get("name") == "zkc.wasm"),
+        (a.get("sha256") for a in _checks_doc["data"]["artifacts"] if a.get("name") == "zkc.wasm"),
         None)
     _actual_sha = hashlib.sha256(_dist_wasm.read_bytes()).hexdigest()
     expect(_served_sha == _actual_sha,
