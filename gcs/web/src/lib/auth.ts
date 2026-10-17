@@ -466,39 +466,51 @@ export async function unlockSk(password: string): Promise<string> {
 
 /** 当前密码错=unlockSk 抛 bad_password；新密码规范由调用方以
  * checkPasswordRules（lib/enroll）先行校验（与注册/激活同门槛）。
- * ⑫O-5 v6 感知：v6 账户（记录在账——改密首试 422 v6_change_required 引导）
- * =v6' 重封+新掩码钥原子换新（盐/迭代取 evaluate 响应账面值——§5.6 不轮换）；
- * v4 存量保留 v4 语义。 */
+ * ⑫O-5 v6 感知：v6 账户=v6' 重封+新掩码钥原子换新（盐/迭代取 evaluate 响应
+ * 账面值——§5.6 不轮换）；v4 存量保留 v4 语义。v6 判定=本地面板快路径+
+ * me() sealed_blob 服务端权威双源（缺陷 B 根修——全新浏览器本地面板缺失时
+ * 仍正确选 v6 路径，不再误发 v4 信封吃 422）。 */
 export async function changePassword(currentPw: string, newPw: string): Promise<void> {
   const username = cachedUsername();
   if (!username) throw new ApiError("not_logged_in", "未登录", 401);
   const sk = await unlockSk(currentPw); // 解封+公钥核对（错密码即拒，不烧服务端）
   const sm2Any = sm2 as unknown as { getPublicKeyFromPrivateKey: (sk: string) => string };
   const pk = sm2Any.getPublicKeyFromPrivateKey(sk).replace(/^04/, "");
-  // 资料密封件同口径重封（pilot 专属；KEK 同源——当前密码已验，解封必达）
+  // 资料密封件同口径重封（pilot 专属；KEK 同源——当前密码已验，解封必达）。
+  // me() 单源双用（缺陷 B 根修 2026-10-17）：回执同时供下方 v6 形态权威判定。
+  const info = await me();
   let sealedProfile: string | undefined;
-  try {
-    const info = await me();
-    if (info?.sealed_profile) {
+  if (info?.sealed_profile) {
+    try {
       const meta = await unsealProfileSlot<{ cred: unknown; form: unknown }>(
         JSON.parse(info.sealed_profile),
         currentPw,
       );
       sealedProfile = JSON.stringify(await sealProfileSlot(meta, newPw));
+    } catch {
+      throw new ApiError(
+        "profile_reseal_failed",
+        "资料密封件重封失败（已中止改密）——请重试；密封件未被变更",
+        500,
+      );
     }
-  } catch {
-    throw new ApiError(
-      "profile_reseal_failed",
-      "资料密封件重封失败（已中止改密）——请重试；密封件未被变更",
-      500,
-    );
   }
-  // ⑫O-5 v6 感知：本地面板版本检测（v6 信封本地可判——盐必须密封前即真值，
-  // 占位盐若被照单全收=账户永久打不开——红线）。v6=先 evaluate 取账面盐/迭代
-  // →v6' 材料+新掩码钥原子换新；v4 存量=v4 语义零变化（不得携带掩码钥）。
+  // ⑫O-5 v6 感知（缺陷 B 根修）：本地面板版本检测只是快路径——**全新浏览器
+  // （本地面板缺失/换设备被清扫）不构成 v4 存量的证据**。权威判据=me() 回执
+  // 的 sealed_blob 即服务端现行密封件：v6 账户存的就是 v6' 信封（keystore 端
+  // 点对 v6 账户 410——服务端已无 v4 密封件可下发的镜像语义）。判定错档代价
+  // 不对称：v6 账户误走 v4 路径=发 v4 信封不携掩码钥 → 422 v6_change_required
+  // 改密必败（手测实弹 final_ui_04 全新浏览器实证）；v4 存量维持 v4 路径语义
+  // 零变化。sealed_blob 形态不可判（理论不达）=维持本地面板判定——错档仍由
+  // 服务端语义人话拒绝（422 原文呈现），不静默吞。
   const { loadKeystore, isLegacyKeystore } = await import("./keystore");
   const local = loadKeystore();
-  const isV6 = local !== null && !isLegacyKeystore(local) && (local as { v?: number }).v === 6;
+  let isV6 = local !== null && !isLegacyKeystore(local) && (local as { v?: number }).v === 6;
+  if (!isV6 && info?.sealed_blob) {
+    try {
+      isV6 = JSON.parse(info.sealed_blob).v === 6;
+    } catch { /* 形态不可判=维持本地面板判定（服务端权威拒绝兜底） */ }
+  }
   if (isV6) {
     const { response } = await opaqueEvaluate(username, currentPw); // 携会话=真 β+账面盐
     const fresh6 = await opaqueChangeMaterials(
