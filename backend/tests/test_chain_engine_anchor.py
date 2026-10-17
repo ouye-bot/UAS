@@ -165,6 +165,29 @@ def test_anchor_seq_replay_conflict(client):
     assert r3.status_code == 200
 
 
+def test_anchors_latest_reflects_anchored_seq(client):
+    """链上权威 latest_seq 查询（缺陷 A 根修配套 2026-10-17）：authId 域最新
+    锚定序号——桥侧跨架次起链续基的权威面（真链=合约 latestSeq 读；fake=
+    进程内锚记录）。无锚=0（首架次从 1 起）；锚定后=最新 seq；authId 间
+    独立计序不串号。"""
+    c, TS = client
+    _seed_auth(TS)
+    r0 = c.get("/engine/anchors/latest", params={"auth_id": 7})
+    assert r0.status_code == 200
+    assert r0.json()["data"] == {"auth_id": 7, "latest_seq": 0}, "无锚=0"
+    sk, pub = generate_keypair()
+    r1 = c.post("/engine/anchor", json=_anchor_body(sk, pub, 7, 1, sm3_bytes(b"l1"), _FENCE))
+    assert r1.status_code == 200
+    r2 = c.post("/engine/anchor", json=_anchor_body(sk, pub, 7, 2, sm3_bytes(b"l2"), _FENCE))
+    assert r2.status_code == 200
+    r3 = c.get("/engine/anchors/latest", params={"auth_id": 7})
+    assert r3.status_code == 200
+    assert r3.json()["data"]["latest_seq"] == 2, "锚定后=最新锚定序号（第二架次从 3 续起）"
+    # 未触达的 authId 独立计序（不串号）
+    r4 = c.get("/engine/anchors/latest", params={"auth_id": 9})
+    assert r4.json()["data"] == {"auth_id": 9, "latest_seq": 0}
+
+
 def test_event_ok_and_negatives(client):
     c, TS = client
     _seed_auth(TS)

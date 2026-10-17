@@ -60,6 +60,15 @@ def _stub_authz_status(monkeypatch):
     )
 
 
+@pytest.fixture(autouse=True)
+def _stub_engine_latest_seq(monkeypatch):
+    """桥单测无真 backend（缺陷 A 根修配套：起链前链上 latest_seq 查询依赖）
+    ——缺省替身=恒 0（首架次语义）。跨架次连续性负例/正例按需覆写。"""
+    import server as srv
+
+    monkeypatch.setattr(srv, "_engine_latest_seq", lambda aid: 0)
+
+
 # ---- T1 令牌五查 ----
 
 
@@ -2526,3 +2535,110 @@ def test_authz_quota_fetch_shape(tmp_path, token_payload, monkeypatch):
         lambda aid, th: {"http": 200, "body": {"ok": True, "data": {"mode": "real"}}},
     )
     assert sl.authz_quota_fetch(payload) == {"remaining": None, "sorties": None}
+
+
+# ---- 缺陷 A 回归（2026-10-17 根修批）：跨架次检查点序号连续 ----
+
+
+def test_telemetry_chain_base_seq_continues_checkpoints():
+    """fence 层：base_seq 续基——链上权威 latest_seq 续起本架次检查点序号
+    （合约 anchorCheckpoint 按 authId 永续单调，桥内链每架次重建）。"""
+    priv, _pub = _device()
+    ch = TelemetryChain(7, priv, b"\x01\x00\x78\x00", base_seq=2)
+    assert ch.cp_seq == 2 and ch.anchored_seq == 2, "续基=链上已锚序号（断点续锚面同步）"
+    ch.push(1790000000, 0, 0, 0, wall=1000.0)
+    cp = ch.maybe_checkpoint(1001.0, None)
+    assert cp is not None and cp["seq"] == 3, "首检查点序号=基线+1（不许从 1 重起）"
+    # 缺省（首架次）=基线 0，行为与既有完全一致
+    ch0 = TelemetryChain(7, priv, b"\x01\x00\x78\x00")
+    ch0.push(1790000000, 0, 0, 0, wall=1000.0)
+    cp0 = ch0.maybe_checkpoint(1001.0, None)
+    assert cp0 is not None and cp0["seq"] == 1
+
+
+def test_telemetry_start_second_sortie_seq_continuity(monkeypatch, tmp_path, token_payload):
+    """跨架次锚定连续性（缺陷 A 红转绿）：同一 authId 第二架次起链，检查点
+    序号必须从链上权威 latest_seq 续起。合约 anchorCheckpoint require
+    seq == latest+1（authId 域永续单调），桥内遥测链每架次重建——seq 从 1
+    重起 ⟹ 第二架次锚定必撞 revert 0x16（「seq not monotonic」），封链
+    永不可达（手测实弹 2026-10-17，backend.log :51002/:51296 实证）。
+    执法面=引擎转发响应替身（与合约 require 同判：seq != latest+1 即拒）。"""
+    import server as srv
+    import sitl_link as sl
+    from sitl_link import FakeLink, FlightGate
+
+    payload, tok = token_payload
+    audit = LocalAudit(str(tmp_path / "seq.db"))
+    gate = FlightGate(FakeLink(), audit)
+    monkeypatch.setattr(srv, "_gate", gate)
+    monkeypatch.setattr(srv, "_link", FakeLink())
+    monkeypatch.setattr(srv, "_audit", audit)
+    monkeypatch.setattr(
+        sl, "_authz_status_fetch",
+        lambda aid, th: {"http": 200, "body": {"ok": True, "data": {
+            "mode": "real", "status": 0, "rev_epoch": 7, "token_consumed": False,
+            "remaining": 3, "sorties": 3}}},
+    )
+    monkeypatch.setattr(srv, "_chain", None)  # 模块态跨测试隔离
+    gate.attempt_arm(payload, plan_hash_hex=tok["plan_hash"])
+
+    latest: dict[int, int] = {}
+
+    def fake_post_engine(path, body):
+        if path.endswith("/anchor"):
+            aid, seq = int(body["auth_id"]), int(body["seq"])
+            if seq != latest.get(aid, 0) + 1:
+                return {"ok": False, "code": "seq_conflict",
+                        "message": f"seq={seq} 非单调（期望 {latest.get(aid, 0) + 1}）"}
+            latest[aid] = seq
+            return {"ok": True, "data": {"auth_id": aid, "seq": seq, "tx": "fake"}}
+        return {"ok": True}
+
+    monkeypatch.setattr(srv, "_post_engine", fake_post_engine)
+    # 链上权威 latest_seq 查询替身（backend /engine/anchors/latest 同语义）
+    monkeypatch.setattr(srv, "_engine_latest_seq",
+                        lambda aid: latest.get(int(aid), 0))
+
+    # 架次 1：起链→采样（首样本即产检查点）→锚定成功
+    ch1 = srv.telemetry_start(srv.ChainStartIn(auth_id=tok["authId"], fence_state_hex="01007800"))
+    assert ch1.get("ok") is True
+    monkeypatch.setenv("FZ_ALLOW_SYNTHETIC_SAMPLE", "1")
+    s1 = srv.telemetry_sample(srv.SampleIn(t_epoch=1790000000, alt_cm=100, lat_1e7=0, lon_1e7=0))
+    assert s1.get("ok") is True and s1.get("checkpoint"), "架次 1 首样本产检查点"
+    a1 = srv.telemetry_anchor()
+    assert a1.get("ok") is True and a1.get("anchored", 0) >= 1, str(a1)[:200]
+    first_seq = a1["results"][0]["seq"]
+
+    # 架次 2（同 authId 新链——生产形态「开始新架次」）：序号必须续起
+    gate.disarm()
+    gate.attempt_arm(payload, plan_hash_hex=tok["plan_hash"])  # 新架次 ARM（配额内）
+    ch2 = srv.telemetry_start(srv.ChainStartIn(auth_id=tok["authId"], fence_state_hex="01007800"))
+    assert ch2.get("ok") is True
+    assert ch2.get("checkpoint_seq_base") == first_seq, "起链回执携续基序号（跨架次可见）"
+    s2 = srv.telemetry_sample(srv.SampleIn(t_epoch=1790000001, alt_cm=100, lat_1e7=0, lon_1e7=0))
+    assert s2.get("ok") is True and s2.get("checkpoint")
+    assert s2["checkpoint"]["seq"] == first_seq + 1, "第二架次检查点序号=前架次锚定值+1"
+    a2 = srv.telemetry_anchor()
+    assert a2.get("ok") is True, f"第二架次锚定必须成功（缺陷 A：0x16 revert 即此处红）: {str(a2)[:200]}"
+    assert a2["results"][0]["seq"] == first_seq + 1
+
+
+def test_telemetry_start_latest_seq_unavailable_fail_closed(monkeypatch, tmp_path, token_payload):
+    """链上序号查询不可达=拒绝起链（fail-closed）：序号不明时起链=一条注定
+    无法锚定上链的伪留痕链——宁可不录，不可起死链。"""
+    import server as srv
+    from sitl_link import FakeLink, FlightGate
+
+    payload, tok = token_payload
+    audit = LocalAudit(str(tmp_path / "sq2.db"))
+    gate = FlightGate(FakeLink(), audit)
+    monkeypatch.setattr(srv, "_gate", gate)
+    monkeypatch.setattr(srv, "_link", FakeLink())
+    monkeypatch.setattr(srv, "_audit", audit)
+    monkeypatch.setattr(srv, "_chain", None)
+    gate.attempt_arm(payload, plan_hash_hex=tok["plan_hash"])
+    monkeypatch.setattr(srv, "_engine_latest_seq", lambda aid: None)
+    r = srv.telemetry_start(srv.ChainStartIn(auth_id=tok["authId"], fence_state_hex="01007800"))
+    body = json.loads(r.body) if hasattr(r, "body") else r
+    assert body.get("ok") is False and body.get("code") == "latest_seq_unavailable", str(body)[:200]
+    assert srv._chain is None, "拒绝起链后链面保持 None（伪留痕链不存在）"

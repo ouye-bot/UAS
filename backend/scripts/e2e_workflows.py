@@ -254,6 +254,10 @@ def full_authorization(pil: requests.Session, holder_sk: str, holder_pk: str, cr
     return tok, mats
 
 
+# 跨架次锚定连续性台账（auth_id -> 前架次末锚定 seq）——缺陷 A 回归面
+_last_anchored_seq: dict[int, int] = {}
+
+
 def sortie_flight(i: int, mats: dict, expect_checkpoint: bool, breach: bool) -> None:
     """单架次真实飞行段：ARM→起链→真采样（→围栏取证）→DISARM（真 SITL）。"""
     r = bpost("/arm", {"token_payload_hex": mats["payload_hex"],
@@ -296,6 +300,15 @@ def sortie_flight(i: int, mats: dict, expect_checkpoint: bool, breach: bool) -> 
         an = bpost("/telemetry/anchor", {}, timeout=180)
         expect(an.get("ok") is True and an.get("anchored", 0) >= 1,
                f"架次{i} 检查点真链锚定（设备签名+围栏态）", str(an)[:200])
+        # 跨架次锚定连续性（缺陷 A 回归面 2026-10-17）：合约 anchorCheckpoint
+        # 按 authId 永续单调，同授权第二架次起链若 seq 从 1 重起必 revert 0x16
+        # ——本断言钉「起链续基」根修：后续架次首个锚定 seq=前架次末锚定+1。
+        prev = _last_anchored_seq.get(aid)
+        if prev is not None:
+            expect(an["results"][0]["seq"] == prev + 1,
+                   f"架次{i} 跨架次检查点序号连续（前架次末锚 {prev}→本架次首锚 {an['results'][0]['seq']}）",
+                   str(an)[:200])
+        _last_anchored_seq[aid] = an["anchored_seq"]
     d = bpost("/sitl/disarm", {}, timeout=30)
     expect(d.get("ok") is True, f"架次{i} DISARM 收尾（授权态复位）")
     for _ in range(20):  # 飞控侧上锁位回落（下一架次 ARM 前置）
@@ -414,7 +427,8 @@ def main() -> int:
         wg = bpost("/sitl/wait_gps?timeout_s=180", {}, timeout=300)
         expect(wg.get("ok") is True, "P10 SITL GPS 锁（fix_type≥3）", str(wg)[:120])
         for i in (1, 2, 3):
-            sortie_flight(i, mats1, expect_checkpoint=(i == 1), breach=(i == 3))
+            # 架次 2 也锚定（缺陷 A 回归：跨架次检查点序号连续性）
+            sortie_flight(i, mats1, expect_checkpoint=(i <= 2), breach=(i == 3))
             quota_check(i, aid1, sm3_hex(mats1["body"]), remaining=3 - i, consumed=(i == 3))
         r4 = bpost("/arm", {"token_payload_hex": mats1["payload_hex"],
                             "plan_hash_hex": mats1["plan_hash_hex"]}, timeout=60)
