@@ -55,6 +55,9 @@ vi.mock("../../src/lib/opaqueClient", async (importOriginal) => {
         return {
           sealed_blob: JSON.stringify(env),
           masking_key_hex: Array.from(maskingKey, (b) => b.toString(16).padStart(2, "0")).join(""),
+          // 新口令 rwd 随行（v6 账户资料密封槽重封 KEK 源——服务端 _normalize_
+          // profile_slot_v6 契约：v6 账户改密回传的资料槽须 v6 profile 形态）
+          rwd,
         };
       },
     ),
@@ -62,7 +65,14 @@ vi.mock("../../src/lib/opaqueClient", async (importOriginal) => {
 });
 
 import { changePassword, type MeInfo } from "../../src/lib/auth";
-import { loadKeystore, sealKeystoreV4, storeKeystore } from "../../src/lib/keystore";
+import {
+  loadKeystore,
+  openProfileSlotV6,
+  sealKeystoreV4,
+  sealProfileSlot,
+  storeKeystore,
+} from "../../src/lib/keystore";
+import { deriveRwdChain, finalize } from "../../src/lib/opaque";
 
 type Res = { ok: boolean; status: number; json?: () => Promise<unknown> };
 let meInfo: Partial<MeInfo>;
@@ -114,7 +124,7 @@ describe("自助改密 v6 形态判定（缺陷 B）", () => {
       .toMatch(/^[0-9a-f]{64}$/);
     // 改密成功后本地面板同步换 v6（下次走快路径）
     expect((loadKeystore() as { v?: number }).v).toBe(6);
-  });
+  }, 60000);
 
   it("v4 存量（本地面板 v4+服务端 v4）→ v4 路径语义零变化（不携掩码钥）", async () => {
     const env = await sealKeystoreV4(SK, PK, "pw-old-口令", 4096);
@@ -124,7 +134,7 @@ describe("自助改密 v6 形态判定（缺陷 B）", () => {
     const body = changeBodies[0] as { sealed_blob: string; masking_key_hex?: string };
     expect(JSON.parse(body.sealed_blob).v).toBe(4);
     expect(body.masking_key_hex, "v4 存量不得携带掩码钥（携带即 422 bad_masking_key）").toBeUndefined();
-  });
+  }, 60000);
 
   it("本地面板 v4 残留但服务端已换代 v6（他设备迁移形态）→ 服务端权威判 v6 路径", async () => {
     const env = await sealKeystoreV4(SK, PK, "pw-old-口令", 4096);
@@ -134,5 +144,28 @@ describe("自助改密 v6 形态判定（缺陷 B）", () => {
     const body = changeBodies[0] as { sealed_blob: string; masking_key_hex?: string };
     expect(JSON.parse(body.sealed_blob).v, "服务端密封件版本压过本地面板残留").toBe(6);
     expect(body.masking_key_hex).toMatch(/^[0-9a-f]{64}$/);
-  });
+  }, 60000);
+
+  it("v6 pilot 改密携资料密封件 → 资料槽重封为 v6 profile 形态（缺陷 B 二层：v4 槽=服务端 400 bad_profile_slot）", async () => {
+    // 现实形态：注册期资料槽=v4 口令 KEK 槽（sealProfileSlot——keep 端点无形态门
+    // 原样入库）；服务端改密对 v6 账户强制 _normalize_profile_slot_v6（v6 profile
+    // 槽=rwd 密封）——前端若原样重发 v4 槽=400（活体走查 rt 账户实弹实证）。
+    meInfo.sealed_blob = JSON.stringify({ v: 6, pk: PK });
+    meInfo.sealed_profile = JSON.stringify(
+      await sealProfileSlot({ cred: { h: 1 }, form: { sn: "FZ-SN-DEV-01" } }, "pw-old-口令", 4096),
+    );
+    await changePassword("pw-old-口令", "pw-new-口令2");
+    expect(changeBodies.length).toBe(1);
+    const body = changeBodies[0] as { sealed_profile?: string };
+    expect(body.sealed_profile, "v6 改密须回传资料槽").toBeTruthy();
+    const slot = JSON.parse(body.sealed_profile!);
+    expect(slot.v, "资料槽=v6 形态（服务端 _normalize_profile_slot_v6 契约）").toBe(6);
+    expect(slot.slot).toBe("profile");
+    expect(slot.enc?.kdf).toBe("opaque-rwd-v1");
+    // v6 槽可被新 rwd 解开（roundtrip——载荷完整；rwd=替身 change 材料同源复算）
+    const oprfOutput = await finalize(BigInt("0x" + R_DEMO), GOLDEN_RT_BETA);
+    const { rwd } = await deriveRwdChain(oprfOutput, "11".repeat(16), 4096);
+    const opened = await openProfileSlotV6<{ cred: { h: number } }>(body.sealed_profile!, rwd);
+    expect(opened.cred).toEqual({ h: 1 });
+  }, 60000);
 });

@@ -469,32 +469,17 @@ export async function unlockSk(password: string): Promise<string> {
  * ⑫O-5 v6 感知：v6 账户=v6' 重封+新掩码钥原子换新（盐/迭代取 evaluate 响应
  * 账面值——§5.6 不轮换）；v4 存量保留 v4 语义。v6 判定=本地面板快路径+
  * me() sealed_blob 服务端权威双源（缺陷 B 根修——全新浏览器本地面板缺失时
- * 仍正确选 v6 路径，不再误发 v4 信封吃 422）。 */
+ * 仍正确选 v6 路径，不再误发 v4 信封吃 422）。缺陷 B 二层：v6 账户的资料
+ * 密封槽改密时须重封为 v6 profile 槽（rwd 密封——服务端
+ * _normalize_profile_slot_v6 契约；v4 槽原样重发=400 bad_profile_slot）。 */
 export async function changePassword(currentPw: string, newPw: string): Promise<void> {
   const username = cachedUsername();
   if (!username) throw new ApiError("not_logged_in", "未登录", 401);
   const sk = await unlockSk(currentPw); // 解封+公钥核对（错密码即拒，不烧服务端）
   const sm2Any = sm2 as unknown as { getPublicKeyFromPrivateKey: (sk: string) => string };
   const pk = sm2Any.getPublicKeyFromPrivateKey(sk).replace(/^04/, "");
-  // 资料密封件同口径重封（pilot 专属；KEK 同源——当前密码已验，解封必达）。
-  // me() 单源双用（缺陷 B 根修 2026-10-17）：回执同时供下方 v6 形态权威判定。
+  // me() 单源双用（缺陷 B 根修 2026-10-17）：资料密封件重封 + v6 形态权威判定。
   const info = await me();
-  let sealedProfile: string | undefined;
-  if (info?.sealed_profile) {
-    try {
-      const meta = await unsealProfileSlot<{ cred: unknown; form: unknown }>(
-        JSON.parse(info.sealed_profile),
-        currentPw,
-      );
-      sealedProfile = JSON.stringify(await sealProfileSlot(meta, newPw));
-    } catch {
-      throw new ApiError(
-        "profile_reseal_failed",
-        "资料密封件重封失败（已中止改密）——请重试；密封件未被变更",
-        500,
-      );
-    }
-  }
   // ⑫O-5 v6 感知（缺陷 B 根修）：本地面板版本检测只是快路径——**全新浏览器
   // （本地面板缺失/换设备被清扫）不构成 v4 存量的证据**。权威判据=me() 回执
   // 的 sealed_blob 即服务端现行密封件：v6 账户存的就是 v6' 信封（keystore 端
@@ -503,7 +488,8 @@ export async function changePassword(currentPw: string, newPw: string): Promise<
   // 改密必败（手测实弹 final_ui_04 全新浏览器实证）；v4 存量维持 v4 路径语义
   // 零变化。sealed_blob 形态不可判（理论不达）=维持本地面板判定——错档仍由
   // 服务端语义人话拒绝（422 原文呈现），不静默吞。
-  const { loadKeystore, isLegacyKeystore } = await import("./keystore");
+  const { loadKeystore, isLegacyKeystore, openProfileSlotV6, sealProfileSlotV6 } =
+    await import("./keystore");
   const local = loadKeystore();
   let isV6 = local !== null && !isLegacyKeystore(local) && (local as { v?: number }).v === 6;
   if (!isV6 && info?.sealed_blob) {
@@ -511,17 +497,56 @@ export async function changePassword(currentPw: string, newPw: string): Promise<
       isV6 = JSON.parse(info.sealed_blob).v === 6;
     } catch { /* 形态不可判=维持本地面板判定（服务端权威拒绝兜底） */ }
   }
+  // 资料密封件重封（pilot 专属——有槽才动）。旧槽解封按形态分派：v6 槽
+  // （rwd 密封——上一轮 v6 改密的产物）以当前口令 rwd 解；v4/v3 槽（注册期
+  // 口径）以口令 KEK 解。v6 账户的重封形态=v6 profile 槽（新口令 rwd——下方
+  // v6 分支取 fresh6.rwd）；v4 存量维持口令 KEK 槽原语义。
+  let sealedProfile: string | undefined;
+  let v6ProfileMeta: { cred: unknown; form: unknown } | null = null;
+  if (info?.sealed_profile) {
+    try {
+      const slotObj = JSON.parse(info.sealed_profile) as { v?: number };
+      const meta = await (async (): Promise<{ cred: unknown; form: unknown }> => {
+        if (isV6 && slotObj?.v === 6) {
+          const { opaqueRwdMaterials } = await import("./opaqueClient");
+          const { rwd } = await opaqueRwdMaterials(username, currentPw);
+          return openProfileSlotV6<{ cred: unknown; form: unknown }>(info.sealed_profile!, rwd);
+        }
+        return unsealProfileSlot<{ cred: unknown; form: unknown }>(
+          slotObj as never,
+          currentPw,
+        );
+      })();
+      if (isV6) {
+        v6ProfileMeta = meta; // 槽体在 v6 分支以新 rwd 重封（fresh6.rwd）
+      } else {
+        sealedProfile = JSON.stringify(await sealProfileSlot(meta, newPw));
+      }
+    } catch {
+      throw new ApiError(
+        "profile_reseal_failed",
+        "资料密封件重封失败（已中止改密）——请重试；密封件未被变更",
+        500,
+      );
+    }
+  }
   if (isV6) {
     const { response } = await opaqueEvaluate(username, currentPw); // 携会话=真 β+账面盐
     const fresh6 = await opaqueChangeMaterials(
       username, newPw, sk, pk, response.kdf_salt_hex, response.kdf_iter,
     );
+    // 缺陷 B 二层：v6 账户资料槽重封=v6 profile 槽（新口令 rwd 密封）——
+    // 服务端 _normalize_profile_slot_v6 契约（v4 槽原样重发=400 实弹实证）。
+    let profileV6: string | undefined;
+    if (v6ProfileMeta !== null) {
+      profileV6 = await sealProfileSlotV6(v6ProfileMeta, fresh6.rwd);
+    }
     await api("/auth/password/change", {
       method: "POST",
       body: JSON.stringify({
         sealed_blob: fresh6.sealed_blob,
         masking_key_hex: fresh6.masking_key_hex,
-        ...(sealedProfile ? { sealed_profile: sealedProfile } : {}),
+        ...(profileV6 ? { sealed_profile: profileV6 } : {}),
       }),
     });
     storeKeystore(JSON.parse(fresh6.sealed_blob) as import("./keystore").KeystoreV6);

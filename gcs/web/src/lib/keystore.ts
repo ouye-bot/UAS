@@ -329,25 +329,27 @@ export interface KeystoreV6 {
   enc: SealedSlotV6;
 }
 
-/** v6 规范形态（固定键序+compact 分隔符+小写 hex——定长不变式载体，§6.2 Nm 锚）。 */
+/** v6 规范形态（固定键序+compact 分隔符+小写 hex——定长不变式载体，§6.2 Nm 锚）。
+ * slot 参数=资料密封槽位（"profile"——镜像后端 canonical_v6(slot=...)，键序
+ * v→pk→slot→enc 与后端逐字一致）。 */
 export function canonicalV6(
   pkHex: string,
   envNonceHex: string,
   nonceHex: string,
   ctHex: string,
   tagHex: string,
+  slot?: string,
 ): string {
-  return JSON.stringify({
-    v: 6,
-    pk: pkHex.toLowerCase(),
-    enc: {
-      kdf: KDF_NAME_V6,
-      env_nonce: envNonceHex.toLowerCase(),
-      nonce: nonceHex.toLowerCase(),
-      ct: ctHex.toLowerCase(),
-      tag: tagHex.toLowerCase(),
-    },
-  });
+  const head: Record<string, unknown> = { v: 6, pk: pkHex.toLowerCase() };
+  if (slot !== undefined) head.slot = slot;
+  head.enc = {
+    kdf: KDF_NAME_V6,
+    env_nonce: envNonceHex.toLowerCase(),
+    nonce: nonceHex.toLowerCase(),
+    ct: ctHex.toLowerCase(),
+    tag: tagHex.toLowerCase(),
+  };
+  return JSON.stringify(head);
 }
 
 /** 标准 v6 信封字节长（fake-record 零槽长度锚——§6.1）。 */
@@ -516,6 +518,68 @@ export function unsealProfileSlot<T = unknown>(slot: SealedSlot, passphrase: str
   return doUnseal().catch((e) => {
     if (e instanceof GcmAuthError || e instanceof KeystoreError) {
       throw new KeystoreError("身份资料解封失败（密码不匹配）");
+    }
+    throw e;
+  });
+}
+
+// ---- 资料密封槽 v6（缺陷 B 二层根修 2026-10-17）：v6 账户的资料槽=rwd 密封
+// （设计 D-4 ProfileKey 独立域——镜像后端 envelope.seal_profile_slot_v6/
+// open_profile_slot_v6；槽无 pk 槽语义，canonical pk 位以零串占位保定宽）。
+// 服务端改密契约：v6 账户回传的资料槽须 _normalize_profile_slot_v6 形态——
+// v4 槽原样重发=400 bad_profile_slot（活体走查 rt 账户实弹实证）。----
+
+const PROFILE_KEY_INFO_V6 = "FZ-OPAQUE-ProfileKey|v1"; // 资料槽独立域（D-4）
+const AAD_PROFILE_V6 = "FZ-OPAQUE-PROFILE-v6|rwd"; // KEK 源语义入 AAD（D-2 同工艺）
+
+/** 资料槽 v6 密封（KEK=Expand-SM3(rwd, env_nonce‖ProfileKey|v1, 16)）——返回
+ * canonical v6 profile 槽 JSON 串（slot="profile"，pk 位零串占位）。 */
+export async function sealProfileSlotV6(
+  data: unknown,
+  rwd: Uint8Array,
+  envNonceHex?: string,
+): Promise<string> {
+  if (!rwd || rwd.length !== 32) throw new KeystoreError("rwd 须 32B");
+  const envNonce = envNonceHex ?? randHex(12);
+  const kek = await hkdfSm3Expand(rwd, concat(hexToBytes(envNonce), new TextEncoder().encode(PROFILE_KEY_INFO_V6)), 16);
+  const nonce = randHex(12);
+  const { ciphertext, tag } = sm4GcmEncrypt(
+    kek, hexToBytes(nonce), utf8(JSON.stringify(data)),
+    new TextEncoder().encode(AAD_PROFILE_V6),
+  );
+  return canonicalV6(
+    "0".repeat(128), envNonce, nonce,
+    Array.from(ciphertext, (b) => b.toString(16).padStart(2, "0")).join(""),
+    Array.from(tag, (b) => b.toString(16).padStart(2, "0")).join(""),
+    "profile",
+  );
+}
+
+/** 资料槽 v6 解封（rwd 侧——v6 账户改密时旧槽为 v6 形态的解封面）。 */
+export async function openProfileSlotV6<T = unknown>(
+  slotText: string,
+  rwd: Uint8Array,
+): Promise<T> {
+  const doOpen = async (): Promise<T> => {
+    const obj = JSON.parse(slotText) as {
+      v?: number; slot?: string; enc?: SealedSlotV6;
+    };
+    if (obj?.v !== 6 || obj?.slot !== "profile" || !obj.enc) {
+      throw new KeystoreError("资料密封槽形态不符（v6 profile）");
+    }
+    if (obj.enc.kdf !== KDF_NAME_V6) throw new KeystoreError("资料槽 KDF 标记不符（v6）");
+    const kek = await hkdfSm3Expand(
+      rwd, concat(hexToBytes(obj.enc.env_nonce), new TextEncoder().encode(PROFILE_KEY_INFO_V6)), 16,
+    );
+    const raw = sm4GcmDecrypt(
+      kek, hexToBytes(obj.enc.nonce), hexToBytes(obj.enc.ct), hexToBytes(obj.enc.tag),
+      new TextEncoder().encode(AAD_PROFILE_V6),
+    );
+    return JSON.parse(new TextDecoder().decode(raw)) as T;
+  };
+  return doOpen().catch((e) => {
+    if (e instanceof GcmAuthError || e instanceof KeystoreError) {
+      throw new KeystoreError("身份资料解封失败（rwd 不匹配或槽被篡改）");
     }
     throw e;
   });

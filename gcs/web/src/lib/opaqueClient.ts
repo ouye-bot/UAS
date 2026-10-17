@@ -90,6 +90,17 @@ export async function opaqueRegisterMaterials(
   };
 }
 
+/** 当前口令 rwd 材料（缺陷 B 二层配套）：v6 账户资料密封槽（rwd 密封）解封
+ * 侧——evaluate 回程+解盲+rwd 单链，与 opaqueUnlockSk 同序不落信封。 */
+export async function opaqueRwdMaterials(
+  username: string,
+  password: string,
+): Promise<{ rwd: Uint8Array; maskingKey: Uint8Array }> {
+  const { response, r } = await opaqueEvaluate(username, password);
+  const oprfOutput = await finalize(r, response.evaluated_message);
+  return deriveRwdChain(oprfOutput, response.kdf_salt_hex, response.kdf_iter);
+}
+
 /** v6' 改密材料（§5.6——盐/迭代取账面值不轮换；evaluate α=新口令派生——β 回程
  * 经解盲得新口令的 oprf_output；会话授权面）。 */
 export async function opaqueChangeMaterials(
@@ -99,7 +110,7 @@ export async function opaqueChangeMaterials(
   pkHex: string,
   saltHex: string,
   iterations: number,
-): Promise<{ sealed_blob: string; masking_key_hex: string }> {
+): Promise<{ sealed_blob: string; masking_key_hex: string; rwd: Uint8Array }> {
   const { response, r } = await opaqueEvaluate(username, newPassword);
   const oprfOutput = await finalize(r, response.evaluated_message);
   const { rwd, maskingKey } = await deriveRwdChain(oprfOutput, saltHex, iterations);
@@ -107,6 +118,9 @@ export async function opaqueChangeMaterials(
   return {
     sealed_blob: JSON.stringify(env),
     masking_key_hex: Array.from(maskingKey, (b) => b.toString(16).padStart(2, "0")).join(""),
+    // 新口令 rwd 随行（缺陷 B 二层：v6 账户资料密封槽重封 KEK 源——服务端
+    // change_password 对 v6 账户强制 v6 profile 槽=rwd 密封，v4 槽=400）
+    rwd,
   };
 }
 
