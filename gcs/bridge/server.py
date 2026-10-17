@@ -137,7 +137,25 @@ def telemetry_start(body: ChainStartIn):
                 ),
             },
         )
-    _chain = TelemetryChain(session_aid, _DEV_PRIV, gate_fs)
+    # 跨架次序号续基（缺陷 A 根修 2026-10-17）：合约 anchorCheckpoint 按
+    # authId 永续单调，桥内遥测链每架次重建——seq 若从 1 重起，同授权第二
+    # 架次锚定必撞「seq not monotonic」revert（0x16）→ 检查点锚不上去、
+    # 封链不可达。起链前向 backend 查询链上权威 latest_seq（真链=合约
+    # latestSeq 读；fake=进程内锚记录），本架次检查点序号从其续起（首架次
+    # =0 → 从 1）。查询不可得=fail-closed 拒绝起链——起一条注定无法锚定
+    # 上链的链=伪留痕面，宁可不录。
+    base = _engine_latest_seq(session_aid)
+    if base is None:
+        return JSONResponse(
+            status_code=502,
+            content={
+                "ok": False,
+                "code": "latest_seq_unavailable",
+                "message": "链上检查点序号查询不可达——拒绝起链（fail-closed）：序号不明时起链"
+                "=注定无法锚定上链的伪留痕，请恢复授权服务后重试",
+            },
+        )
+    _chain = TelemetryChain(session_aid, _DEV_PRIV, gate_fs, base_seq=base)
     # 新架次=干净账本（2026-09-29 实测：breach_seen 闩锁跨架次存活，第二架次
     # 遥测立刻带"已触发围栏"脏标志+伪造违规事件——起链即归零）
     _link.breach_seen = False
@@ -150,6 +168,7 @@ def telemetry_start(body: ChainStartIn):
         "genesis_head_hex": _chain.head.hex(),
         "device_pub_hex": _DEV_PUB,
         "fence_state_hex": gate_fs.hex(),  # 证词源回显（客户端可见实际入链围栏态）
+        "checkpoint_seq_base": base,  # 续基序号回显（跨架次连续性可对账——缺陷 A 回归面）
     }
 
 
@@ -381,6 +400,31 @@ def _backend_api() -> str:
     import os as _os
 
     return _os.environ.get("FZ_API_BASE", "http://127.0.0.1:8000")
+
+
+def _engine_latest_seq(auth_id: int) -> int | None:
+    """链上权威 latest_seq 查询（backend GET /engine/anchors/latest——缺陷 A
+    根修配套）。真链=合约 TelemetryAnchor.latestSeq 只读（authId 域永续单调
+    的链上事实源）；fake=进程内锚记录。任何故障（不可达/畸形回执/负值）=
+    None——调用方 fail-closed 拒绝起链，绝不静默回落 0（回落=第二架次锚定
+    必 revert 的伪留痕链复辟）。"""
+    import json as _json
+    import urllib.request as _ur
+
+    opener = _ur.build_opener(_ur.ProxyHandler({}))  # 回环禁系统代理
+    headers = {"X-Engine-Token": os.environ.get("FZ_ENGINE_TOKEN", "")}
+    try:
+        req = _ur.Request(
+            _backend_api() + f"/engine/anchors/latest?auth_id={int(auth_id)}",
+            headers=headers,
+        )
+        with opener.open(req, timeout=15) as r:
+            d = _json.loads(r.read().decode())
+        data = d.get("data") or d
+        seq = int(data["latest_seq"])
+        return seq if seq >= 0 else None
+    except Exception:  # noqa: BLE001 —— 不可得=None（fail-closed 判定在调用方）
+        return None
 
 
 def _post_engine(path: str, body: dict) -> dict:

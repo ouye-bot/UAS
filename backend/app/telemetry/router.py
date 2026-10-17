@@ -14,7 +14,7 @@ import hmac as _hmac
 import os as _os
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
@@ -126,6 +126,32 @@ def anchors():
     """fake 锚记录（真链模式返回空——留痕查询走链上 panel/trace）。"""
     d = get_deps()
     return _ok({"records": d.records, "events": d.events})
+
+
+@router.get("/anchors/latest")
+def anchors_latest(request: Request, auth_id: int = Query(..., ge=1)):
+    """链上权威 latest_seq（authId 域永续单调——跨架次检查点序号续起面）。
+
+    桥侧 /telemetry/start 起链前查询本接口：合约 anchorCheckpoint 按 authId
+    强制 seq 全局单调，而桥内遥测链每架次重建——seq 若从 1 重起，同授权
+    第二架次锚定必 revert「seq not monotonic」（缺陷 A，手测实弹 2026-10-17
+    实证）。真链=合约 TelemetryAnchor.latestSeq 只读；fake=进程内锚记录。
+    链查询故障=502 结构化（桥侧 fail-closed 拒绝起链——不起注定锚不上去的
+    伪留痕链）。"""
+    _require_engine_token(request)
+    d = get_deps()
+    try:
+        seq = int(d.latest_seq_of(auth_id))
+    except Exception as e:  # noqa: BLE001 —— 链不可达/回执畸形=结构化拒答
+        return JSONResponse(
+            status_code=502,
+            content={
+                "ok": False,
+                "code": "chain_query_failed",
+                "message": f"链上 latest_seq 查询失败: {str(e)[:160]}",
+            },
+        )
+    return _ok({"auth_id": auth_id, "latest_seq": seq})
 
 
 @router.post("/auths/{auth_id}/revoke")

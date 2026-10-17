@@ -38,6 +38,10 @@ class TelemetryDeps:
     anchor_on_chain: Any = None  # (auth_id, seq, head_bytes, sig_bytes) -> tx hash str
     event_on_chain: Any = None  # (auth_id, event_type, event_hash_bytes) -> tx hash str
     auth_status: Any = None  # auth_id -> status int（None=不在案）
+    # 链上权威 latest_seq（auth_id -> int）——authId 域永续单调的链上事实源
+    # （真链=合约 latestSeq 读；fake=进程内锚记录）。桥侧跨架次起链据此续基
+    # （缺陷 A 根修配套 2026-10-17）。查询故障=抛错（路由面结构化 502）。
+    latest_seq_of: Any = None
     # fake 模式 seq 单调面（auth_id -> latest seq）
     latest_seq: dict[int, int] = field(default_factory=dict)
     records: list[dict] = field(default_factory=list)  # fake 锚记录（测试断言面）
@@ -45,6 +49,11 @@ class TelemetryDeps:
 
 
 _default_deps: TelemetryDeps | None = None
+
+
+def _fake_latest_seq(auth_id: int) -> int:
+    """fake 模式权威面：进程内锚记录的最新序号（无锚=0——首架次从 1 起）。"""
+    return get_deps().latest_seq.get(auth_id, 0)
 
 
 def get_deps() -> TelemetryDeps:
@@ -55,6 +64,7 @@ def get_deps() -> TelemetryDeps:
                 anchor_on_chain=lambda aid, seq, head, sig: _fake_anchor(aid, seq, head, sig),
                 event_on_chain=lambda aid, et, eh: _fake_event(aid, et, eh),
                 auth_status=lambda session, aid: _db_auth_status(session, aid),
+                latest_seq_of=_fake_latest_seq,
             )
         else:
             _default_deps = _real_chain_deps()
@@ -144,10 +154,16 @@ def _real_chain_deps() -> TelemetryDeps:
         except ChainError:
             return None  # bad authId require revert=不在案
 
+    def latest_seq_on_chain(auth_id: int) -> int:
+        """合约 TelemetryAnchor.latestSeq 只读——authId 域永续单调的链上事实源
+        （跨架次检查点序号续基的唯一权威；查询失败=抛 ChainError 上抛）。"""
+        return int(ta.call_fn("latestSeq", [auth_id])[0])
+
     return TelemetryDeps(
         anchor_on_chain=anchor_on_chain,
         event_on_chain=event_on_chain,
         auth_status=auth_status,
+        latest_seq_of=latest_seq_on_chain,
     )
 
 

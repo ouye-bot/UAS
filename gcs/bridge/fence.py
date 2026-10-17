@@ -45,7 +45,9 @@ def sample_hash(prev_head: bytes, t_epoch: int, alt_cm: int, lat_1e7: int, lon_1
 
 
 class TelemetryChain:
-    def __init__(self, auth_id: int, serial_priv_hex: str, fence_state: bytes) -> None:
+    def __init__(
+        self, auth_id: int, serial_priv_hex: str, fence_state: bytes, base_seq: int = 0
+    ) -> None:
         self.auth_id = auth_id
         self.head = sm3_bytes(GENESIS)
         self.genesis_head = self.head  # 起始锚留档（head 随样本推进——state 回放用）
@@ -53,10 +55,16 @@ class TelemetryChain:
         self.samples: list[tuple[int, int, int, int]] = []  # (t, alt, lat, lon)
         self.priv = serial_priv_hex
         self.fence_state = fence_state  # 4B：enable‖alt_max BE16‖rsv
-        self.cp_seq = 0
+        # 跨架次序号续基（缺陷 A 根修 2026-10-17）：合约 anchorCheckpoint 按
+        # authId 永续单调（require seq == latest+1），桥内链每架次重建——
+        # 检查点序号必须从链上权威 latest_seq 续起（首架次 base=0 → 首检查点
+        # seq=1）；否则同授权第二架次锚定必 revert「seq not monotonic」。
+        self.cp_seq = base_seq
         self.last_cp_t = 0.0
         self.checkpoints: list[dict] = []
-        self.anchored_seq = 0  # 已真链锚定的最大 seq（阶段一：转发面断点续锚）
+        # 已真链锚定的最大 seq（阶段一：转发面断点续锚）。基线前的序号=前架次
+        # 已锚定既成事实——断点续锚面同步自基线起跳（不重锚前架次序号）。
+        self.anchored_seq = base_seq
         # 合理性门状态（批1-1.4）：rejected_count 上报 /telemetry/state；
         # last_wall=服务端采样墙钟（unix 浮点秒——2Hz 同秒双拍下速度/间隔
         # 判定须浮点粒度，整数 t_epoch 只做倒拨门）；_resync=拒样后重开窗。
